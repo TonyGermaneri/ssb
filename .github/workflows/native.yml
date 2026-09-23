@@ -224,7 +224,9 @@ jobs:
 
       # The whole path a DAW exercises: load the VST3, open its editor (the page runs, installs the
       # factory patches and syncs them to the engine), play a note from a real-time audio thread,
-      # and fail on silence. auval and pluginval never open the editor, so they cannot see this.
+      # and fail on silence. Then reopen it as a saved session would be -- new instance, saved
+      # state, editor never opened -- and fail if that is silent. auval and pluginval never open
+      # the editor or reload a session, so they cannot see either.
       - name: End to end
         env:
           SSB_PROBE_DELAY_MS: '6000'
@@ -232,7 +234,7 @@ jobs:
         run: |
           native/build/tools/ssb-host_artefacts/RelWithDebInfo/ssb-host.app/Contents/MacOS/ssb-host \
             native/build/plugin/SsbInstrument_artefacts/RelWithDebInfo/VST3/SSB.vst3 end-to-end.wav \
-            --note 69 --wait 9 --hold 1.5
+            --note 69 --wait 9 --hold 1.5 --reload
 
       - uses: actions/upload-artifact@v4
         if: failure()

@@ -4,7 +4,7 @@ import { del, get, keys, set } from 'idb-keyval'
 import * as engine from '../audio/engine'
 import { computePeaks } from '../audio/peaks'
 import { connectMidi, parseMidi, type MidiEvent } from '../audio/midi'
-import { callNative, inNative, nativeInfo, onNativeMidi, saveFile } from '../native/bridge'
+import { callNative, inNative, nativeBoardKey, nativeInfo, onNativeMidi, saveFile } from '../native/bridge'
 import { History } from '../lib/history'
 import { ClockTracker } from '../lib/midiClock'
 import { THEMES, themeById } from '../theme/themes'
@@ -23,7 +23,8 @@ import {
   type PatchLayer, type PatchSlot, type Preset, type Sound, type SoundSettings, type VcoSlot, type Zone,
 } from '../types'
 
-const BOARD_KEY = 'ssb:board'
+/** one board per plugin instance (see nativeBoardKey); samples are shared by content id */
+const BOARD_KEY = nativeBoardKey() ? `ssb:board:${nativeBoardKey()}` : 'ssb:board'
 const audioKey = (audioId: string) => `ssb:audio:${audioId}`
 
 /** Keyboard triggers, assigned to visible pads in grid order. */

@@ -62,6 +62,10 @@ public:
         the web view's IndexedDB, which every instance on the machine shares. */
     juce::String pageState;
 
+    /** This instance's board, as the page stores it: new instances get a new one, a session
+        restores its own. Unused in the standalone, which has the one board. */
+    juce::String boardKey { juce::Uuid().toString() };
+
 private:
     void timerCallback() override { engine.collectGarbage(); }
 

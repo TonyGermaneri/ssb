@@ -66,8 +66,12 @@ loops, one-shots, release triggers with rt_decay, locc / hicc, the *_onccN modif
 filters, envelopes and LFOs). The engine reports its voices back to the page ~30 times a second,
 so pads light, progress rings turn and waveform playheads move for notes it plays.
 
-**Not yet:** every instance in a host shares one board (the web view's storage is per
-application), and a grain cloud shows no per-grain marks on the waveform in the plugin.
+Each plugin instance has its own board (its key is saved with the session; samples are shared by
+content). A session reopened in a DAW plays before its window is opened: the engine's sounds are
+in the session and its samples in the disk cache (`ssb-host --reload` checks exactly that).
+
+**Not yet:** a grain cloud shows no per-grain marks on the waveform in the plugin, and a deleted
+instance's board stays in the web view's storage (it is small; the samples are shared).
 
 Per-sound delay and reverb run on buses shared by every voice with the same settings; both
 effects are linear, so that is the same sound as a copy per voice, for a fraction of the work.
@@ -116,10 +120,11 @@ remember a plugin by those two codes alone, so they never change after a release
 # the engine on its own: pitch, envelopes, repeat, choke, zones, glide, filter, FM, sustain, FX
 ctest --test-dir native/build --output-on-failure
 
-# the whole thing: page -> sync -> engine -> audio. SSB_PROBE_SETUP sets the board up.
+# the whole thing: page -> sync -> engine -> audio, then a reopened session with no editor.
+# SSB_PROBE_SETUP sets the board up.
 SSB_PROBE_DELAY_MS=5000 SSB_PROBE_SETUP="const b = __ssb.board; b.selectPatch(b.patches[0].id); b.master.play = true" \
   native/build/tools/ssb-host_artefacts/RelWithDebInfo/ssb-host.app/Contents/MacOS/ssb-host \
-  native/build/plugin/SsbInstrument_artefacts/RelWithDebInfo/VST3/SSB.vst3 out.wav --note 69 --wait 7
+  native/build/plugin/SsbInstrument_artefacts/RelWithDebInfo/VST3/SSB.vst3 out.wav --note 69 --wait 7 --reload
 ```
 
 ```

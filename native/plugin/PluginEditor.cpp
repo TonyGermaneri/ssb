@@ -74,6 +74,7 @@ SsbEditor::SsbEditor (SsbProcessor& p)
           .withResourceProvider ([this] (const auto& path) { return provide (path); })
           // read synchronously by the page at startup: who makes the sound
           .withInitialisationData ("ssbEngine", p.usesEngine)
+          .withInitialisationData ("ssbBoard", p.usesEngine ? p.boardKey : juce::String())
           .withNativeFunction ("ssbReady", [this] (const juce::Array<juce::var>&, auto complete)
           {
               auto* info = new juce::DynamicObject();

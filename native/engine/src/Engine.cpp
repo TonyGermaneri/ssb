@@ -1795,7 +1795,16 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
     m.globalLfo[0].start (m.perf->globalMod.lfo1, m.bpm, 11);
     m.globalLfo[1].start (m.perf->globalMod.lfo2, m.bpm, 12);
 
-    setPerformance (m.perf);
+    // Re-set what is (or is about to be) playing, so its reverb impulses load at this sample rate.
+    // A performance still waiting to be adopted wins: a host restores a session's state before it
+    // prepares the plugin, and that state must not be replaced by the empty default.
+    PerformancePtr current = m.perf;
+    if (auto* pending = m.incoming.exchange (nullptr))
+    {
+        current = *pending;
+        delete pending;
+    }
+    setPerformance (current);
 }
 
 void Engine::setPerformance (PerformancePtr next)

@@ -2,9 +2,12 @@
 // the board to the engine), play MIDI into it from a real-time-paced "audio thread", and record
 // what comes out.
 //
-//   ssb-host <SSB.vst3 | SSB.component> <out.wav> [--note 69] [--wait 6] [--hold 1.5]
+//   ssb-host <SSB.vst3 | SSB.component> <out.wav> [--note 69] [--wait 6] [--hold 1.5] [--reload]
 //
-// Prints the output's RMS and pitch, and exits non-zero if it was silent. SSB_PROBE_SETUP (see
+// Prints the output's RMS and pitch, and exits non-zero if it was silent. --reload then does what
+// reopening a DAW session does: saves the plugin's state, destroys it, loads a new instance with
+// that state and plays the note again *without opening the editor* -- the engine must play from
+// the saved state and the sample cache alone. SSB_PROBE_SETUP (see
 // plugin/PluginEditor.cpp) is how a run sets the board up, e.g. to select a patch and turn on
 // keyboard play before the notes arrive.
 
@@ -109,29 +112,64 @@ int main (int argc, char** argv)
     audio.join();
 
     window.reset();
+    juce::MemoryBlock state;
+    plugin->getStateInformation (state);
     plugin->releaseResources();
     plugin.reset();
 
-    // measure the held part of the note
-    const auto from = (int) ((wait + 0.1) * rate), to = (int) ((wait + hold) * rate);
-    double sum = 0;
-    int crossings = 0;
-    double first = -1, last = -1;
-    const float* l = recorded.getReadPointer (0);
-    for (int i = from; i < to; ++i)
+    auto measure = [&] (const juce::AudioBuffer<float>& buffer, double noteOn, const char* label)
     {
-        sum += (double) l[i] * l[i];
-        if (i > from && l[i - 1] <= 0 && l[i] > 0)
+        const auto from = (int) ((noteOn + 0.1) * rate), to = (int) ((noteOn + hold) * rate);
+        double sum = 0;
+        int crossings = 0;
+        double first = -1, last = -1;
+        const float* l = buffer.getReadPointer (0);
+        for (int i = from; i < to; ++i)
         {
-            const double t = i / rate;
-            if (first < 0) first = t;
-            last = t;
-            ++crossings;
+            sum += (double) l[i] * l[i];
+            if (i > from && l[i - 1] <= 0 && l[i] > 0)
+            {
+                const double t = i / rate;
+                if (first < 0) first = t;
+                last = t;
+                ++crossings;
+            }
         }
+        const double r = std::sqrt (sum / std::max (1, to - from));
+        const double f = crossings > 1 ? (crossings - 1) / (last - first) : 0.0;
+        std::printf ("%s rms %.4f  zero-crossing pitch %.1f Hz\n", label, r, f);
+        return r;
+    };
+    const double rms = measure (recorded, wait, "");
+
+    double reloadedRms = 1;
+    if (args.contains ("--reload"))
+    {
+        // a reopened session: new instance, saved state, no editor
+        auto again = formats.createPluginInstance (*found[0], rate, block, error);
+        if (! again) { std::fprintf (stderr, "could not reload: %s\n", error.toRawUTF8()); return 2; }
+        again->setPlayConfigDetails (0, 2, rate, block);
+        again->setStateInformation (state.getData(), (int) state.getSize());
+        again->prepareToPlay (rate, block);
+        const auto len = (int) ((0.5 + hold + 0.5) * rate);
+        juce::AudioBuffer<float> out (2, len);
+        juce::AudioBuffer<float> buffer (2, block);
+        for (int pos = 0; pos + block <= len; pos += block)
+        {
+            juce::MidiBuffer midi;
+            const auto on = (int) (0.5 * rate), off = (int) ((0.5 + hold) * rate);
+            if (on >= pos && on < pos + block) midi.addEvent (juce::MidiMessage::noteOn (1, note, (juce::uint8) 100), on - pos);
+            if (off >= pos && off < pos + block) midi.addEvent (juce::MidiMessage::noteOff (1, note), off - pos);
+            buffer.clear();
+            again->processBlock (buffer, midi);
+            for (int ch = 0; ch < 2; ++ch) out.copyFrom (ch, pos, buffer, ch, 0, block);
+            // let the reverb impulse (loaded on a background thread) arrive, as in real time
+            if (pos < on) std::this_thread::sleep_for (std::chrono::milliseconds (10));
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (1);
+        }
+        again->releaseResources();
+        reloadedRms = measure (out, 0.5, "reloaded, no editor:");
     }
-    const double rms = std::sqrt (sum / std::max (1, to - from));
-    const double hz = crossings > 1 ? (crossings - 1) / (last - first) : 0.0;
-    std::printf ("rms %.4f  zero-crossing pitch %.1f Hz\n", rms, hz);
 
     outFile.deleteFile();
     juce::WavAudioFormat wav;
@@ -141,5 +179,5 @@ int main (int argc, char** argv)
             stream.release();
             writer->writeFromAudioSampleBuffer (recorded, 0, recorded.getNumSamples());
         }
-    return rms > 1e-3 ? 0 : 1;
+    return rms > 1e-3 && reloadedRms > 1e-3 ? 0 : 1;
 }

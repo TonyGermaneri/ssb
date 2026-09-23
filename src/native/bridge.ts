@@ -45,6 +45,16 @@ export const inNative = (): boolean => !!backend() && functions().includes('ssbR
  */
 export const nativeEngine = (): boolean => inNative() && window.__JUCE__?.initialisationData?.ssbEngine?.[0] === true
 
+/**
+ * The plugin instance's own board: each AU / VST3 instance keeps its board under its own key (made
+ * when the instance is created, saved with the host session), so two SSB tracks are two boards.
+ * Null in the browser and the standalone, which keep the one board.
+ */
+export const nativeBoardKey = (): string | null => {
+  const key = window.__JUCE__?.initialisationData?.ssbBoard?.[0]
+  return inNative() && typeof key === 'string' && key ? key : null
+}
+
 /** Events from the native side (ssbMidi, ssbMeter, …). */
 export function onNative<T>(eventId: string, fn: (payload: T) => void) {
   backend()?.addEventListener(eventId, fn as (payload: never) => void)

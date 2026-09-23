@@ -84,6 +84,7 @@ void SsbProcessor::getStateInformation (juce::MemoryBlock& destination)
     state.setProperty ("width", editorWidth, nullptr);
     state.setProperty ("height", editorHeight, nullptr);
     state.setProperty ("page", pageState, nullptr);
+    state.setProperty ("board", boardKey, nullptr);
     if (usesEngine)
         state.setProperty ("engine", library.saveState(), nullptr);
     juce::MemoryOutputStream out (destination, false);
@@ -98,6 +99,8 @@ void SsbProcessor::setStateInformation (const void* data, int size)
     editorWidth = state.getProperty ("width", editorWidth);
     editorHeight = state.getProperty ("height", editorHeight);
     pageState = state.getProperty ("page", pageState).toString();
+    if (const auto key = state.getProperty ("board").toString(); key.isNotEmpty())
+        boardKey = key;
     if (usesEngine && state.hasProperty ("engine"))
         library.restoreState (state.getProperty ("engine").toString());
 }
