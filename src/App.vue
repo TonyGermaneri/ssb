@@ -5,7 +5,8 @@ import { applyThemeVars } from './theme/themes'
 import { useBoard } from './stores/board'
 import { keyToMidi } from './lib/piano'
 import { fromInput } from './lib/dropFiles'
-import { forwardConsole, inNative, routeExternalLinks } from './native/bridge'
+import { forwardConsole, inNative, nativeEngine, routeExternalLinks } from './native/bridge'
+import { startEngineSync } from './native/engineSync'
 import { activeVoices, getCtx } from './audio/engine'
 import DropZone from './components/DropZone.vue'
 import MatrixDialog from './components/MatrixDialog.vue'
@@ -118,6 +119,8 @@ onMounted(() => {
     ;(window as unknown as { __ssb: unknown }).__ssb = { board, audio: () => getCtx().state, voices: () => activeVoices.value.length }
     void board.enableMidi()
     routeExternalLinks()
+    // in a DAW the native engine plays: keep it in step with the board
+    if (nativeEngine()) startEngineSync(board)
   }
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('keyup', onKeyUp)

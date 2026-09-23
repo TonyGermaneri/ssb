@@ -4,6 +4,14 @@ Super Sound Board as a **standalone app** and an **AU / VST3 instrument**. The w
 keeps shipping unchanged, and the plugin does not contain a second copy of it: the page Vite
 built (`../dist`) is copied into each bundle and is the editor.
 
+**Where the sound comes from**
+
+- **Standalone**: the page plays itself (Web Audio in the web view), exactly as in a browser, and
+  the app feeds it your MIDI controllers.
+- **AU / VST3**: a native engine (`engine/`) renders into the plugin's output, so SSB is on the
+  track, follows the host's tempo and keeps playing with its window closed. The page is the
+  editor: it pushes its sounds and settings to the engine and sends clicks and keys as commands.
+
 ```
 npm ci && npm run build          # the page, from the repository root
 cmake -B native/build -S native -G Ninja -DCMAKE_OSX_ARCHITECTURES=arm64
@@ -22,19 +30,45 @@ list. `-G "Unix Makefiles"` works as well as Ninja.
 | | |
 | --- | --- |
 | `plugin/PluginEditor` | A `WebBrowserComponent` serving the page from `Contents/Resources/web` through JUCE's `ResourceProvider` (a `juce://` origin, a secure context — IndexedDB works, so the board persists). Native functions add what a web view lacks: MIDI, a save dialog, opening links in the real browser, and a log for the page's errors. |
-| `plugin/PluginProcessor` | Takes the MIDI a host (or, in the standalone, your controllers) delivers and queues it for the page. |
+| `plugin/PluginProcessor` | Takes the MIDI a host (or, in the standalone, your controllers) delivers: queues it for the page, and (AU / VST3) plays it through the engine. Saves the engine's sounds and settings with the session. |
+| `plugin/SoundLibrary` | The page's sounds as the engine needs them; rebuilds the engine's `Performance` on every change. `SampleStore` keeps decoded samples, shared by every instance and cached on disk (`~/Library/Application Support/WaveContour/SSB/samples`), so a reopened session plays before its editor loads. |
+| `engine/` | The native engine: a port of `src/audio` (voice, engine, master FX) and the note logic in `src/stores/board.ts`. Allocation- and lock-free on the audio thread. |
 | `core/` | No JUCE: `MidiQueue`, the wait-free ring between the audio thread and the editor. Tested on its own. |
+| `tools/ssb-host` | Loads the built plugin like a DAW, opens the editor (so the page runs and syncs), plays MIDI from a real-time-paced audio thread and records the output. |
 | `cmake/` | Copying the built page into each bundle and re-sealing it (adding files breaks a code signature, and hardened hosts refuse a broken one). |
 | `tools/` | Signing, notarising, and pushing the signing secrets to GitHub. See `packaging/SIGNING.md`. |
 | `../src/native/bridge.ts` | The page's half: detects the native web view, receives `ssbMidi` events, calls native functions. In a browser it is inert. |
+| `../src/native/engineSync.ts` | Keeps the engine in step with the board (sounds, patches, master, pad notes; only what changed) and uploads each sample once. |
 
 **The standalone** opens every MIDI input it finds on launch, so a controller plugged in before
 starting just plays. **Options** (top left) picks inputs and the audio device.
 
-**In a DAW** the plugin receives the track's MIDI and the page plays it, but a web view gives no
-way to capture its audio, so the sound leaves through the system output rather than the plugin's
-buses — it plays, it just isn't on the track. The next step is a native engine that renders into
-`processBlock`, with the page as its editor.
+---
+
+## The engine
+
+It reproduces what the page's Web Audio graph does, down to the details that change the sound:
+Web Audio's biquad formulas (low / high-pass Q in dB), the page's linear ADSR, `StereoPannerNode`'s
+pan law (and the fact that every page voice reaches its panner as stereo), the ConvolverNode's
+normalisation of the page's noise impulses, and FM from a VCO held per 128-sample render quantum
+(the page drives a k-rate `detune`). Measured against the page with `ssb-host`: FM PIANO's level
+matches to 0.1 % dry and its envelope and harmonics match with chorus and reverb on.
+
+**Ported:** pads (trigger modes, choke groups, clip, repeat, loop), keyboard play of the selected
+patch (poly / mono, glide, MPE bend / pressure / timbre, the sustain pedal), patches' VCO slots
+(MIX / MOD, TRACK / FIXED, transpose, fine, level) with VCO 1–3 as audio-rate sources, the mod
+matrix (LFO shapes including random / smooth, mod wheel, aftertouch, velocity, bend, timbre),
+amp and filter envelopes, the filter and 3-band EQ, per-sound delay and reverb, master chorus /
+delay / reverb / volume, and SFZ zones (key / velocity / round robin / random layers, loops,
+one-shots, release triggers with rt_decay, locc / hicc, the *_onccN modifiers, region filters and
+envelopes).
+
+**Not yet:** grain clouds and STRETCH mode play as tape; SFZ region LFOs are skipped. The pads
+don't light up for notes the engine plays (the page's LEDs follow its own voices). Every instance
+in a host shares one board (the web view's storage is per application).
+
+Per-sound delay and reverb run on buses shared by every voice with the same settings; both
+effects are linear, so that is the same sound as a copy per voice, for a fraction of the work.
 
 ---
 
@@ -75,6 +109,16 @@ remember a plugin by those two codes alone, so they never change after a release
 ---
 
 ## Validating
+
+```
+# the engine on its own: pitch, envelopes, repeat, choke, zones, glide, filter, FM, sustain, FX
+ctest --test-dir native/build --output-on-failure
+
+# the whole thing: page -> sync -> engine -> audio. SSB_PROBE_SETUP sets the board up.
+SSB_PROBE_DELAY_MS=5000 SSB_PROBE_SETUP="const b = __ssb.board; b.selectPatch(b.patches[0].id); b.master.play = true" \
+  native/build/tools/ssb-host_artefacts/RelWithDebInfo/ssb-host.app/Contents/MacOS/ssb-host \
+  native/build/plugin/SsbInstrument_artefacts/RelWithDebInfo/VST3/SSB.vst3 out.wav --note 69 --wait 7
+```
 
 ```
 native/tools/macos-sign.sh native/build/plugin      # Developer ID from your login keychain

@@ -29,6 +29,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)   # for editors (clangd): native/build/compile_commands.json
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
@@ -36,6 +37,7 @@ endif()
 
 option(SSB_BUILD_PLUGIN "Build the AU / VST3 / Standalone targets" ON)
 option(SSB_BUILD_TESTS  "Build the unit tests" ON)
+option(SSB_BUILD_TOOLS  "Build ssb-host, the plugin test host" ON)
 option(SSB_SANITIZE     "Build with ASan and UBSan" OFF)
 option(SSB_INSTALL_AFTER_BUILD "Copy the built plugins into your own plugin folders" OFF)
 
@@ -104,11 +106,17 @@ if(SSB_SANITIZE)
     add_link_options(-fsanitize=address,undefined)
 endif()
 
-# The sound engine: plain C++, no JUCE, testable without a host. @see core/README
+# No JUCE: the MIDI queue between the audio thread and the page.
 add_subdirectory(core)
 
+# The sound engine (uses JUCE's DSP module): shared by the plugin, the tests and ssb-render.
 if(SSB_BUILD_PLUGIN)
+    add_subdirectory(engine)
     add_subdirectory(plugin)
+endif()
+
+if(SSB_BUILD_PLUGIN AND SSB_BUILD_TOOLS)
+    add_subdirectory(tools)
 endif()
 
 if(SSB_BUILD_TESTS)

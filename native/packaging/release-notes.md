@@ -10,5 +10,6 @@ Super Sound Board: sampler, synth and soundboard, as a desktop app and a plugin.
 
 **Windows**: `SSB.vst3` into `C:\Program Files\Common Files\VST3`, and the Standalone anywhere.
 
-In a DAW the plugin takes the track's MIDI, but its sound still comes from the page's own audio
-output (your system audio device) rather than the track. Rendering inside the DAW is on the way.
+In a DAW, SSB renders on the track with its own engine and keeps playing with its window closed;
+open the window once so the board is sent to it (after that it is saved with the session). Grain
+clouds play as plain samples in the plugin for now; the standalone and the web app have them.

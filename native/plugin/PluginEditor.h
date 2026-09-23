@@ -27,6 +27,7 @@ private:
 
     /** Held while a save dialog is open: it is asynchronous and outlives the call that opened it. */
     std::unique_ptr<juce::FileChooser> chooser;
+    int meterTick { 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SsbEditor)
 };

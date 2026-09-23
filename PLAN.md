@@ -296,3 +296,13 @@ SFZ preprocessing (`lib/sfz.ts`) is one left-to-right scan for `#define`, `#incl
 mid-line and redefinitions apply to what follows. `normalisePath` keeps leading `..`. The library finds includes by
 parsing repeatedly until nothing new is requested (handles macro-built include paths), and for sfzinstruments repos
 `repoSampleFinder` maps each sample to a tree path (exact → case-insensitive → path tail).
+
+## 24. Native app and plugin
+
+`native/` (JUCE 8): one instrument in three formats whose editor is the built page, served from the bundle
+(`juce://`, a secure context). The Standalone lets the page play itself and forwards MIDI to it; the AU / VST3
+render with `native/engine`, a port of the page's engine, kept in sync by `src/native/engineSync.ts` (sounds,
+patch layers and meta as JSON, samples as planar float32 once, cached on disk). The page's own AudioContext is
+suspended there (`engine.external`) and `board.press/release/noteOn/noteOff` become `ssbCommand`s; host MIDI is
+played by the engine directly. `tools/ssb-host` drives the built plugin end to end; `.github/workflows/native.yml`
+builds universal + Windows, signs / notarises when the secrets exist and releases on `v*` tags.

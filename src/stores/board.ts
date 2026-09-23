@@ -4,7 +4,7 @@ import { del, get, keys, set } from 'idb-keyval'
 import * as engine from '../audio/engine'
 import { computePeaks } from '../audio/peaks'
 import { connectMidi, parseMidi, type MidiEvent } from '../audio/midi'
-import { inNative, nativeInfo, onNativeMidi, saveFile } from '../native/bridge'
+import { callNative, inNative, nativeInfo, onNativeMidi, saveFile } from '../native/bridge'
 import { History } from '../lib/history'
 import { ClockTracker } from '../lib/midiClock'
 import { THEMES, themeById } from '../theme/themes'
@@ -466,6 +466,20 @@ export const useBoard = defineStore('board', () => {
     pushGlobalFx()
   }, { immediate: true })
   watch(() => perform.sustain, (on) => !on && releaseSustained())
+  // in the plugin the header's performance controls reach the engine as MIDI (host MIDI already
+  // did, so these echo the same values back; harmless)
+  if (engine.external) {
+    const midi7 = (v: number) => Math.max(0, Math.min(127, Math.round(v * 127)))
+    const send = (bytes: number[]) => toEngine({ type: 'midi', bytes })
+    watch(() => perform.mod, (v) => send([0xb0, 1, midi7(v)]))
+    watch(() => perform.sustain, (on) => send([0xb0, 64, on ? 127 : 0]))
+    watch(() => perform.timbre, (v) => send([0xb0, 74, midi7(v)]))
+    watch(() => perform.pressure, (v) => send([0xd0, midi7(v), 0]))
+    watch(() => perform.bend, (v) => {
+      const raw = Math.max(0, Math.min(16383, Math.round(8192 + v * (v >= 0 ? 8191 : 8192))))
+      send([0xe0, raw & 0x7f, raw >> 7])
+    })
+  }
   watch(() => perform.mod, (v) => {
     engine.setModWheel(v)
     engine.setCC(1, v)
@@ -679,9 +693,16 @@ export const useBoard = defineStore('board', () => {
     }
   }
 
+  /** In the plugin the native engine plays; the page sends it what was clicked or typed. */
+  const toEngine = (command: Record<string, unknown>) => void callNative('ssbCommand', command).catch(() => {})
+
   function press(id: string, velocity = 1) {
     const sound = resolveSound(id)
     if (!sound) return
+    if (engine.external) {
+      pressed.add(id)
+      return toEngine({ type: 'press', id, velocity })
+    }
     engine.resume()
     pressed.add(id)
     const { mode, choke } = sound.settings
@@ -699,6 +720,7 @@ export const useBoard = defineStore('board', () => {
 
   function release(id: string) {
     pressed.delete(id)
+    if (engine.external) return toEngine({ type: 'release', id })
     const sound = resolveSound(id)
     if (sound?.settings.mode !== 'hold') return
     if (perform.sustain) sustainedPads.add(id)
@@ -753,6 +775,10 @@ export const useBoard = defineStore('board', () => {
   function noteOn(note: number, velocity = 1, channel?: number) {
     const sound = playable.value
     if (!sound) return
+    if (engine.external) {
+      heldNotes.value = [...heldNotes.value.filter((n) => n !== note), note]
+      return toEngine({ type: 'noteOn', note, velocity, channel: channel ?? 0 })
+    }
     engine.resume()
     const glide = master.glide
     heldNotes.value = [...heldNotes.value.filter((n) => n !== note), note]
@@ -784,6 +810,7 @@ export const useBoard = defineStore('board', () => {
 
   function noteOff(note: number, channel?: number) {
     heldNotes.value = heldNotes.value.filter((n) => n !== note)
+    if (engine.external) return toEngine({ type: 'noteOff', note, channel: channel ?? 0 })
     if (master.mono && !isMember(channel)) {
       if (!monoVoices.length) return
       const top = heldNotes.value.at(-1)
@@ -827,6 +854,7 @@ export const useBoard = defineStore('board', () => {
   }
 
   function panic() {
+    if (engine.external) toEngine({ type: 'panic' })
     engine.stopAll()
     pressed.clear()
     allNotesOff()
@@ -1251,10 +1279,13 @@ export const useBoard = defineStore('board', () => {
           midi.learning = null
           return
         }
+        // in the plugin the engine already played the host's notes itself
+        if (engine.external) return
         if (master.play) return noteOn(e.note, e.velocity, e.channel)
         for (const s of padsForNote(e.note)) press(s.id, e.velocity)
         return
       case 'noteOff':
+        if (engine.external) return
         if (master.play) return noteOff(e.note, e.channel)
         for (const s of padsForNote(e.note)) release(s.id)
         return
@@ -1315,7 +1346,7 @@ export const useBoard = defineStore('board', () => {
     undo, redo, savePreset, loadPreset, deletePreset, copySettings, pasteSettings, openMatrix, onMidi,
     patches, patchTagFilter, patchTags, visiblePatches, patchFacets, togglePatchTag,
     currentFacets, currentFilter, currentTotal, currentShown, toggleCurrentTag, clearCurrentTags,
-    selectedPatch, patchMain, playable, patchNumber, resolveSound, layerSound, patchLayerIds,
+    selectedPatch, patchMain, playable, patchNumber, resolveSound, layerSound, patchLayerIds, vcoLinks,
     installFactory, selectPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, assignSlot, slotsOf, toggleSlot, toggleFav,
     pressPatch, releasePatch, patchIdOfLayer,
     tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,

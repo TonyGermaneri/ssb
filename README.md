@@ -6,7 +6,8 @@ the *Simple* Sound Board — it outgrew the name, kept the acronym.)
 
 **Play it:** <https://tonygermaneri.github.io/ssb/> (GitHub Pages, deployed from `main`).
 **Desktop app / AU / VST3:** tagged releases on GitHub; built from [`native/`](native/README.md), which serves
-this same page as the app's window and feeds it your MIDI.
+this same page as the window. The app plays like the browser; the AU / VST3 render with a native engine that
+follows the page, so SSB sits on a DAW track.
 
 ```sh
 npm install

@@ -4,6 +4,13 @@ import { LfoSource } from './lfo'
 import { isSynthAudioId, makeSynthBuffer, type SynthWave } from './synthWaves'
 import { MasterFx } from './masterFx'
 import { Voice, type ModHub, type VoiceOptions } from './voice'
+import { nativeEngine } from '../native/bridge'
+
+/**
+ * In the AU / VST3 the native engine makes the sound (native/engine) and this one stays silent:
+ * the AudioContext is suspended, no voice starts, and the VU follows the plugin's levels.
+ */
+export const external = nativeEngine()
 
 export interface VoiceInfo {
   id: number
@@ -76,6 +83,7 @@ export function getCtx(): AudioContext {
   hub.cc[11] = 1
   applyGlobalLfos()
   startMeterLoop()
+  if (external) void ctx.suspend()
   return ctx
 }
 
@@ -154,6 +162,7 @@ export function setPolyPressure(note: number, v: number) {
 
 /** Browsers start AudioContexts suspended until a user gesture. */
 export function resume() {
+  if (external) return
   const c = getCtx()
   if (c.state !== 'running') void c.resume()
 }
@@ -218,6 +227,7 @@ export function publish() {
 }
 
 export function startVoice(sound: Sound, opts: VoiceOptions & { silent?: boolean } = {}): Voice | null {
+  if (external) return null
   const audioId = opts.zone?.audioId ?? sound.audioId
   const buffer = getBuffer(audioId)
   if (!buffer) return null
@@ -282,7 +292,7 @@ export function readLevels(): [number, number] {
 
 function startMeterLoop() {
   const frame = () => {
-    if (ctx) {
+    if (ctx && !external) {
       clock.value = ctx.currentTime
       const [l, r] = levels.value
       const [pl, pr] = readLevels()
@@ -292,4 +302,15 @@ function startMeterLoop() {
     requestAnimationFrame(frame)
   }
   requestAnimationFrame(frame)
+}
+
+/** The native engine's output level (plugin), for the VU. */
+export function setExternalLevels(l: number, r: number) {
+  levels.value = [Math.min(1, l), Math.min(1, r)]
+}
+
+/** Also send the master output to `node` (measurements: comparing this engine with the plugin's). */
+export function tapOutput(node: AudioNode) {
+  getCtx()
+  master.connect(node)
 }

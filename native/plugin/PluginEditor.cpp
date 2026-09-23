@@ -72,6 +72,8 @@ SsbEditor::SsbEditor (SsbProcessor& p)
           .withNativeIntegrationEnabled()
           .withKeepPageLoadedWhenBrowserIsHidden()
           .withResourceProvider ([this] (const auto& path) { return provide (path); })
+          // read synchronously by the page at startup: who makes the sound
+          .withInitialisationData ("ssbEngine", p.usesEngine)
           .withNativeFunction ("ssbReady", [this] (const juce::Array<juce::var>&, auto complete)
           {
               auto* info = new juce::DynamicObject();
@@ -79,6 +81,7 @@ SsbEditor::SsbEditor (SsbProcessor& p)
               info->setProperty ("standalone", plugin.wrapperType == juce::AudioProcessor::wrapperType_Standalone);
               info->setProperty ("version", JucePlugin_VersionString);
               info->setProperty ("state", plugin.pageState);
+              info->setProperty ("engine", plugin.usesEngine);
               complete (juce::var (info));
           })
           .withNativeFunction ("ssbSetState", [this] (const juce::Array<juce::var>& args, auto complete)
@@ -97,6 +100,59 @@ SsbEditor::SsbEditor (SsbProcessor& p)
                   parts.add (a.toString());
               juce::Logger::writeToLog ("ssb page: " + parts.joinIntoString (" "));
               complete (juce::var (true));
+          })
+          .withNativeFunction ("ssbSync", [this] (const juce::Array<juce::var>& args, auto complete)
+          {
+              // { sounds?: [sound json], meta?: {...} } from the page; answers the audioIds the
+              // engine still needs (neither sent yet nor in the disk cache).
+              if (! args.isEmpty())
+              {
+                  const auto msg = juce::JSON::parse (args[0].toString());
+                  if (const auto sounds = msg.getProperty ("sounds", {}); sounds.isArray())
+                      plugin.library.setSounds (sounds);
+                  if (const auto meta = msg.getProperty ("meta", {}); meta.isObject())
+                      plugin.library.setMeta (meta);
+              }
+              complete (juce::var (plugin.library.missingAudio()));
+          })
+          .withNativeFunction ("ssbAudio", [this] (const juce::Array<juce::var>& args, auto complete)
+          {
+              // (audioId, sampleRate, channels, base64 of planar float32)
+              if (args.size() < 4)
+                  return complete (juce::var (false));
+              juce::MemoryOutputStream decoded;
+              if (! juce::Base64::convertFromBase64 (decoded, args[3].toString()))
+                  return complete (juce::var (false));
+              const auto channels = juce::jlimit (1, 2, (int) args[2]);
+              const auto frames = decoded.getDataSize() / sizeof (float) / (size_t) channels;
+              auto sample = std::make_shared<ssb::Sample>();
+              sample->rate = (double) args[1];
+              const auto* data = static_cast<const float*> (decoded.getData());
+              for (int ch = 0; ch < channels; ++ch)
+                  sample->channels.emplace_back (data + (size_t) ch * frames, data + (size_t) (ch + 1) * frames);
+              plugin.library.addSample (args[0].toString().toStdString(), sample);
+              complete (juce::var (true));
+          })
+          .withNativeFunction ("ssbCommand", [this] (const juce::Array<juce::var>& args, auto complete)
+          {
+              // A pad click or a computer-keyboard note from the page, for the engine to play.
+              using T = ssb::Command::Type;
+              if (args.isEmpty())
+                  return complete (juce::var (false));
+              const auto& c = args[0];
+              const auto type = c.getProperty ("type", {}).toString();
+              const T t = type == "press" ? T::press : type == "release" ? T::release : type == "noteOn" ? T::noteOn
+                        : type == "noteOff" ? T::noteOff : type == "cc" ? T::cc : type == "midi" ? T::midi : T::panic;
+              auto cmd = ssb::Command::make (t, c.getProperty ("id", {}).toString().toStdString(),
+                                             (float) (double) c.getProperty ("velocity", 1.0));
+              cmd.note = (uint8_t) juce::jlimit (0, 127, (int) c.getProperty ("note", 60));
+              cmd.channel = (uint8_t) juce::jlimit (0, 15, (int) c.getProperty ("channel", 0));
+              cmd.cc = (uint8_t) juce::jlimit (0, 127, (int) c.getProperty ("cc", 0));
+              cmd.value = (float) (double) c.getProperty ("value", 0.0);
+              if (auto* bytes = c.getProperty ("bytes", {}).getArray())
+                  for (int i = 0; i < 3 && i < bytes->size(); ++i)
+                      cmd.bytes[i] = (uint8_t) juce::jlimit (0, 255, (int) (*bytes)[i]);
+              complete (juce::var (plugin.engine.post (cmd)));
           })
           .withNativeFunction ("ssbOpenUrl", [] (const juce::Array<juce::var>& args, auto complete)
           {
@@ -193,6 +249,17 @@ void SsbEditor::resized()
 
 void SsbEditor::timerCallback()
 {
+    // the engine's output level for the page's VU meter, ~30 times a second
+    if (plugin.usesEngine && ++meterTick >= 8)
+    {
+        meterTick = 0;
+        auto* m = new juce::DynamicObject();
+        m->setProperty ("l", plugin.engine.peak (0));
+        m->setProperty ("r", plugin.engine.peak (1));
+        m->setProperty ("voices", plugin.engine.activeVoices());
+        browser.emitEventIfBrowserIsVisible ("ssbMeter", juce::var (m));
+    }
+
     // Everything that arrived since the last tick, as one event: [[status, d1, d2], ...].
     juce::Array<juce::var> batch;
     ssb::MidiMessage m;

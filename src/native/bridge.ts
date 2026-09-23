@@ -38,6 +38,18 @@ const functions = (): unknown[] => window.__JUCE__?.initialisationData?.__juce__
 /** Running inside SSB's own app / plugin (not merely any JUCE web view). */
 export const inNative = (): boolean => !!backend() && functions().includes('ssbReady')
 
+/**
+ * In a DAW (AU / VST3) the native engine makes the sound and the page is only the editor. Read
+ * from the initialisation data, which JUCE injects before any page script runs, so it is known
+ * synchronously at startup (the audio engine decides at import time).
+ */
+export const nativeEngine = (): boolean => inNative() && window.__JUCE__?.initialisationData?.ssbEngine?.[0] === true
+
+/** Events from the native side (ssbMidi, ssbMeter, …). */
+export function onNative<T>(eventId: string, fn: (payload: T) => void) {
+  backend()?.addEventListener(eventId, fn as (payload: never) => void)
+}
+
 let nextId = 0
 const pending = new Map<number, (result: unknown) => void>()
 let listening = false

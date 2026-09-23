@@ -1,20 +1,24 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <ssb/Engine.h>
 #include <ssb/MidiQueue.h>
 
-/**
-    SSB as an instrument. Everything the user sees and hears is the page (the editor); the
-    processor's job so far is to take the MIDI a host -- or, in the standalone, your MIDI
-    controllers -- delivers and hand it to the page, which plays it exactly as it plays Web MIDI in
-    a browser.
+#include "SoundLibrary.h"
 
-    The page's sound currently leaves through the web view's own audio output (the system device),
-    not through this processor's buses: a web view offers no way to capture its audio. The
-    standalone doesn't mind. In a DAW it means SSB plays but isn't on the track -- the native
-    engine, which renders into processBlock, is the next step. @see ../README.md
+/**
+    SSB as an instrument. The editor is the page; the sound depends on where SSB is running:
+
+    - **AU / VST3**: the native engine (engine/) renders into processBlock, so SSB is on the
+      track and plays with its editor closed. The page is the editor: it pushes its sounds and
+      settings here (SoundLibrary) and sends clicks and computer-keyboard notes as commands.
+    - **Standalone**: the page plays itself through the web view's audio output, exactly as in a
+      browser (grains and all); the processor hands it the MIDI from your controllers.
+
+    Host MIDI is also forwarded to the page in both, for MIDI learn and the on-screen state.
 */
-class SsbProcessor final : public juce::AudioProcessor
+class SsbProcessor final : public juce::AudioProcessor,
+                           private juce::Timer
 {
 public:
     SsbProcessor();
@@ -46,6 +50,11 @@ public:
     /** Host / controller MIDI on its way to the page. Audio thread pushes, editor pops. */
     ssb::MidiQueue midiToPage;
 
+    /** True in a DAW (AU / VST3): the native engine makes the sound. */
+    const bool usesEngine;
+    ssb::Engine engine;
+    ssb::SoundLibrary library { engine };
+
     /** The editor's size, kept with the session so it reopens as it was left. */
     int editorWidth { 1600 }, editorHeight { 1000 };
 
@@ -54,5 +63,10 @@ public:
     juce::String pageState;
 
 private:
+    void timerCallback() override { engine.collectGarbage(); }
+
+    std::vector<ssb::MidiEvent> events;
+    std::vector<float> scratch;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SsbProcessor)
 };

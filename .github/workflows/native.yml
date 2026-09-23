@@ -222,6 +222,18 @@ jobs:
           grep -E 'Starting tests in' pluginval.log | tail -1
           exit "$status"
 
+      # The whole path a DAW exercises: load the VST3, open its editor (the page runs, installs the
+      # factory patches and syncs them to the engine), play a note from a real-time audio thread,
+      # and fail on silence. auval and pluginval never open the editor, so they cannot see this.
+      - name: End to end
+        env:
+          SSB_PROBE_DELAY_MS: '6000'
+          SSB_PROBE_SETUP: "const b = __ssb.board; b.selectPatch(b.patches[0].id); b.master.play = true"
+        run: |
+          native/build/tools/ssb-host_artefacts/RelWithDebInfo/ssb-host.app/Contents/MacOS/ssb-host \
+            native/build/plugin/SsbInstrument_artefacts/RelWithDebInfo/VST3/SSB.vst3 end-to-end.wav \
+            --note 69 --wait 9 --hold 1.5
+
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -326,7 +338,7 @@ jobs:
       - name: Configure
         shell: bash
         run: |
-          cmake -B native/build -S native -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          cmake -B native/build -S native -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSSB_BUILD_TOOLS=OFF \
             -DJUCE_WEBVIEW2_PACKAGE_LOCATION="$WEBVIEW2_DIR"
 
       - name: Build

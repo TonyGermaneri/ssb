@@ -42,7 +42,8 @@ juce_add_plugin(SsbInstrument
 target_sources(SsbInstrument PRIVATE
     PluginProcessor.cpp
     PluginEditor.cpp
-    PluginPaths.cpp)
+    PluginPaths.cpp
+    SoundLibrary.cpp)
 
 target_compile_definitions(SsbInstrument PUBLIC
     JUCE_WEB_BROWSER=1
@@ -56,7 +57,9 @@ endif()
 target_link_libraries(SsbInstrument
   PRIVATE
     ssb_core
+    ssb_engine
     juce::juce_audio_utils
+    juce::juce_dsp
     juce::juce_gui_extra
   PUBLIC
     juce::juce_recommended_config_flags
