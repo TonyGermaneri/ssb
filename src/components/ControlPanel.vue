@@ -1,17 +1,24 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useBoard } from '../stores/board'
+import { buffers } from '../audio/engine'
 import {
   fmtCents, fmtChoke, fmtDb, fmtDensity, fmtHz, fmtMs, fmtNum, fmtOct, fmtPan, fmtPct, fmtQ, fmtRatio,
   fmtRepeat, fmtSec, fmtSemis, fmtSemisJitter, midiNoteName,
 } from '../lib/format'
-import { FILTER_LABEL, TRIGGER_MODE_INFO, TRIGGER_MODES, type Sound } from '../types'
+import { joinTags, splitTags } from '../lib/tags'
+import { FILTER_LABEL, type Patch, soundAudioIds, TRIGGER_MODE_INFO, TRIGGER_MODES, type Sound } from '../types'
 import Knob from './Knob.vue'
 import Waveform from './Waveform.vue'
 import KeyMap from './KeyMap.vue'
 
-/** wide: spread across the full row (pads view); otherwise a fixed-width column (grid side panel) */
-const props = defineProps<{ sound: Sound; hue: number; wide?: boolean }>()
+/**
+ * wide: spread across the full row (pads view); otherwise a fixed-width column (rack).
+ * role: shown in the rack as the patch or as one of its VCOs (VCOs don't nest, so they hide their own VCO section).
+ */
+const props = defineProps<{ sound: Sound; hue: number; wide?: boolean; role?: string; patch?: Patch }>()
+/** a pad in the Sounds catalog (not a patch layer) */
+const isPad = computed(() => !props.role || props.role === 'sound')
 const board = useBoard()
 const s = computed(() => props.sound.settings)
 const confirmDelete = ref(false)
@@ -20,6 +27,15 @@ const presetMenu = ref(false)
 const presetName = ref('')
 const routeCount = computed(() => s.value.mod.routes.length)
 const fmtNote = (v: number) => midiNoteName(Math.round(v))
+/** grain SIZE reaches the whole sample (longest zone for SFZ); 500 ms until the audio is decoded */
+const grainMax = () =>
+  Math.max(500, Math.ceil(Math.max(0, ...soundAudioIds(props.sound).map((id) => buffers.get(id)?.duration ?? 0)) * 1000))
+/** folded sections show just their title bar (state shared by every panel) */
+const isFolded = (key: string) => board.master.folded.includes(key)
+function toggleFold(key: string) {
+  const f = board.master.folded
+  board.master.folded = isFolded(key) ? f.filter((k) => k !== key) : [...f, key]
+}
 const fmtBend = (v: number) => `±${Math.round(v)}st`
 
 function savePreset() {
@@ -44,23 +60,28 @@ function doReset() {
         <Waveform :sound="sound" :hue="hue" :height="wide ? 72 : 52" />
         <KeyMap v-if="sound.zones?.length" :sound="sound" />
       </div>
-    <div class="fields">
+    <div v-if="isPad" class="fields">
       <v-text-field v-model="s.name" label="NAME" density="compact" variant="outlined" hide-details spellcheck="false" />
       <v-combobox
-        :model-value="s.tag"
+        :model-value="splitTags(s.tag)"
         :items="board.tags"
-        label="TAG"
+        label="TAGS"
         density="compact"
         variant="outlined"
+        multiple
+        chips
+        closable-chips
         hide-details
-        @update:model-value="(v: string | null) => (s.tag = (v ?? '').trim())"
+        @update:model-value="(v: string[]) => (s.tag = joinTags(v.flatMap((t) => splitTags(t))))"
       />
     </div>
     </div>
 
     <div class="modules">
-      <section class="module">
-        <h4>PLAY</h4>
+      <section class="module" :class="{ folded: isFolded('play') }">
+        <h4>PLAY
+          <button class="fold" :title="isFolded('play') ? 'Show' : 'Fold'" @click="toggleFold('play')"><i /></button>
+        </h4>
         <div class="row">
           <Knob v-model="s.volume" label="VOL" :max="1.5" :default="1" :format="fmtPct" />
           <Knob v-model="s.pan" label="PAN" :min="-1" :max="1" :default="0" bipolar :format="fmtPan" />
@@ -69,7 +90,7 @@ function doReset() {
         </div>
       </section>
 
-      <section class="module">
+      <section class="module" :class="{ folded: isFolded('tune') }">
         <h4>
           TUNE
           <button
@@ -82,6 +103,7 @@ function doReset() {
           >
             {{ s.timeMode === 'tape' ? 'TAPE' : 'STRETCH' }}
           </button>
+          <button class="fold" :title="isFolded('tune') ? 'Show' : 'Fold'" @click="toggleFold('tune')"><i /></button>
         </h4>
         <div class="row">
           <Knob v-model="s.pitch" label="PITCH" :min="-24" :max="24" :step="1" :default="0" bipolar :format="fmtSemis" />
@@ -90,8 +112,10 @@ function doReset() {
         </div>
       </section>
 
-      <section class="module">
-        <h4>KEYS</h4>
+      <section class="module" :class="{ folded: isFolded('keys') }">
+        <h4>KEYS
+          <button class="fold" :title="isFolded('keys') ? 'Show' : 'Fold'" @click="toggleFold('keys')"><i /></button>
+        </h4>
         <div class="row">
           <Knob v-model="s.rootNote" label="ROOT" :min="0" :max="127" :step="1" :default="60" :format="fmtNote" />
           <Knob v-model="s.velAmount" label="VEL AMT" :default="1" :format="fmtPct" />
@@ -99,16 +123,20 @@ function doReset() {
         </div>
       </section>
 
-      <section class="module">
-        <h4>CLIP</h4>
+      <section class="module" :class="{ folded: isFolded('clip') }">
+        <h4>CLIP
+          <button class="fold" :title="isFolded('clip') ? 'Show' : 'Fold'" @click="toggleFold('clip')"><i /></button>
+        </h4>
         <div class="row">
           <Knob v-model="s.clipIn" label="IN" :default="0" :format="fmtPct" />
           <Knob v-model="s.clipOut" label="OUT" :default="1" :format="fmtPct" />
         </div>
       </section>
 
-      <section class="module">
-        <h4>ADSR</h4>
+      <section class="module" :class="{ folded: isFolded('adsr') }">
+        <h4>ADSR
+          <button class="fold" :title="isFolded('adsr') ? 'Show' : 'Fold'" @click="toggleFold('adsr')"><i /></button>
+        </h4>
         <div class="row">
           <Knob v-model="s.attack" label="A" :min="0.001" :max="5" curve="log" :default="0.001" :format="fmtSec" />
           <Knob v-model="s.decay" label="D" :min="0.001" :max="5" curve="log" :default="0.2" :format="fmtSec" />
@@ -117,12 +145,13 @@ function doReset() {
         </div>
       </section>
 
-      <section class="module">
+      <section class="module" :class="{ folded: isFolded('filter') }">
         <h4>
           FILTER
           <button class="chip on" title="Filter type — click to cycle LP / HP / BP" @click="board.cycleFilter(sound.id)">
             {{ FILTER_LABEL[s.filterType] }}
           </button>
+          <button class="fold" :title="isFolded('filter') ? 'Show' : 'Fold'" @click="toggleFold('filter')"><i /></button>
         </h4>
         <div class="row">
           <Knob v-model="s.cutoff" label="CUTOFF" :min="20" :max="20000" curve="log" :default="20000" :format="fmtHz" color="secondary" />
@@ -130,8 +159,10 @@ function doReset() {
         </div>
       </section>
 
-      <section class="module">
-        <h4>FILTER ADSR</h4>
+      <section class="module" :class="{ folded: isFolded('filter-adsr') }">
+        <h4>FILTER ADSR
+          <button class="fold" :title="isFolded('filter-adsr') ? 'Show' : 'Fold'" @click="toggleFold('filter-adsr')"><i /></button>
+        </h4>
         <div class="row">
           <Knob v-model="s.fEnvAmount" label="AMT" :min="-5" :max="5" :step="0.1" :default="0" bipolar :format="fmtOct" color="secondary" />
           <Knob v-model="s.fAttack" label="A" :min="0.001" :max="5" curve="log" :default="0.001" :format="fmtSec" color="secondary" />
@@ -141,8 +172,10 @@ function doReset() {
         </div>
       </section>
 
-      <section class="module">
-        <h4>EQ</h4>
+      <section class="module" :class="{ folded: isFolded('eq') }">
+        <h4>EQ
+          <button class="fold" :title="isFolded('eq') ? 'Show' : 'Fold'" @click="toggleFold('eq')"><i /></button>
+        </h4>
         <div class="row">
           <Knob v-model="s.eqLow" label="BASS" :min="-12" :max="12" :step="0.5" :default="0" bipolar :format="fmtDb" color="secondary" />
           <Knob v-model="s.eqMid" label="MID" :min="-12" :max="12" :step="0.5" :default="0" bipolar :format="fmtDb" color="secondary" />
@@ -150,24 +183,28 @@ function doReset() {
         </div>
       </section>
 
-      <section class="module wide">
-        <h4>GRAIN</h4>
+      <section class="module wide" :class="{ folded: isFolded('grain') }">
+        <h4>GRAIN
+          <button class="fold" :title="isFolded('grain') ? 'Show' : 'Fold'" @click="toggleFold('grain')"><i /></button>
+        </h4>
         <div class="row">
-          <Knob v-model="s.grainSize" label="SIZE" :max="500" :step="1" :default="0" :format="fmtMs" color="accent" />
+          <Knob v-model="s.grainSize" label="SIZE" :max="grainMax()" curve="pow" :step="1" :default="0" :format="fmtMs" color="accent" />
           <Knob v-model="s.grainPos" label="POS" :default="0.5" :format="fmtPct" color="accent" />
           <Knob v-model="s.grainWidth" label="WIDTH" :default="0" :format="fmtPct" color="accent" />
-          <Knob v-model="s.grainDensity" label="DENSITY" :min="1" :max="8" :step="1" :default="2" :format="fmtDensity" color="accent" />
+          <Knob v-model="s.grainDensity" label="DENS" :min="1" :max="8" :step="1" :default="2" :format="fmtDensity" color="accent" />
           <Knob v-model="s.grainJitter" label="JITTER" :max="12" :step="0.1" :default="0" :format="fmtSemisJitter" color="accent" />
-          <Knob v-model="s.grainReverse" label="REVERSE" :default="0" :format="fmtPct" color="accent" />
+          <Knob v-model="s.grainReverse" label="REV" :default="0" :format="fmtPct" color="accent" />
           <Knob v-model="s.grainSpread" label="SPREAD" :default="0" :format="fmtPct" color="accent" />
-          <Knob v-model="s.grainStreams" label="STREAMS" :min="1" :max="8" :step="1" :default="1" :format="(v: number) => `${Math.round(v)}`" color="accent" />
-          <Knob v-model="s.grainScatter" label="SCATTER" :default="0" :format="fmtPct" color="accent" />
+          <Knob v-model="s.grainStreams" label="STRMS" :min="1" :max="8" :step="1" :default="1" :format="(v: number) => `${Math.round(v)}`" color="accent" />
+          <Knob v-model="s.grainScatter" label="SCATTR" :default="0" :format="fmtPct" color="accent" />
           <Knob v-model="s.grainDrift" label="DRIFT" :default="0" :format="fmtPct" color="accent" />
         </div>
       </section>
 
-      <section class="module">
-        <h4>DELAY</h4>
+      <section class="module" :class="{ folded: isFolded('delay') }">
+        <h4>DELAY
+          <button class="fold" :title="isFolded('delay') ? 'Show' : 'Fold'" @click="toggleFold('delay')"><i /></button>
+        </h4>
         <div class="row">
           <Knob v-model="s.delayTime" label="TIME" :min="0.01" :max="2" curve="log" :default="0.25" :format="fmtSec" color="success" />
           <Knob v-model="s.delayFeedback" label="FDBK" :max="0.9" :default="0.35" :format="fmtPct" color="success" />
@@ -175,8 +212,10 @@ function doReset() {
         </div>
       </section>
 
-      <section class="module">
-        <h4>REVERB</h4>
+      <section class="module" :class="{ folded: isFolded('reverb') }">
+        <h4>REVERB
+          <button class="fold" :title="isFolded('reverb') ? 'Show' : 'Fold'" @click="toggleFold('reverb')"><i /></button>
+        </h4>
         <div class="row">
           <Knob v-model="s.reverbSize" label="SIZE" :min="0.1" :max="6" :default="2" :format="fmtSec" color="success" />
           <Knob v-model="s.reverbDecay" label="DECAY" :min="0.5" :max="10" :default="3" :format="fmtNum" color="success" />
@@ -194,6 +233,7 @@ function doReset() {
         {{ modeInfo.label }}
       </button>
       <button
+        v-if="isPad"
         class="hw-btn"
         :class="{ blink: learning }"
         title="MIDI learn: click, then play a note"
@@ -204,13 +244,13 @@ function doReset() {
       </button>
       <button class="hw-btn" :class="{ lit: routeCount }" title="Modulation matrix for this pad" @click="board.openMatrix(sound.id)">
         <v-icon size="14" icon="mdi-matrix" />
-        MATRIX<span v-if="routeCount" class="badge">{{ routeCount }}</span>
+        <span class="lbl">MATRIX</span><span v-if="routeCount" class="badge">{{ routeCount }}</span>
       </button>
       <v-menu v-model="presetMenu" location="top" :close-on-content-click="false">
         <template #activator="{ props: act }">
           <button class="hw-btn" v-bind="act" title="Presets, copy / paste settings">
             <v-icon size="14" icon="mdi-bookmark-music" />
-            PRESETS
+            <span class="lbl">PRESETS</span>
           </button>
         </template>
         <div class="preset-menu" @pointerdown.stop @keydown.stop>
@@ -245,6 +285,15 @@ function doReset() {
           <div class="pm-hint">Presets skip name, tag, clip, root note and MIDI note.</div>
         </div>
       </v-menu>
+      <button
+        v-if="isPad"
+        class="hw-btn"
+        title="New patch from this sound (its settings become the patch's main layer)"
+        @click="board.newPatch(sound.id)"
+      >
+        <v-icon size="14" icon="mdi-plus-box-multiple" />
+        <span class="lbl">NEW PATCH</span>
+      </button>
       <v-spacer />
       <template v-if="confirmReset">
         <button class="hw-btn danger" @click="doReset">RESET?</button>
@@ -254,12 +303,13 @@ function doReset() {
       </template>
       <button v-else class="hw-btn" title="Reset all knobs to defaults (keeps name, tag, MIDI note)" @click="confirmReset = true">
         <v-icon size="14" icon="mdi-restore" />
-        RESET
+        <span class="lbl">RESET</span>
       </button>
-      <button class="hw-btn icon" title="Duplicate" @click="board.duplicate(sound.id)">
+      <button v-if="isPad" class="hw-btn icon" title="Duplicate" @click="board.duplicate(sound.id)">
         <v-icon size="16" icon="mdi-content-copy" />
       </button>
-      <template v-if="confirmDelete">
+      <template v-if="!isPad" />
+      <template v-else-if="confirmDelete">
         <button class="hw-btn danger" @click="board.remove(sound.id)">DELETE?</button>
         <button class="hw-btn icon" title="Cancel" @click="confirmDelete = false">
           <v-icon size="16" icon="mdi-close" />
@@ -348,17 +398,63 @@ function doReset() {
 .modules {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
 }
 .module {
   flex: 1 1 auto;
-  padding: 3px 4px 4px;
+  padding: 2px 4px 2px;
   border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: 4px;
   background: rgba(0, 0, 0, 0.18);
 }
 .module.wide {
   flex-basis: 100%;
+}
+.module {
+  position: relative;
+}
+.module h4 {
+  padding-right: 16px;
+}
+/* folded: title bar only, as narrow as it needs */
+.module.folded {
+  flex: 0 1 auto;
+  padding-bottom: 1px;
+}
+.module.folded > :not(h4) {
+  display: none;
+}
+.module.folded h4 {
+  margin-bottom: 0;
+  opacity: 0.7;
+}
+.fold {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  display: grid;
+  place-items: center;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  appearance: none;
+}
+/* a little triangle: ▼ open, ◀ folded */
+.fold i {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--text-mute);
+  transition: transform 120ms;
+}
+.folded .fold i {
+  transform: rotate(90deg);
+}
+.fold:hover i {
+  border-top-color: var(--c-primary);
 }
 .module h4 {
   display: flex;
@@ -391,12 +487,66 @@ function doReset() {
   flex-wrap: wrap;
   justify-content: space-around;
 }
+/* narrow panels (the rack's three slots): one row of grain knobs, icon-only footer buttons */
+.panel {
+  container-type: inline-size;
+}
+@container (max-width: 440px) {
+  .module.wide .row :deep(.knob) {
+    width: calc(var(--size) + 2px);
+  }
+  .module.wide .row :deep(.label) {
+    font-size: 6px;
+    letter-spacing: 0;
+  }
+  .footer .lbl {
+    display: none;
+  }
+}
+.module.folded {
+  align-self: flex-start;
+}
 .footer {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   margin-top: 8px;
+}
+.vco .sub {
+  font-family: 'VT323', monospace;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: var(--text-mute);
+}
+.slot {
+  padding: 3px 0 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.slot-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.slot .num {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 10px;
+  font-weight: 900;
+  color: var(--c-accent);
+}
+.picker {
+  flex: 1;
+  min-width: 0;
+}
+.picker :deep(.v-field) {
+  font-family: 'VT323', monospace;
+  font-size: 16px;
+  background: var(--lcd-bg);
+  color: var(--c-secondary);
+}
+.add-vco {
+  margin-top: 4px;
 }
 .badge {
   margin-left: 2px;

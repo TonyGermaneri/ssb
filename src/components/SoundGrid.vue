@@ -1,9 +1,66 @@
 <script setup lang="ts">
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useBoard } from '../stores/board'
+import type { Sound } from '../types'
 import SoundTile from './SoundTile.vue'
 
 const board = useBoard()
 defineEmits<{ add: [] }>()
+
+/*
+ * Virtualised card view: pads are packed into rows (how many fit comes from the measured width and pad scale;
+ * an open pad takes a row of its own for its full-width panel), and v-virtual-scroll only renders the rows on
+ * screen — so thousands of pads stay a few dozen DOM nodes.
+ */
+const PAD_W = 152
+const PAD_H = 104
+const TILE_PAD = 4 // tile padding, left + right
+const GAP = 4
+const SIDE = 24 // grid padding, left + right
+
+const wrap = ref<HTMLElement>()
+const width = ref(1200)
+let ro: ResizeObserver | undefined
+watch(wrap, (el) => {
+  ro?.disconnect()
+  if (!el) return
+  width.value = el.clientWidth
+  ro = new ResizeObserver(() => (width.value = el.clientWidth))
+  ro.observe(el)
+})
+onBeforeUnmount(() => ro?.disconnect())
+
+const perRow = computed(() => {
+  const tile = PAD_W * board.master.scale + TILE_PAD + GAP
+  return Math.max(1, Math.floor((width.value - SIDE + GAP) / tile))
+})
+
+interface Row {
+  key: string
+  sounds: Sound[]
+  open: boolean
+}
+const rows = computed<Row[]>(() => {
+  const out: Row[] = []
+  let cur: Sound[] = []
+  const flush = () => {
+    if (cur.length) out.push({ key: cur.map((s) => s.id).join('|'), sounds: cur, open: false })
+    cur = []
+  }
+  for (const s of board.visible) {
+    if (board.openPanels.has(s.id)) {
+      flush()
+      out.push({ key: `open:${s.id}`, sounds: [s], open: true })
+    } else {
+      cur.push(s)
+      if (cur.length >= perRow.value) flush()
+    }
+  }
+  flush()
+  return out
+})
+/** first guess at a row's height; v-virtual-scroll measures the real ones as they render */
+const rowHeight = computed(() => Math.round(PAD_H * board.master.scale + 8))
 </script>
 
 <template>
@@ -20,18 +77,31 @@ defineEmits<{ add: [] }>()
   <div v-else-if="!board.visible.length" class="empty">
     <div class="cart small">NO PADS MATCH THE TAG FILTER</div>
   </div>
-  <div v-else class="grid" :style="{ '--pad-scale': board.master.scale }">
-    <SoundTile v-for="s in board.visible" :key="s.id" :sound="s" />
+  <div v-else ref="wrap" class="grid" :style="{ '--pad-scale': board.master.scale }">
+    <v-virtual-scroll :items="rows" item-key="key" :item-height="rowHeight" height="100%">
+      <template #default="{ item }">
+        <div class="row" :class="{ open: item.open, last: item === rows[rows.length - 1] }">
+          <SoundTile v-for="s in item.sounds" :key="s.id" :sound="s" />
+        </div>
+      </template>
+    </v-virtual-scroll>
   </div>
 </template>
 
 <style scoped>
+/* fills the list pane; the virtual scroller scrolls inside it */
 .grid {
+  height: 100%;
+}
+.row {
   display: flex;
-  flex-wrap: wrap;
   align-items: flex-end;
-  gap: 10px 8px;
-  padding: 16px 12px 40px;
+  gap: 4px;
+  padding: 4px 8px 0;
+}
+/* room under the final row (each row is alone in its virtual-scroll item, so not :last-child) */
+.row.last {
+  padding-bottom: 40px;
 }
 .empty {
   display: grid;

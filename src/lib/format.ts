@@ -2,7 +2,7 @@ export const fmtHz = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(v >= 1000
 export const fmtPct = (v: number) => `${Math.round(v * 100)}`
 export const fmtDb = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(1)}`
 export const fmtSec = (v: number) => (v < 1 ? `${Math.round(v * 1000)}ms` : `${v.toFixed(2)}s`)
-export const fmtMs = (v: number) => (v <= 0 ? 'OFF' : `${Math.round(v)}ms`)
+export const fmtMs = (v: number) => (v <= 0 ? 'OFF' : v >= 10000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)}ms`)
 export const fmtRepeat = (v: number) => (v <= 0 ? '∞' : `×${Math.round(v)}`)
 export const fmtSemis = (v: number) => `${v > 0 ? '+' : ''}${Math.round(v)}st`
 export const fmtPan = (v: number) => (Math.abs(v) < 0.01 ? 'C' : `${v < 0 ? 'L' : 'R'}${Math.round(Math.abs(v) * 100)}`)
@@ -15,7 +15,7 @@ export const midiNoteName = (n: number) => `${NOTE_NAMES[n % 12]}${Math.floor(n 
 
 /** Stable pad hue from the theme's palette: pads sharing a tag share a color; untagged pads vary by name. */
 export function padHue(tag: string, name: string, hues: number[]): number {
-  const key = (tag.trim() || name).toLowerCase()
+  const key = (tag.split(',')[0].trim() || name).toLowerCase()
   let h = 0
   for (const c of key) h = (h * 31 + c.charCodeAt(0)) >>> 0
   return hues[h % hues.length]

@@ -31,9 +31,24 @@ function stripComments(text: string): string {
   return text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, '')
 }
 
+/** A #define value runs to the end of the line, or up to the next directive / header / opcode on it. */
+const DIRECTIVE = /#define[ \t]+(\$\w+)[ \t]+(.*?)[ \t]*(?=\r?\n|$|#define\b|#include\b|<\w+>|\b\w+=)|#include[ \t]+"([^"]+)"|\$\w+/g
+
+/** A macro name, or its longest defined prefix ($VELx with only $VEL defined → $VEL's value + "x"). */
+function expand(name: string, defines: Map<string, string>): string {
+  for (let n = name.length; n > 1; n--) {
+    const v = defines.get(name.slice(0, n))
+    if (v !== undefined) return v + name.slice(n)
+  }
+  return name
+}
+const expandAll = (text: string, defines: Map<string, string>) => text.replace(/\$\w+/g, (n) => expand(n, defines))
+
 /**
- * Expand #include and #define. `include(path)` returns the included file's text, or null.
- * Defines are shared across includes (a macro defined in one file is used in the files it includes, and after).
+ * Expand #include and #define in reading order, wherever they sit on a line (real instruments put
+ * `<region> #define $KEY 21 lokey=21 #include "sample.txt"` on one line and redefine macros per region).
+ * `include(path)` returns the included file's text, or null. Defines are shared across includes: a macro set in one
+ * file is used in the files it includes, and after them.
  */
 function preprocess(
   text: string,
@@ -41,25 +56,22 @@ function preprocess(
   depth = 0,
   defines = new Map<string, string>(),
 ): string {
-  const lines = stripComments(text).split(/\r?\n/)
-  const out: string[] = []
-  for (let line of lines) {
-    const def = /^\s*#define\s+(\$\w+)\s+(.*?)\s*$/.exec(line)
-    if (def) {
-      defines.set(def[1], def[2])
-      continue
-    }
-    const inc = /^\s*#include\s+"([^"]+)"/.exec(line)
-    if (inc) {
-      const sub = depth < 8 ? include(inc[1]) : null
-      if (sub !== null) out.push(preprocess(sub, include, depth + 1, defines))
-      continue
-    }
-    // longest names first so $VEL doesn't clobber $VELOCITY
-    for (const [k, v] of [...defines].sort((a, b) => b[0].length - a[0].length)) line = line.split(k).join(v)
-    out.push(line)
+  const src = stripComments(text)
+  let out = ''
+  let last = 0
+  const re = new RegExp(DIRECTIVE)
+  for (let m = re.exec(src); m; m = re.exec(src)) {
+    out += src.slice(last, m.index)
+    last = re.lastIndex
+    if (m[1]) defines.set(m[1], expandAll(m[2], defines))
+    else if (m[3]) {
+      const sub = depth < 8 ? include(expandAll(m[3], defines)) : null
+      // on their own lines, so a trailing opcode after the #include isn't swallowed by a sample path
+      if (sub !== null) out += `\n${preprocess(sub, include, depth + 1, defines)}\n`
+    } else out += expand(m[0], defines)
+    if (m[0] === '') re.lastIndex++
   }
-  return out.join('\n')
+  return out + src.slice(last)
 }
 
 /** Opcodes from one header's body. Values run until the next `name=` on the same line (so paths may contain spaces). */
@@ -78,13 +90,16 @@ function parseOpcodes(body: string): Opcodes {
   return ops
 }
 
+/** Slashes forward, `.` dropped, `dir/..` folded; leading `..` kept (`../Samples/a.wav` stays above the .sfz). */
 export const normalisePath = (p: string) =>
   p
     .replace(/\\/g, '/')
     .split('/')
     .reduce<string[]>((acc, seg) => {
-      if (seg === '..') acc.pop()
-      else if (seg && seg !== '.') acc.push(seg)
+      if (seg === '..') {
+        if (acc.length && acc[acc.length - 1] !== '..') acc.pop()
+        else acc.push(seg)
+      } else if (seg && seg !== '.') acc.push(seg)
       return acc
     }, [])
     .join('/')

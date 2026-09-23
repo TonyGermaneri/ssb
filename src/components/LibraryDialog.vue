@@ -3,8 +3,8 @@ import { computed, ref, watch } from 'vue'
 import { useBoard } from '../stores/board'
 import type { PathFile } from '../lib/dropFiles'
 import {
-  dirtBank, fromUrl, gmInstrument, GM_SETS, listDirtBanks, listGm, listSfzRepos, repoTree, rawUrl, sfzDownloadSize,
-  sfzFromUrl, type GmSet, type Repo, type RepoTree,
+  dirtBank, fromUrl, gmFamily, gmInstrument, GM_SETS, listDirtBanks, listGm, listSfzRepos, repoTree, repoSfz, sfzDownloadSize,
+  type GmSet, type Repo, type RepoTree,
 } from '../lib/library'
 
 const board = useBoard()
@@ -67,24 +67,36 @@ async function openRepo(r: Repo) {
 }
 
 /** Fetch, then hand the files to the normal loader (pads, SFZ zones, persistence). */
-async function load(label: string, get: (progress: (d: number, t: number) => void) => Promise<PathFile[]>) {
+/** `tags`: where it came from, so imports are easy to find with the tag strip. */
+async function load(label: string, tags: string[], get: (progress: (d: number, t: number) => void) => Promise<PathFile[]>) {
   await guard(async () => {
     busy.value = { label, done: 0, total: 0 }
     try {
       const files = await get((done, total) => (busy.value = { label, done, total }))
       if (!files.length) throw new Error('Nothing could be fetched')
       busy.value = { label: `${label} · decoding`, done: 0, total: 0 }
-      await board.addFiles(files)
+      await board.addFiles(files, { tags })
     } finally {
       busy.value = null
     }
   })
 }
 
-const loadSfz = (path: string) => load(path.split('/').pop()!, (p) => sfzFromUrl(rawUrl(repo.value!, path), p))
-const loadGm = (name: string) => load(pretty(name), (p) => gmInstrument(gmSet.value, name, 3, p))
-const loadBank = (b: { name: string; files: string[]; base: string }) => load(b.name, (p) => dirtBank(b, 32, p))
-const loadUrl = () => url.value.trim() && load(url.value.split('/').pop()!, (p) => fromUrl(url.value, p))
+const loadSfz = (path: string) =>
+  load(path.split('/').pop()!, ['sfzinstruments', repo.value!.name], (p) => repoSfz(repo.value!, tree.value!, path, p))
+const loadGm = (name: string) =>
+  load(pretty(name), ['gm', gmSet.value, gmFamily(gmNames.value.indexOf(name))], (p) => gmInstrument(gmSet.value, name, 3, p))
+const loadBank = (b: { name: string; files: string[]; base: string }) =>
+  load(b.name, ['dirt-samples', b.name], (p) => dirtBank(b, 32, p))
+const urlHost = () => {
+  try {
+    return new URL(url.value.trim()).hostname
+  } catch {
+    return ''
+  }
+}
+const loadUrl = () =>
+  url.value.trim() && load(url.value.split('/').pop()!, ['url', urlHost()].filter(Boolean), (p) => fromUrl(url.value, p))
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'sfz', label: 'SFZ INSTRUMENTS' },

@@ -14,9 +14,8 @@ const segColor = (i: number) => (i >= SEGMENTS - 2 ? 'red' : i >= SEGMENTS - 5 ?
 </script>
 
 <template>
-  <div class="vu" title="Master level">
+  <div class="vu" title="Master level (L / R)">
     <div v-for="(n, ch) in lit" :key="ch" class="bar">
-      <span class="ch">{{ ch ? 'R' : 'L' }}</span>
       <i v-for="i in SEGMENTS" :key="i" :class="[segColor(i - 1), { on: i <= n }]" />
     </div>
   </div>
@@ -25,28 +24,21 @@ const segColor = (i: number) => (i >= SEGMENTS - 2 ? 'red' : i >= SEGMENTS - 5 ?
 <style scoped>
 .vu {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 4px 6px;
+  gap: 2px;
+  padding: 3px 4px;
   border-radius: 3px;
   background: #070608;
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.9), 0 1px 0 rgba(255, 255, 255, 0.07);
 }
+/* vertical: segment 1 at the bottom */
 .bar {
   display: flex;
-  align-items: center;
-  gap: 2px;
-}
-.ch {
-  width: 8px;
-  font-family: 'VT323', monospace;
-  font-size: 11px;
-  line-height: 1;
-  color: #777;
+  flex-direction: column-reverse;
+  gap: 1px;
 }
 i {
-  width: 5px;
-  height: 7px;
+  width: 7px;
+  height: 2px;
   border-radius: 1px;
   opacity: 0.16;
 }

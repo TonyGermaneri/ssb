@@ -9,14 +9,17 @@ import { ClockTracker } from '../lib/midiClock'
 import { THEMES, themeById } from '../theme/themes'
 import type { Voice, VoiceOptions, ZonePlay } from '../audio/voice'
 import { basename, dirname, type PathFile } from '../lib/dropFiles'
+import { addTags, hasAllTags, tagFacets } from '../lib/tags'
 import { normalisePath, parseSfz } from '../lib/sfz'
 import { sniffSampleRate } from '../lib/sampleRate'
 import { filterPlayable, nearestZone, pickZones, regionToZone, zoneSemis } from '../lib/zones'
 import { isSynthAudioId, synthAudioId, synthWave } from '../audio/synthWaves'
+import { FACTORY_PATCHES, FACTORY_WAVES, waveSettings } from '../lib/factory'
 import { stripExt } from '../lib/format'
 import {
   divisionBeats, defaultMaster, defaultSettings, FILTER_TYPES, migrateMaster, migrateSettings, presetSettings, TRIGGER_MODES,
-  soundAudioIds, type MasterState, type Preset, type Sound, type SoundSettings, type Zone,
+  carrierSlot, headerOf, migratePatch, newSlot, PATCH_SLOTS, patchLayers, soundAudioIds, type MasterState, type Patch,
+  type PatchLayer, type PatchSlot, type Preset, type Sound, type SoundSettings, type VcoSlot, type Zone,
 } from '../types'
 
 const BOARD_KEY = 'ssb:board'
@@ -35,6 +38,7 @@ interface SavedBoard {
   sounds: Sound[]
   master: MasterState
   presets?: Preset[]
+  patches?: Patch[]
 }
 
 const uid = () => crypto.randomUUID()
@@ -65,16 +69,46 @@ export const useBoard = defineStore('board', () => {
   const matrixScope = ref<string | null>(null)
   const canUndo = ref(false)
   const canRedo = ref(false)
+  /** patch catalog: sets of layered sound settings + header settings */
+  const patches = ref<Patch[]>([])
+  const patchTagFilter = ref<string[]>([])
 
   // ── derived ────────────────────────────────────────────────────────────
-  const tags = computed(() =>
-    [...new Set(sounds.value.map((s) => s.settings.tag.trim()).filter(Boolean))].sort(),
-  )
+  /** every tag in the catalog (comma-separated per pad), for tag pickers */
+  const tags = computed(() => tagFacets(sounds.value.map((s) => s.settings.tag), []).map((f) => f.name))
+  /** pads carrying every selected tag */
   const visible = computed(() =>
-    tagFilter.value.length
-      ? sounds.value.filter((s) => tagFilter.value.includes(s.settings.tag.trim()))
-      : sounds.value,
+    sounds.value.filter((s) => (!master.favSounds || s.fav) && hasAllTags(s.settings.tag, tagFilter.value)),
   )
+  /** tags among the visible pads, with counts — narrows as tags are selected */
+  const facets = computed(() => tagFacets(sounds.value.map((s) => s.settings.tag), tagFilter.value))
+  function toggleTag(tag: string) {
+    const on = tagFilter.value.some((t) => t.toLowerCase() === tag.toLowerCase())
+    tagFilter.value = on ? tagFilter.value.filter((t) => t.toLowerCase() !== tag.toLowerCase()) : [...tagFilter.value, tag]
+  }
+  // ── patches catalog ─────────────────────────────────────────────────────
+  const patchTags = computed(() => tagFacets(patches.value.map((p) => p.tag), []).map((f) => f.name))
+  const visiblePatches = computed(() =>
+    patches.value.filter((p) => (!master.favPatches || p.fav) && hasAllTags(p.tag, patchTagFilter.value)),
+  )
+  const patchFacets = computed(() => tagFacets(patches.value.map((p) => p.tag), patchTagFilter.value))
+  function togglePatchTag(tag: string) {
+    const on = patchTagFilter.value.some((t) => t.toLowerCase() === tag.toLowerCase())
+    patchTagFilter.value = on
+      ? patchTagFilter.value.filter((t) => t.toLowerCase() !== tag.toLowerCase())
+      : [...patchTagFilter.value, tag]
+  }
+  /** the tag strip follows the tab */
+  const currentFacets = computed(() => (master.tab === 'patches' ? patchFacets.value : facets.value))
+  const currentFilter = computed(() => (master.tab === 'patches' ? patchTagFilter.value : tagFilter.value))
+  const currentTotal = computed(() => (master.tab === 'patches' ? patches.value.length : sounds.value.length))
+  const currentShown = computed(() => (master.tab === 'patches' ? visiblePatches.value.length : visible.value.length))
+  const toggleCurrentTag = (tag: string) => (master.tab === 'patches' ? togglePatchTag(tag) : toggleTag(tag))
+  function clearCurrentTags() {
+    if (master.tab === 'patches') patchTagFilter.value = []
+    else tagFilter.value = []
+  }
+
   const keyFor = computed(() => {
     const m = new Map<string, string>()
     visible.value.forEach((s, i) => i < PAD_KEYS.length && m.set(s.id, PAD_KEYS[i]))
@@ -90,7 +124,43 @@ export const useBoard = defineStore('board', () => {
     return m
   })
   const padsForNote = (note: number) => sounds.value.filter((s) => noteFor.value.get(s.id) === note)
+  /** the sound being edited in the Sounds tab (rack, grid row) */
   const selected = computed(() => (master.selectedId ? byId(master.selectedId) ?? null : null))
+
+  /**
+   * Patch layers as playable sounds: the layer's own settings over its source sound's audio / zones. Cached per layer
+   * so panels and voices keep a stable object.
+   */
+  const layerCache = new Map<string, Sound>()
+  function layerSound(layer: PatchLayer): Sound | undefined {
+    const src = byId(layer.soundId)
+    if (!src) return undefined
+    const hit = layerCache.get(layer.id)
+    if (hit && hit.settings === layer.settings && hit.audioId === src.audioId && hit.zones === src.zones) return hit
+    const snd: Sound = { id: layer.id, audioId: src.audioId, fileName: src.fileName, zones: src.zones, ccDefaults: src.ccDefaults, settings: layer.settings }
+    layerCache.set(layer.id, snd)
+    return snd
+  }
+  const layerIndex = computed(() => {
+    const m = new Map<string, { patch: Patch; layer: PatchLayer }>()
+    for (const p of patches.value) for (const l of patchLayers(p)) m.set(l.id, { patch: p, layer: l })
+    return m
+  })
+  /** a sound pad, or a patch layer (by layer id) */
+  function resolveSound(id: string): Sound | undefined {
+    const hit = byId(id)
+    if (hit) return hit
+    const l = layerIndex.value.get(id)
+    return l ? layerSound(l.layer) : undefined
+  }
+  const selectedPatch = computed(() => patches.value.find((p) => p.id === master.patchId) ?? null)
+  const patchMain = computed(() => {
+    const c = selectedPatch.value && carrierSlot(selectedPatch.value)
+    return c ? layerSound(c.layer) ?? null : null
+  })
+  /** what the keyboard plays: the selected patch, or (with no patches yet) the sound being edited */
+  const playable = computed(() => patchMain.value ?? selected.value)
+  const patchNumber = computed(() => patches.value.findIndex((p) => p.id === master.patchId) + 1)
   /** 1-based position of the selected patch in the grid. */
   const selectedNumber = computed(() => {
     const i = sounds.value.findIndex((s) => s.id === master.selectedId)
@@ -117,8 +187,17 @@ export const useBoard = defineStore('board', () => {
    * Load dropped / picked files: audio files become pads, .sfz files become multi-sample instruments (their samples
    * are looked up among the other files), and .zip files are either a board export or a sample pack to unpack.
    */
-  async function addFiles(input: (File | PathFile)[]) {
+  /**
+   * `tags` are added to every pad this creates (library imports pass their source + collection).
+   * Plain drops are tagged "dropped" plus their top folder; SFZ instruments also get "sfz".
+   */
+  async function addFiles(input: (File | PathFile)[], opts: { tags?: string[] } = {}) {
     let items: PathFile[] = input.map((f) => ('path' in f ? f : { file: f, path: f.webkitRelativePath || f.name }))
+    const tagsFor = (path: string, kind: 'sfz' | 'sample') => {
+      const folder = path.includes('/') ? path.slice(0, path.indexOf('/')) : ''
+      return [...(opts.tags ?? ['dropped', folder]), kind].filter(Boolean)
+    }
+    importTags = tagsFor
     // zips: board exports import as boards; anything else is unpacked like a dropped folder
     const zips = items.filter((i) => isZip(i.path))
     items = items.filter((i) => !isZip(i.path))
@@ -153,13 +232,17 @@ export const useBoard = defineStore('board', () => {
       try {
         await loadAudio(audioId, file)
         await set(audioKey(audioId), file)
-        addSound({ id: uid(), audioId, fileName: name, settings: defaultSettings(stripExt(name)) })
+        const settings = defaultSettings(stripExt(name))
+        settings.tag = addTags('', tagsFor(path, 'sample'))
+        addSound({ id: uid(), audioId, fileName: name, settings })
       } catch (e) {
         console.error(e)
         toast.value = `Couldn't decode ${name}`
       }
     }
   }
+
+  let importTags: (path: string, kind: 'sfz' | 'sample') => string[] = () => []
 
   /** One .sfz → one instrument pad whose zones map keys × velocities to samples. */
   async function loadSfz(sfz: PathFile, items: PathFile[], used: Set<string>) {
@@ -256,6 +339,7 @@ export const useBoard = defineStore('board', () => {
     }
     const rep = nearestZone(zones, 60)!
     const settings = defaultSettings(stripExt(name))
+    settings.tag = addTags('', importTags(sfz.path, 'sfz'))
     // the pad plays middle C, or the nearest key the instrument covers
     settings.rootNote = Math.min(rep.hikey, Math.max(rep.lokey, 60))
     const sound: Sound = { id: uid(), audioId: rep.audioId, fileName: name, settings, zones }
@@ -272,6 +356,7 @@ export const useBoard = defineStore('board', () => {
       if (saved) {
         Object.assign(master, migrateMaster(saved.master))
         presets.value = saved.presets ?? []
+        patches.value = (saved.patches ?? []).map(migratePatch)
         const ok: Sound[] = []
         for (const s of saved.sounds) {
           try {
@@ -301,8 +386,11 @@ export const useBoard = defineStore('board', () => {
         applyCcDefaults(selected.value)
       }
       void collectOrphanAudio()
+      // first run: built-in synth sounds + factory patches
+      if (!master.factory) installFactory()
     } finally {
       loaded.value = true
+      scheduleSave()
       history.reset(snapshot())
     }
   }
@@ -320,7 +408,7 @@ export const useBoard = defineStore('board', () => {
     if (!loaded.value) return
     clearTimeout(saveTimer)
     saveTimer = setTimeout(() => {
-      const board: SavedBoard = { version: 1, sounds: clone(sounds.value), master: clone(master), presets: clone(presets.value) }
+      const board: SavedBoard = { version: 1, sounds: clone(sounds.value), master: clone(master), presets: clone(presets.value), patches: clone(patches.value) }
       set(BOARD_KEY, board).catch((e) => {
         console.error(e)
         toast.value = 'Saving the board failed'
@@ -349,6 +437,24 @@ export const useBoard = defineStore('board', () => {
     { deep: true, immediate: true },
   )
   watch(presets, scheduleSave, { deep: true })
+  watch(
+    patches,
+    () => {
+      engine.refreshVoices()
+      scheduleSave()
+      scheduleHistory()
+    },
+    { deep: true },
+  )
+  // the selected patch remembers the header knobs: edits there save into it
+  watch(
+    () => headerOf(master),
+    (h) => {
+      const p = selectedPatch.value
+      if (p && JSON.stringify(h) !== JSON.stringify(p.header)) p.header = h
+    },
+    { deep: true },
+  )
   function pushGlobalFx() {
     const fx = master.fx
     const delayTime = fx.delaySync ? Math.min(2.4, (divisionBeats(fx.delayDivision) * 60) / bpm.value) : fx.delayTime
@@ -371,7 +477,7 @@ export const useBoard = defineStore('board', () => {
   // ── undo / redo ────────────────────────────────────────────────────────
   /** What undo covers: pads and the sound-shaping header state (not volume, view or selection). */
   const snapshot = () =>
-    JSON.stringify({ sounds: sounds.value, fx: master.fx, mod: master.mod, glide: master.glide, mono: master.mono })
+    JSON.stringify({ sounds: sounds.value, patches: patches.value, fx: master.fx, mod: master.mod, glide: master.glide, mono: master.mono })
   const history = new History('')
   let historyTimer: ReturnType<typeof setTimeout> | undefined
   function syncHistoryFlags() {
@@ -391,7 +497,14 @@ export const useBoard = defineStore('board', () => {
     historyTimer = setTimeout(commitHistory, 400)
   }
   function restore(state: string) {
-    const data = JSON.parse(state) as { sounds: Sound[]; fx: MasterState['fx']; mod: MasterState['mod']; glide: number; mono: boolean }
+    const data = JSON.parse(state) as {
+      sounds: Sound[]
+      patches?: Patch[]
+      fx: MasterState['fx']
+      mod: MasterState['mod']
+      glide: number
+      mono: boolean
+    }
     // update in place so playing voices (which hold the settings object) follow along
     const current = new Map(sounds.value.map((x) => [x.id, x]))
     sounds.value = data.sounds
@@ -402,6 +515,26 @@ export const useBoard = defineStore('board', () => {
         Object.assign(cur.settings, x.settings)
         return cur
       })
+    // patches too, in place (voices hold layer settings)
+    const curP = new Map(patches.value.map((p) => [p.id, p]))
+    patches.value = (data.patches ?? []).map((p) => {
+      const cur = curP.get(p.id)
+      if (!cur) return p
+      const curL = new Map(patchLayers(cur).map((l) => [l.id, l]))
+      cur.name = p.name
+      cur.tag = p.tag
+      cur.fav = p.fav
+      cur.header = p.header
+      cur.slots = p.slots.map((x) => {
+        if (!x) return null
+        const c = curL.get(x.layer.id)
+        if (!c) return x
+        Object.assign(c.settings, x.layer.settings)
+        c.soundId = x.layer.soundId
+        return { ...x, layer: c }
+      })
+      return cur
+    })
     Object.assign(master.fx, data.fx)
     Object.assign(master.mod, data.mod)
     master.glide = data.glide
@@ -447,8 +580,61 @@ export const useBoard = defineStore('board', () => {
     amplitude: z.amplitude,
   })
 
-  /** Start every voice a note needs (several when SFZ regions layer). `fromNote` = note to glide from. */
-  function startNote(sound: Sound, note: number, velocity: number, base: VoiceOptions = {}, fromNote: number | null = null): Voice[] {
+  /**
+   * Start every voice a note needs: the pad's own (several when SFZ regions layer) plus its linked VCO pads.
+   * VCOs start first so their signals can feed this pad's mod matrix (VCO 1–3). `fromNote` = note to glide from.
+   */
+  function startNote(
+    sound: Sound,
+    note: number,
+    velocity: number,
+    base: VoiceOptions & { silent?: boolean } = {},
+    fromNote: number | null = null,
+    asVco = false,
+  ): Voice[] {
+    const vcoVoices: Voice[] = []
+    const taps: (AudioNode | null)[] = [null, null, null]
+    if (!asVco) {
+      vcoLinks(sound).forEach(({ index: i, osc, slot }) => {
+        if (osc.id === sound.id) return
+        // TRACK follows the played key (so the VCO keeps its interval to the patch); FIXED always plays its note
+        const vNote = (slot.track ? note - sound.settings.rootNote + osc.settings.rootNote : slot.fixedNote) + slot.transpose
+        const vFrom = slot.track && fromNote !== null ? fromNote - sound.settings.rootNote + osc.settings.rootNote + slot.transpose : null
+        const started = startNote(
+          osc,
+          vNote,
+          velocity,
+          { ...base, group: sound.id, level: slot.level, detune: slot.fine, silent: !slot.audible },
+          vFrom,
+          true,
+        )
+        vcoVoices.push(...started)
+        taps[i] = started[0]?.tap ?? null
+      })
+    }
+    return [...startOwn(sound, note, velocity, { ...base, modTaps: taps }, fromNote), ...vcoVoices]
+  }
+
+  /**
+   * Oscillators layered onto a sound: for a patch's main voice, the patch's other slots (tap index = slot number, so
+   * VCO n in the matrix is slot n); for a plain pad, its legacy settings.vcos links.
+   */
+  function vcoLinks(sound: Sound): { index: number; osc: Sound; slot: Omit<VcoSlot, 'soundId'> }[] {
+    const hit = layerIndex.value.get(sound.id)
+    if (hit) {
+      return hit.patch.slots
+        .map((x, index) => (x && x.layer.id !== sound.id ? { index, osc: layerSound(x.layer), slot: x } : null))
+        .filter((x): x is { index: number; osc: Sound; slot: PatchSlot } => !!x?.osc)
+    }
+    return sound.settings.vcos
+      .map((slot, index) => {
+        const osc = slot.soundId ? resolveSound(slot.soundId) : undefined
+        return osc ? { index, osc, slot } : null
+      })
+      .filter((x): x is { index: number; osc: Sound; slot: VcoSlot } => !!x)
+  }
+
+  function startOwn(sound: Sound, note: number, velocity: number, base: VoiceOptions & { silent?: boolean }, fromNote: number | null): Voice[] {
     const glide = base.glideTime ?? 0
     const opts = (zone?: Zone): VoiceOptions => {
       const semis = semisFor(sound, zone, note)
@@ -493,7 +679,7 @@ export const useBoard = defineStore('board', () => {
   }
 
   function press(id: string, velocity = 1) {
-    const sound = byId(id)
+    const sound = resolveSound(id)
     if (!sound) return
     engine.resume()
     pressed.add(id)
@@ -512,7 +698,7 @@ export const useBoard = defineStore('board', () => {
 
   function release(id: string) {
     pressed.delete(id)
-    const sound = byId(id)
+    const sound = resolveSound(id)
     if (sound?.settings.mode !== 'hold') return
     if (perform.sustain) sustainedPads.add(id)
     else {
@@ -538,7 +724,7 @@ export const useBoard = defineStore('board', () => {
       const vs = polyVoices.get(key)
       releaseAll(vs)
       polyVoices.delete(key)
-      if (vs?.[0]?.midiNote !== undefined) triggerRelease(selected.value, vs[0].midiNote)
+      if (vs?.[0]?.midiNote !== undefined) triggerRelease(playable.value, vs[0].midiNote)
     }
     sustainedKeys.clear()
     if (monoSustained && !heldNotes.value.length) {
@@ -564,7 +750,7 @@ export const useBoard = defineStore('board', () => {
   const voiceKey = (note: number, ch?: number) => (isMember(ch) ? `${ch}:${note}` : `${note}`)
 
   function noteOn(note: number, velocity = 1, channel?: number) {
-    const sound = selected.value
+    const sound = playable.value
     if (!sound) return
     engine.resume()
     const glide = master.glide
@@ -600,7 +786,7 @@ export const useBoard = defineStore('board', () => {
     if (master.mono && !isMember(channel)) {
       if (!monoVoices.length) return
       const top = heldNotes.value.at(-1)
-      const sound = selected.value
+      const sound = playable.value
       if (top === undefined) {
         if (perform.sustain) monoSustained = true
         else {
@@ -625,7 +811,7 @@ export const useBoard = defineStore('board', () => {
       if (perform.sustain) return void sustainedKeys.add(key)
       releaseAll(polyVoices.get(key))
       polyVoices.delete(key)
-      triggerRelease(selected.value, note)
+      triggerRelease(playable.value, note)
     }
   }
 
@@ -652,6 +838,7 @@ export const useBoard = defineStore('board', () => {
     for (const [cc, v] of Object.entries(sound?.ccDefaults ?? {})) engine.setCC(+cc, v)
   }
   watch(() => master.selectedId, () => applyCcDefaults(selected.value))
+  watch(() => master.patchId, () => applyCcDefaults(patchMain.value))
 
   // ── themes ─────────────────────────────────────────────────────────────
   const theme = computed(() => themeById(master.theme))
@@ -675,6 +862,165 @@ export const useBoard = defineStore('board', () => {
     master.selectedId = list[next].id
   }
 
+  // ── patches ────────────────────────────────────────────────────────────
+  /** A layer: the patch's own copy of a sound's settings (VCO links don't nest). */
+  const makeLayer = (sound: Sound): PatchLayer => {
+    const settings = clone(sound.settings)
+    settings.vcos = []
+    settings.midiNote = null
+    return { id: uid(), soundId: sound.id, settings }
+  }
+
+  function selectPatch(id: string | null) {
+    master.patchId = id
+    const p = selectedPatch.value
+    if (!p) return
+    // load the patch's header knobs
+    const h = clone(p.header)
+    Object.assign(master, { volume: h.volume, glide: h.glide, mono: h.mono, mpe: h.mpe, mpeBendRange: h.mpeBendRange, bpm: h.bpm })
+    Object.assign(master.fx, h.fx)
+    Object.assign(master.mod, h.mod)
+  }
+
+  /** Step through the patch catalog (in the tag-filtered order), wrapping. */
+  function selectPatchStep(dir: 1 | -1) {
+    const list = visiblePatches.value.length ? visiblePatches.value : patches.value
+    if (!list.length) return
+    const i = list.findIndex((p) => p.id === master.patchId)
+    const next = i < 0 ? (dir > 0 ? 0 : list.length - 1) : (i + dir + list.length) % list.length
+    selectPatch(list[next].id)
+  }
+
+  const emptySlots = (): (PatchSlot | null)[] => Array.from({ length: PATCH_SLOTS }, () => null)
+
+  /** New patch: `soundId` in slot 1 (or empty), with the current header knobs. */
+  function newPatch(soundId?: string, name?: string) {
+    const src = soundId ? byId(soundId) : undefined
+    const slots = emptySlots()
+    if (src) slots[0] = newSlot(makeLayer(src))
+    const patch: Patch = {
+      id: uid(),
+      name: name ?? src?.settings.name ?? `Patch ${patches.value.length + 1}`,
+      tag: src ? addTags(src.settings.tag, ['patch']) : 'patch',
+      slots,
+      header: headerOf(master),
+    }
+    patches.value.push(patch)
+    selectPatch(patch.id)
+    toast.value = `New patch "${patch.name}"`
+    return patch
+  }
+
+  function duplicatePatch(id: string) {
+    const i = patches.value.findIndex((p) => p.id === id)
+    if (i < 0) return
+    const copy = clone(patches.value[i])
+    copy.id = uid()
+    copy.name = `${copy.name} copy`
+    for (const x of copy.slots) if (x) x.layer.id = uid()
+    patches.value.splice(i + 1, 0, copy)
+  }
+
+  function removePatch(id: string) {
+    const p = patches.value.find((x) => x.id === id)
+    if (!p) return
+    for (const l of patchLayers(p)) engine.stopSound(l.id)
+    openPanels.delete(id)
+    patches.value = patches.value.filter((x) => x.id !== id)
+    if (master.patchId === id) selectPatch(patches.value[0]?.id ?? null)
+  }
+
+  /**
+   * Put a sound into a slot (0-based) of a patch — the selected one by default, or a new patch if none is selected.
+   * The slot gets a fresh layer (a copy of the sound's settings); whatever was there is replaced. null empties it.
+   */
+  function assignSlot(slot: number, soundId: string | null, patchId = master.patchId) {
+    let p = patches.value.find((x) => x.id === patchId)
+    if (!p) {
+      if (!soundId) return
+      p = newPatch(undefined, byId(soundId)?.settings.name)
+      if (!p) return
+    }
+    const old = p.slots[slot]
+    if (old) engine.stopSound(old.layer.id)
+    const src = soundId ? byId(soundId) : undefined
+    // keep the slot's mix / tuning when swapping sounds
+    p.slots[slot] = src ? { ...(old ?? newSlot(makeLayer(src))), layer: makeLayer(src) } : null
+    if (src && p.slots.filter(Boolean).length === 1 && p.name.startsWith('Patch ')) p.name = src.settings.name
+  }
+
+  /** Slots (1-based) of the selected patch that hold `soundId` — for the 1 / 2 / 3 buttons on sound cards. */
+  function slotsOf(soundId: string): Set<number> {
+    const out = new Set<number>()
+    selectedPatch.value?.slots.forEach((x, i) => x?.layer.soundId === soundId && out.add(i + 1))
+    return out
+  }
+  /** press 1 / 2 / 3 on a sound: toggle it in that slot of the selected patch */
+  function toggleSlot(slot: number, soundId: string) {
+    const cur = selectedPatch.value?.slots[slot]
+    assignSlot(slot, cur?.layer.soundId === soundId ? null : soundId)
+  }
+
+  /** Audition a patch (its main voice at its root note, other slots included). */
+  const pressPatch = (id: string, velocity = 1) => {
+    const p = patches.value.find((x) => x.id === id)
+    const c = p && carrierSlot(p)
+    if (c) press(c.layer.id, velocity)
+  }
+  const releasePatch = (id: string) => {
+    const p = patches.value.find((x) => x.id === id)
+    const c = p && carrierSlot(p)
+    if (c) release(c.layer.id)
+  }
+  /** layer ids of a patch (for LEDs) */
+  const patchLayerIds = (p: Patch) => new Set(patchLayers(p).map((l) => l.id))
+
+  // ── factory content ──
+  /** Built-in wave sounds (reused if already there) and the factory patches made from them. */
+  function installFactory() {
+    const waveSound = new Map<string, Sound>()
+    for (const { wave, name } of FACTORY_WAVES) {
+      const audioId = synthAudioId(wave)
+      let snd = sounds.value.find((x) => x.audioId === audioId && !x.zones)
+      if (!snd) {
+        peaks.set(audioId, computePeaks(engine.getBuffer(audioId)!))
+        const settings = { ...defaultSettings(name), ...waveSettings(), tag: 'built-in, synth, wave' }
+        snd = { id: uid(), audioId, fileName: `*${wave}`, settings }
+        sounds.value.push(snd)
+      }
+      waveSound.set(wave, snd)
+    }
+    const d = defaultMaster()
+    for (const fp of FACTORY_PATCHES) {
+      const slots = fp.slots.map((x) => {
+        const src = x && waveSound.get(x.wave)
+        if (!x || !src) return null
+        const layer = makeLayer(src)
+        Object.assign(layer.settings, x.settings ?? {})
+        return { ...newSlot(layer), ...x.slot }
+      })
+      while (slots.length < PATCH_SLOTS) slots.push(null)
+      const main = carrierSlot({ slots } as Patch)
+      if (main) {
+        if (fp.lfo1) Object.assign(main.layer.settings.mod.lfo1, fp.lfo1)
+        main.layer.settings.mod.routes.push(...(fp.routes ?? []))
+      }
+      const header = headerOf({ ...d, ...fp.header, fx: { ...d.fx, ...fp.header?.fx } } as MasterState)
+      patches.value.push({ id: uid(), name: fp.name, tag: fp.tag, slots, header })
+    }
+    master.factory = true
+    toast.value = `Added ${FACTORY_PATCHES.length} factory patches`
+  }
+
+  // ── favourites ──
+  function toggleFav(kind: 'sound' | 'patch', id: string) {
+    const item = kind === 'sound' ? byId(id) : patches.value.find((p) => p.id === id)
+    if (item) item.fav = !item.fav
+  }
+
+  /** which patch a (layer) voice belongs to */
+  const patchIdOfLayer = (layerId: string) => layerIndex.value.get(layerId)?.patch.id
+
   // ── editing ────────────────────────────────────────────────────────────
   function togglePanel(id: string) {
     if (openPanels.has(id)) openPanels.delete(id)
@@ -682,21 +1028,21 @@ export const useBoard = defineStore('board', () => {
   }
 
   function cycleMode(id: string) {
-    const s = byId(id)?.settings
+    const s = resolveSound(id)?.settings
     if (s) s.mode = cycle(TRIGGER_MODES, s.mode)
   }
 
   function cycleFilter(id: string) {
-    const s = byId(id)?.settings
+    const s = resolveSound(id)?.settings
     if (s) s.filterType = cycle(FILTER_TYPES, s.filterType)
   }
 
   /** Back to defaults, keeping the pad's identity (name, tag, MIDI note). */
   function resetSettings(id: string) {
-    const s = byId(id)?.settings
+    const s = resolveSound(id)?.settings
     if (!s) return
-    const { name, tag, midiNote } = s
-    Object.assign(s, defaultSettings(name), { tag, midiNote })
+    const { name, tag, midiNote, vcos } = s
+    Object.assign(s, defaultSettings(name), { tag, midiNote, vcos })
   }
 
   function duplicate(id: string) {
@@ -734,11 +1080,11 @@ export const useBoard = defineStore('board', () => {
 
   // ── presets ────────────────────────────────────────────────────────────
   function applySettings(id: string, patch: Partial<SoundSettings>) {
-    const s = byId(id)?.settings
+    const s = resolveSound(id)?.settings
     if (s) Object.assign(s, JSON.parse(JSON.stringify(patch)))
   }
   function savePreset(id: string, name: string) {
-    const s = byId(id)?.settings
+    const s = resolveSound(id)?.settings
     if (!s) return
     presets.value.push({ id: uid(), name: name.trim() || s.name, settings: presetSettings(s) })
     toast.value = `Saved preset "${presets.value.at(-1)!.name}"`
@@ -751,7 +1097,7 @@ export const useBoard = defineStore('board', () => {
     presets.value = presets.value.filter((p) => p.id !== presetId)
   }
   function copySettings(id: string) {
-    const s = byId(id)?.settings
+    const s = resolveSound(id)?.settings
     if (!s) return
     clipboard.value = presetSettings(s)
     toast.value = `Copied ${s.name}'s settings`
@@ -764,7 +1110,7 @@ export const useBoard = defineStore('board', () => {
   async function exportBoard() {
     const { default: JSZip } = await import('jszip')
     const zip = new JSZip()
-    const board: SavedBoard = { version: 1, sounds: clone(sounds.value), master: clone(master), presets: clone(presets.value) }
+    const board: SavedBoard = { version: 1, sounds: clone(sounds.value), master: clone(master), presets: clone(presets.value), patches: clone(patches.value) }
     zip.file('board.json', JSON.stringify(board, null, 2))
     for (const audioId of new Set(sounds.value.flatMap(soundAudioIds).filter((id) => !isSynthAudioId(id)))) {
       const blob = await get<Blob>(audioKey(audioId))
@@ -804,6 +1150,7 @@ export const useBoard = defineStore('board', () => {
         idMap.set(old, audioId)
         return audioId
       }
+      const soundIds = new Map<string, string>()
       for (const s of board.sounds) {
         const audioId = await remap(s.audioId)
         if (!audioId) continue
@@ -815,8 +1162,22 @@ export const useBoard = defineStore('board', () => {
             if (id) zones.push({ ...z, audioId: id })
           }
         }
-        sounds.value.push({ ...s, id: uid(), audioId, zones, settings: migrateSettings(s.settings) })
+        const settings = migrateSettings(s.settings)
+        settings.tag = addTags(settings.tag, ['imported', stripExt(file.name)])
+        const newId = uid()
+        soundIds.set(s.id, newId)
+        sounds.value.push({ ...s, id: newId, audioId, zones, settings })
         added++
+      }
+      // patches: new ids, layers pointed at the re-imported sounds
+      for (const raw of board.patches ?? []) {
+        const p = migratePatch(clone(raw))
+        p.id = uid()
+        p.tag = addTags(p.tag, ['imported', stripExt(file.name)])
+        p.slots = p.slots.map((x) =>
+          x && soundIds.has(x.layer.soundId) ? { ...x, layer: { ...x.layer, id: uid(), soundId: soundIds.get(x.layer.soundId)! } } : null,
+        )
+        if (p.slots.some(Boolean)) patches.value.push(p)
       }
       const known = new Set(presets.value.map((p) => p.id))
       presets.value.push(...(board.presets ?? []).filter((p) => !known.has(p.id)))
@@ -932,7 +1293,12 @@ export const useBoard = defineStore('board', () => {
     sounds, master, openPanels, pressed, tagFilter, peaks, loaded, toast, midi, heldNotes,
     perform, presets, clipboard, matrixScope, canUndo, canRedo, tempo, bpm, noteFor, theme, cycleTheme,
     undo, redo, savePreset, loadPreset, deletePreset, copySettings, pasteSettings, openMatrix, onMidi,
-    tags, visible, keyFor, soundForKey, byId, selected, selectedNumber,
+    patches, patchTagFilter, patchTags, visiblePatches, patchFacets, togglePatchTag,
+    currentFacets, currentFilter, currentTotal, currentShown, toggleCurrentTag, clearCurrentTags,
+    selectedPatch, patchMain, playable, patchNumber, resolveSound, layerSound, patchLayerIds,
+    installFactory, selectPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, assignSlot, slotsOf, toggleSlot, toggleFav,
+    pressPatch, releasePatch, patchIdOfLayer,
+    tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
     addFiles, load, press, release, panic, noteOn, noteOff,
     select, selectStep, togglePanel, cycleMode, cycleFilter, resetSettings, duplicate, remove, move,
     exportBoard, importBoard, enableMidi, learnMidi,

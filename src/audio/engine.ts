@@ -21,6 +21,8 @@ let hub: ModHub
 let globalMatrix: ModMatrix = defaultMatrix()
 let mpeBendRange = 48
 let bpm = 120
+/** mod-only VCOs play into this (silent, but still pulled so their signals flow) */
+let silentBus: GainNode
 const voices = new Set<Voice>() // includes voices whose tails are still ringing
 
 /** Decoded audio by audioId. Not reactive — AudioBuffers are big. */
@@ -49,6 +51,12 @@ export function getCtx(): AudioContext {
   })
   const now = ctx.currentTime
   const globalLfos = [globalMatrix.lfo1, globalMatrix.lfo2].map((l) => new LfoSource(ctx!, l.shape, lfoHz(l, bpm), now))
+  silentBus = ctx.createGain()
+  silentBus.gain.value = 0
+  silentBus.connect(master)
+  const zero = ctx.createConstantSource()
+  zero.offset.value = 0
+  zero.start(now)
   const modWheel = ctx.createConstantSource()
   modWheel.offset.value = 0
   modWheel.start(now)
@@ -60,6 +68,7 @@ export function getCtx(): AudioContext {
     cc: new Float32Array(128),
     matrix: () => globalMatrix,
     mpeBendRange: () => mpeBendRange,
+    zero,
   }
   // MIDI's usual power-on CCs: volume 100, pan centre, expression full
   hub.cc[7] = 100 / 127
@@ -208,7 +217,7 @@ export function publish() {
     .map((v) => ({ id: v.id, soundId: v.soundId, name: v.settings.name, midiNote: v.midiNote, voice: markRaw(v) }))
 }
 
-export function startVoice(sound: Sound, opts: VoiceOptions = {}): Voice | null {
+export function startVoice(sound: Sound, opts: VoiceOptions & { silent?: boolean } = {}): Voice | null {
   const audioId = opts.zone?.audioId ?? sound.audioId
   const buffer = getBuffer(audioId)
   if (!buffer) return null
@@ -219,7 +228,7 @@ export function startVoice(sound: Sound, opts: VoiceOptions = {}): Voice | null 
     () => reversed(audioId),
     sound.id,
     sound.settings,
-    fx.input,
+    opts.silent ? silentBus : fx.input,
     opts,
     hub,
     () => publish(),
@@ -231,16 +240,19 @@ export function startVoice(sound: Sound, opts: VoiceOptions = {}): Voice | null 
 }
 
 /** Playing and not yet released. */
-export const isHeld = (soundId: string) => [...voices].some((v) => v.soundId === soundId && v.held)
+/** a pad's own voices plus the VCO voices it started */
+const ofSound = (v: Voice, id: string) => v.soundId === id || v.groupId === id
+
+export const isHeld = (soundId: string) => [...voices].some((v) => ofSound(v, soundId) && v.held)
 
 /** Note-off every voice of a sound: envelopes release, tails ring out. */
 export function releaseSound(soundId: string) {
-  for (const v of voices) if (v.soundId === soundId) v.release()
+  for (const v of voices) if (ofSound(v, soundId)) v.release()
 }
 
 /** Hard stop (choke / restart): short fade, tails cut. */
 export function stopSound(soundId: string, fade = 0.03) {
-  for (const v of voices) if (v.soundId === soundId) v.stop(fade)
+  for (const v of voices) if (ofSound(v, soundId)) v.stop(fade)
 }
 
 /** PANIC: stop everything, per-voice and global tails included. */

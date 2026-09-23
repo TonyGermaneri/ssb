@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { activeVoices, clock } from '../audio/engine'
+import { computed, ref } from 'vue'
+import { clock } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { fmtNum, fmtPct, fmtRate, fmtScale, fmtSec, midiNoteName } from '../lib/format'
 import { DIVISIONS } from '../types'
@@ -10,41 +10,32 @@ import VuMeter from './VuMeter.vue'
 const board = useBoard()
 const emit = defineEmits<{ add: []; addFolder: []; library: [] }>()
 const importInput = ref<HTMLInputElement>()
-const strip = ref<HTMLElement>()
 
-// publish the header's height for layouts that fill the rest of the window (grid mode)
-let ro: ResizeObserver | undefined
-const publishHeight = () => {
-  if (strip.value)
-    document.documentElement.style.setProperty('--strip-h', `${Math.ceil(strip.value.getBoundingClientRect().height)}px`)
-}
-onMounted(() => {
-  publishHeight()
-  ro = new ResizeObserver(publishHeight)
-  if (strip.value) ro.observe(strip.value)
-})
-onBeforeUnmount(() => ro?.disconnect())
 const fx = computed(() => board.master.fx)
 const K = 28 // header knob size
 
-/** "AIRHORN ×2 · PAD C4 E4" */
-const nowPlaying = computed(() => {
-  const counts = new Map<string, { n: number; notes: string[] }>()
-  for (const v of activeVoices.value) {
-    const name = board.byId(v.soundId)?.settings.name ?? v.name
-    const e = counts.get(name) ?? { n: 0, notes: [] }
-    e.n++
-    if (v.midiNote !== undefined) e.notes.push(midiNoteName(v.midiNote))
-    counts.set(name, e)
-  }
-  return [...counts]
-    .map(([name, e]) => (e.notes.length ? `${name} ${e.notes.join(' ')}` : e.n > 1 ? `${name} ×${e.n}` : name))
-    .join('  ·  ')
-})
-
 const patchLabel = computed(() =>
-  board.selected ? `${String(board.selectedNumber).padStart(2, '0')} ${board.selected.settings.name}` : '-- NO PATCH',
+  board.selectedPatch ? `${String(board.patchNumber).padStart(2, '0')} ${board.selectedPatch.name}` : '-- NO PATCH',
 )
+const layoutTitle = computed(() =>
+  board.master.list
+    ? board.master.rack
+      ? 'Layout: rack + list — click for rack only'
+      : 'Layout: list only — click for rack + list'
+    : 'Layout: rack only — click for list only',
+)
+function cycleLayout() {
+  const m = board.master
+  if (m.rack && m.list) m.list = false
+  else if (!m.list) Object.assign(m, { list: true, rack: false })
+  else m.rack = true
+}
+
+/** new patch from the sound being edited (or the first sound) */
+function newPatch() {
+  const src = board.selected ?? board.sounds[0]
+  if (src) board.newPatch(src.id)
+}
 const octaveLabel = computed(() => {
   const o = board.master.octave
   return `OCT ${o > 0 ? '+' : ''}${o}`
@@ -58,10 +49,6 @@ const delayDiv = computed(() => Math.max(0, DIVISIONS.findIndex((d) => d.id === 
 const fmtDiv = (v: number) => DIVISIONS[Math.round(v)]?.id ?? ''
 const fmtNote = (v: number) => midiNoteName(Math.round(v))
 
-function toggleTag(tag: string) {
-  const f = board.tagFilter
-  board.tagFilter = f.includes(tag) ? f.filter((t) => t !== tag) : [...f, tag]
-}
 function onImport(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
   if (file) board.importBoard(file)
@@ -70,10 +57,10 @@ function onImport(e: Event) {
 </script>
 
 <template>
-  <header ref="strip" class="strip">
+  <header class="strip">
     <button
       class="brand"
-      :title="`Theme: ${board.theme.name} — click for next, Shift-click for previous`"
+      :title="`SSB — Super Sound Board · theme: ${board.theme.name} (click for next, Shift-click for previous)`"
       @click="(e: MouseEvent) => board.cycleTheme(e.shiftKey ? -1 : 1)"
     >
       <span class="logo">SSB</span>
@@ -100,26 +87,24 @@ function onImport(e: Event) {
     </section>
 
     <section class="group">
-      <h5>NOW PLAYING</h5>
-      <div class="controls">
-        <div class="marquee" :class="{ idle: !nowPlaying }">
-          <span v-if="nowPlaying" :key="nowPlaying" class="scroll">▸ {{ nowPlaying }}</span>
-          <span v-else>— READY —</span>
-        </div>
-      </div>
-    </section>
-
-    <section class="group">
       <h5>PATCH</h5>
       <div class="controls">
-        <button class="hw-btn icon" title="Previous patch" @click="board.selectStep(-1)">
+        <button class="hw-btn icon" title="Previous patch" @click="board.selectPatchStep(-1)">
           <v-icon size="18" icon="mdi-chevron-left" />
         </button>
-        <div class="lcd" :title="board.selected ? `Selected patch: ${board.selected.settings.name}` : 'Select a pad with its piano button'">
+        <div class="lcd" :title="board.selectedPatch ? `Patch: ${board.selectedPatch.name}` : 'No patch selected'">
           {{ patchLabel }}
         </div>
-        <button class="hw-btn icon" title="Next patch" @click="board.selectStep(1)">
+        <button class="hw-btn icon" title="Next patch" @click="board.selectPatchStep(1)">
           <v-icon size="18" icon="mdi-chevron-right" />
+        </button>
+        <button
+          class="hw-btn icon"
+          :disabled="!board.sounds.length"
+          :title="`New patch from ${(board.selected ?? board.sounds[0])?.settings.name ?? 'a sound'}`"
+          @click="newPatch"
+        >
+          <v-icon size="16" icon="mdi-plus-box-multiple" />
         </button>
         <button
           class="hw-btn icon play"
@@ -284,23 +269,6 @@ function onImport(e: Event) {
       </div>
     </section>
 
-    <section v-if="board.tags.length" class="group">
-      <h5>TAGS</h5>
-      <div class="controls tags">
-        <button
-          v-for="t in board.tags"
-          :key="t"
-          class="tag-chip"
-          :class="{ on: board.tagFilter.includes(t) }"
-          @click="toggleTag(t)"
-        >
-          {{ t }}
-        </button>
-        <button v-if="board.tagFilter.length" class="tag-chip clear" title="Clear filter" @click="board.tagFilter = []">
-          ✕
-        </button>
-      </div>
-    </section>
 
     <section class="group">
       <h5>BOARD</h5>
@@ -312,6 +280,15 @@ function onImport(e: Event) {
           @click="board.master.view = board.master.view === 'grid' ? 'pads' : 'grid'"
         >
           <v-icon size="16" :icon="board.master.view === 'grid' ? 'mdi-view-grid' : 'mdi-table'" />
+        </button>
+        <!-- layout: rack + list → rack only (fills the screen) → list only -->
+        <button
+          class="hw-btn icon"
+          :class="{ lit: board.master.rack }"
+          :title="layoutTitle"
+          @click="cycleLayout"
+        >
+          <v-icon size="16" :icon="board.master.list ? (board.master.rack ? 'mdi-view-split-horizontal' : 'mdi-format-list-bulleted-square') : 'mdi-view-column'" />
         </button>
         <Knob v-model="board.master.scale" label="SCALE" :min="0.5" :max="2" :step="0.05" :default="1" :format="fmtScale" :size="K" color="secondary" />
         <button
@@ -336,6 +313,7 @@ function onImport(e: Event) {
             <button @click="emit('add')"><v-icon size="16" icon="mdi-file-music" /> ADD FILES… <small>audio · .sfz · .zip</small></button>
             <button @click="emit('addFolder')"><v-icon size="16" icon="mdi-folder-music" /> ADD FOLDER… <small>SFZ instrument + samples</small></button>
             <button @click="emit('library')"><v-icon size="16" icon="mdi-music-box-multiple" /> BROWSE LIBRARY… <small>SFZ · GM · drums · URL</small></button>
+            <button @click="board.installFactory()"><v-icon size="16" icon="mdi-factory" /> ADD FACTORY PATCHES <small>built-in synth waves</small></button>
           </div>
         </v-menu>
         <button class="hw-btn icon" title="Export board (.zip)" @click="board.exportBoard()">
@@ -369,12 +347,7 @@ function onImport(e: Event) {
     0 4px 12px rgba(0, 0, 0, 0.6),
     inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
-@media (min-width: 1500px) {
-  .strip {
-    position: sticky;
-    top: 0;
-  }
-}
+
 .brand {
   background: none;
   border: 0;
@@ -460,7 +433,6 @@ function onImport(e: Event) {
     0 0 18px rgba(255, 60, 40, 0.6),
     inset 0 2px 4px rgba(0, 0, 0, 0.4);
 }
-.marquee,
 .lcd {
   position: relative;
   overflow: hidden;
@@ -480,7 +452,6 @@ function onImport(e: Event) {
   white-space: nowrap;
   text-transform: uppercase;
 }
-.marquee::after,
 .lcd::after {
   /* LED dot-matrix mask */
   content: '';
@@ -488,16 +459,6 @@ function onImport(e: Event) {
   inset: 0;
   background: radial-gradient(circle, transparent 55%, rgba(0, 0, 0, 0.45) 60%) 0 0 / 3px 3px;
   pointer-events: none;
-}
-/* fixed width: content changes never move the rest of the strip */
-.marquee {
-  width: 150px;
-  flex: none;
-}
-.marquee.idle {
-  color: var(--lcd-idle);
-  text-shadow: none;
-  justify-content: center;
 }
 .lcd {
   width: 104px;
@@ -521,16 +482,6 @@ function onImport(e: Event) {
 .beat.on {
   background: var(--c-danger);
   box-shadow: 0 0 6px var(--c-danger);
-}
-.scroll {
-  display: inline-block;
-  padding-left: 100%;
-  animation: scroll 9s linear infinite;
-}
-@keyframes scroll {
-  to {
-    transform: translateX(-100%);
-  }
 }
 .play.lit {
   color: var(--c-secondary);

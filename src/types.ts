@@ -15,7 +15,8 @@ export const FILTER_TYPES: FilterType[] = ['lowpass', 'highpass', 'bandpass']
 export const FILTER_LABEL: Record<FilterType, string> = { lowpass: 'LP', highpass: 'HP', bandpass: 'BP' }
 
 // ── modulation ─────────────────────────────────────────────────────────────
-export type ModSource = 'lfo1' | 'lfo2' | 'mod' | 'aftertouch' | 'velocity' | 'bend' | 'timbre'
+export type ModSource =
+  | 'lfo1' | 'lfo2' | 'mod' | 'aftertouch' | 'velocity' | 'bend' | 'timbre' | 'vco1' | 'vco2' | 'vco3'
 export type ModDest =
   | 'pitch' | 'cutoff' | 'resonance' | 'volume' | 'pan' | 'grainPos' | 'grainSize' | 'delayMix' | 'reverbMix'
 export type LfoShape = 'sine' | 'triangle' | 'square' | 'sawtooth' | 'rampDown' | 'random' | 'smooth'
@@ -28,7 +29,35 @@ export const MOD_SOURCES: { id: ModSource; label: string }[] = [
   { id: 'velocity', label: 'VELOCITY' },
   { id: 'bend', label: 'PITCH BEND' },
   { id: 'timbre', label: 'TIMBRE (CC74)' },
+  { id: 'vco1', label: 'VCO 1' },
+  { id: 'vco2', label: 'VCO 2' },
+  { id: 'vco3', label: 'VCO 3' },
 ]
+export const VCO_SOURCES = ['vco1', 'vco2', 'vco3'] as const
+
+/**
+ * Another pad layered onto this one as an oscillator: played with every note of this pad, heard (MIX) and/or used
+ * as an audio-rate mod source (VCO 1–3 in the matrix).
+ */
+export interface VcoSlot {
+  soundId: string | null
+  level: number // 0..1.5 mix level
+  audible: boolean // false = mod only
+  track: boolean // follow the played key; false = play fixedNote
+  transpose: number // semitones
+  fine: number // cents
+  fixedNote: number // MIDI note when not tracking
+}
+export const defaultVco = (): VcoSlot => ({
+  soundId: null,
+  level: 1,
+  audible: true,
+  track: true,
+  transpose: 0,
+  fine: 0,
+  fixedNote: 60,
+})
+export const MAX_VCOS = 3
 
 /**
  * scale: destination units at amount ±1.
@@ -161,6 +190,8 @@ export interface SoundSettings {
   bendRange: number // semitones
   // modulation
   mod: ModMatrix
+  /** linked pads played as extra oscillators (max 3) */
+  vcos: VcoSlot[]
   // midi
   midiNote: number | null
 }
@@ -239,6 +270,7 @@ export interface Sound {
   zones?: Zone[]
   /** SFZ <control> set_ccN / set_hdccN: controller values (0..1) the instrument expects to start from */
   ccDefaults?: Record<number, number>
+  fav?: boolean
 }
 
 /** Every audio blob a pad needs (its own plus its zones'). */
@@ -294,6 +326,7 @@ export function defaultSettings(name = 'SOUND'): SoundSettings {
     velAmount: 1,
     bendRange: 2,
     mod: defaultMatrix(),
+    vcos: [],
     midiNote: null,
   }
 }
@@ -301,7 +334,7 @@ export function defaultSettings(name = 'SOUND'): SoundSettings {
 /** Fill in settings added since a board was saved, and map renamed ones. */
 export function migrateSettings(raw: Partial<SoundSettings> & { fadeIn?: number; fadeOut?: number }): SoundSettings {
   const { fadeIn, fadeOut, ...rest } = raw
-  const s = { ...defaultSettings(raw.name), ...rest, mod: migrateMatrix(raw.mod) }
+  const s = { ...defaultSettings(raw.name), ...rest, mod: migrateMatrix(raw.mod), vcos: raw.vcos ?? [] }
   if (fadeIn !== undefined && raw.attack === undefined) s.attack = Math.max(0.001, fadeIn)
   if (fadeOut !== undefined && raw.release === undefined) s.release = Math.max(0.001, fadeOut)
   return s
@@ -362,6 +395,23 @@ export interface MasterState {
   theme: string
   /** pads = button grid, grid = spreadsheet (canvas-datagrid) */
   view: 'pads' | 'grid'
+  /** show the catalog (cards / grid): beside the rack (right third) when the rack is on, else full width */
+  list: boolean
+  /** list pane width beside the rack, as a fraction of the window (drag the divider) */
+  listWidth: number
+  /** control-panel sections folded to their title (shared by every panel) */
+  folded: string[]
+  /** show only favourites, per catalog */
+  favSounds: boolean
+  favPatches: boolean
+  /** factory sounds + patches have been installed once */
+  factory: boolean
+  /** show the selected patch (+ its VCOs) panels under the header */
+  rack: boolean
+  /** which catalog is showing */
+  tab: 'sounds' | 'patches'
+  /** the patch the keyboard plays and the header ◀ ▶ steps through */
+  patchId: string | null
   fx: GlobalFx
   /** global modulation matrix: applies to every voice */
   mod: ModMatrix
@@ -385,6 +435,15 @@ export const defaultMaster = (): MasterState => ({
   clockSource: 'internal',
   theme: 'console85',
   view: 'pads',
+  list: true,
+  listWidth: 0.33,
+  folded: ['eq', 'delay', 'reverb'],
+  favSounds: false,
+  favPatches: false,
+  factory: false,
+  rack: true,
+  tab: 'sounds',
+  patchId: null,
   fx: defaultGlobalFx(),
   mod: defaultMatrix(),
 })
@@ -401,10 +460,110 @@ export interface Preset {
 }
 
 /** Sample-specific settings a preset leaves alone when copied to another pad. */
-export const PRESET_EXCLUDE = ['name', 'tag', 'midiNote', 'rootNote', 'clipIn', 'clipOut'] as const
+export const PRESET_EXCLUDE = ['name', 'tag', 'midiNote', 'rootNote', 'clipIn', 'clipOut', 'vcos'] as const
 
 export function presetSettings(s: SoundSettings): Partial<SoundSettings> {
   const copy: Partial<SoundSettings> = JSON.parse(JSON.stringify(s))
   for (const k of PRESET_EXCLUDE) delete copy[k]
   return copy
+}
+
+// ── patches ──────────────────────────────────────────────────────────────────
+/** One sound inside a patch: the patch's own copy of its settings, playing that sound's audio. */
+export interface PatchLayer {
+  id: string
+  soundId: string
+  settings: SoundSettings
+}
+
+/** The header knobs a patch remembers. */
+export interface PatchHeader {
+  volume: number
+  glide: number
+  mono: boolean
+  mpe: boolean
+  mpeBendRange: number
+  bpm: number
+  fx: GlobalFx
+  mod: ModMatrix
+}
+
+/**
+ * A patch: layers[0] is the main voice; its settings.vcos slots point at the other layers by layer id.
+ * Plus the header settings that go with it.
+ */
+/**
+ * A patch slot: a layer plus how it joins the patch. Slot 1 is the main voice (always heard, follows the keyboard);
+ * slots 2–3 layer on top of it. In the mod matrix, VCO n is slot n's live signal.
+ */
+export interface PatchSlot {
+  layer: PatchLayer
+  level: number
+  audible: boolean // false = mod only
+  track: boolean // follow the played key; false = play fixedNote
+  transpose: number
+  fine: number
+  fixedNote: number
+}
+export const PATCH_SLOTS = 3
+
+export interface Patch {
+  id: string
+  name: string
+  tag: string
+  fav?: boolean
+  /** always PATCH_SLOTS long; null = empty slot */
+  slots: (PatchSlot | null)[]
+  header: PatchHeader
+}
+
+export const patchLayers = (p: Patch) => p.slots.filter((x): x is PatchSlot => !!x).map((x) => x.layer)
+/** the slot that plays as the main voice: slot 1, or the first filled one */
+export const carrierSlot = (p: Patch) => p.slots.find((x): x is PatchSlot => !!x) ?? null
+export const newSlot = (layer: PatchLayer): PatchSlot => ({ layer, ...defaultVco() })
+
+export const headerOf = (m: MasterState): PatchHeader =>
+  JSON.parse(
+    JSON.stringify({
+      volume: m.volume,
+      glide: m.glide,
+      mono: m.mono,
+      mpe: m.mpe,
+      mpeBendRange: m.mpeBendRange,
+      bpm: m.bpm,
+      fx: m.fx,
+      mod: m.mod,
+    }),
+  )
+
+export function migratePatch(p: Patch & { layers?: PatchLayer[] }): Patch {
+  const h = p.header ?? ({} as Partial<PatchHeader>)
+  const d = defaultMaster()
+  const fix = (l: PatchLayer): PatchLayer => ({ ...l, settings: migrateSettings(l.settings) })
+  let slots: (PatchSlot | null)[]
+  if (p.slots) slots = p.slots.map((x) => (x ? { ...defaultVco(), ...x, layer: fix(x.layer) } : null))
+  else {
+    // older patches: layers[0] + its settings.vcos → slots 1..3
+    const [main, ...rest] = p.layers ?? []
+    slots = main ? [newSlot(fix(main))] : [null]
+    for (const v of main?.settings.vcos ?? []) {
+      const l = rest.find((x) => x.id === v.soundId)
+      if (l && slots.length < PATCH_SLOTS) slots.push({ ...v, layer: fix(l) } as PatchSlot)
+    }
+    if (main) slots[0]!.layer.settings.vcos = []
+  }
+  while (slots.length < PATCH_SLOTS) slots.push(null)
+  const { layers: _old, ...rest } = p
+  void _old
+  return {
+    ...rest,
+    tag: p.tag ?? '',
+    slots: slots.slice(0, PATCH_SLOTS),
+    header: {
+      ...headerOf(d),
+      ...h,
+      fx: { ...defaultGlobalFx(), ...h.fx },
+      mod: migrateMatrix(h.mod),
+    },
+  }
 }

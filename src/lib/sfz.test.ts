@@ -51,6 +51,35 @@ describe('parseSfz', () => {
     expect(r[0].opcodes).toMatchObject({ key: '64', volume: '-6' })
   })
 
+  it('handles #define / #include mid-line, redefined per region (BengtNilsson.HeadroomPiano shape)', () => {
+    const files: Record<string, string> = {
+      'Data/close.txt': '#define $MIC CLOSE',
+      'Data/group.txt': '<group>\nlovel=1\nhivel=59\n#define $VEL LEVEL1\n#include "Data/region.txt"\n',
+      'Data/region.txt': [
+        'group_label=$VEL',
+        '<region> #define $KEY 21 lokey=21 hikey=22 #include "Data/sample.txt"',
+        '<region> #define $KEY 90 lokey=89 hikey=91 #include "Data/sample.txt" ampeg_release_oncc$DAMPER=10',
+      ].join('\n'),
+      'Data/sample.txt': 'sample=HEADROOM PIANO $VEL $MIC $KEY.$EXT\npitch_keycenter=$KEY\nregion_label=$KEY',
+    }
+    const main = [
+      '#define $DAMPER 67',
+      '#define $VELTRACK 73',
+      '#define $EXT flac',
+      '<control>\ndefault_path=Samples/\nset_hdcc$VELTRACK=1',
+      '<global> amp_veltrack_oncc$VELTRACK=100',
+      '<master>\ngroup=1\n#include "Data/close.txt"\n#include "Data/group.txt"',
+      '<curve>\ncurve_index=7\nv000=1',
+    ].join('\n')
+    const { regions: r, control } = parseSfz(main, (p) => files[p] ?? null)
+    expect(r).toHaveLength(2)
+    expect(r[0].sample).toBe('Samples/HEADROOM PIANO LEVEL1 CLOSE 21.flac')
+    expect(r[0].opcodes).toMatchObject({ lokey: '21', hikey: '22', pitch_keycenter: '21', lovel: '1', amp_veltrack_oncc73: '100' })
+    expect(r[1].sample).toBe('Samples/HEADROOM PIANO LEVEL1 CLOSE 90.flac')
+    expect(r[1].opcodes.ampeg_release_oncc67).toBe('10')
+    expect(control.set_hdcc73).toBe('1')
+  })
+
   it('applies note_offset / octave_offset, keeps generators and control opcodes', () => {
     const { regions: r, control } = parseSfz(`<control> octave_offset=1 set_cc1=64\n<region> sample=a.wav key=48\n<region> sample=*Sine key=60`)
     expect(r).toHaveLength(2)
@@ -182,5 +211,13 @@ describe('generators', () => {
     expect(cycleSample('sine', 0.25)).toBeCloseTo(1)
     expect(cycleSample('square', 0.25)).toBeCloseTo(1, 1)
     expect(cycleSample('triangle', 0.25)).toBeCloseTo(1, 1)
+  })
+})
+
+describe('normalisePath', () => {
+  it('folds dir/.. but keeps leading .. (samples above the .sfz)', () => {
+    expect(normalisePath('Programs/../Samples/a.wav')).toBe('Samples/a.wav')
+    expect(normalisePath('..\\Samples\\a.wav')).toBe('../Samples/a.wav')
+    expect(normalisePath('./x/../../y.wav')).toBe('../y.wav')
   })
 })

@@ -14,6 +14,13 @@ describe('knob math', () => {
     expect(pctToValue(valueToPct(632, 20, 20000, 'log'), 20, 20000, 'log')).toBeCloseTo(632, 3)
   })
 
+  it('pow taper reaches 0 and spans a long range with fine control low down', () => {
+    expect(pctToValue(0, 0, 60000, 'pow')).toBe(0)
+    expect(pctToValue(1, 0, 60000, 'pow')).toBe(60000)
+    expect(pctToValue(0.2, 0, 60000, 'pow', 1)).toBe(480)
+    expect(valueToPct(480, 0, 60000, 'pow')).toBeCloseTo(0.2)
+  })
+
   it('clamps', () => {
     expect(valueToPct(99, 0, 10)).toBe(1)
     expect(pctToValue(-1, 0, 10)).toBe(0)

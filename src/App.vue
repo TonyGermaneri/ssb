@@ -8,12 +8,18 @@ import { fromInput } from './lib/dropFiles'
 import DropZone from './components/DropZone.vue'
 import MatrixDialog from './components/MatrixDialog.vue'
 import MasterStrip from './components/MasterStrip.vue'
+import TagStrip from './components/TagStrip.vue'
+import Rack from './components/Rack.vue'
+import TabBar from './components/TabBar.vue'
+import PatchCards from './components/PatchCards.vue'
+const PatchTable = defineAsyncComponent(() => import('./components/PatchTable.vue'))
 import SoundGrid from './components/SoundGrid.vue'
 import { defineAsyncComponent } from 'vue'
 // canvas-datagrid is only loaded when grid mode is first opened
 const GridView = defineAsyncComponent(() => import('./components/GridView.vue'))
 const LibraryDialog = defineAsyncComponent(() => import('./components/LibraryDialog.vue'))
 const libraryOpen = ref(false)
+
 
 const board = useBoard()
 const vuetifyTheme = useTheme()
@@ -86,6 +92,15 @@ function onKeyUp(e: KeyboardEvent) {
   const id = board.soundForKey.get(key)
   if (id && board.pressed.has(id)) board.release(id)
 }
+/** the rack | list divider: dragging sets the list's share of the window */
+function onDividerDown(e: PointerEvent) {
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+}
+function onDividerMove(e: PointerEvent) {
+  if (!(e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) return
+  const w = 1 - e.clientX / window.innerWidth
+  board.master.listWidth = Math.round(Math.min(0.75, Math.max(0.15, w)) * 1000) / 1000
+}
 function onPick(e: Event) {
   const input = e.target as HTMLInputElement
   board.addFiles(fromInput(input.files ?? []))
@@ -106,21 +121,55 @@ onBeforeUnmount(() => {
 <template>
   <v-app>
     <div class="console" :class="{ scanlines: board.master.scanlines }">
-      <MasterStrip @add="fileInput?.click()" @add-folder="folderInput?.click()" @library="libraryOpen = true" />
-      <main class="deck">
-        <GridView v-if="board.master.view === 'grid' && board.sounds.length" />
-        <SoundGrid v-else @add="fileInput?.click()" />
+      <div class="chrome">
+        <MasterStrip @add="fileInput?.click()" @add-folder="folderInput?.click()" @library="libraryOpen = true" />
+      </div>
+      <!-- rack (the selected patch's three VCO slots) on the left, the sounds / patches list on the right third -->
+      <div class="body" :class="{ split: board.master.rack && board.master.list }">
+        <Rack v-if="board.master.rack || !board.master.list" class="rack-pane" />
+        <div
+          v-if="board.master.rack && board.master.list"
+          class="divider"
+          title="Drag to resize the list · double-click = 33%"
+          @pointerdown="onDividerDown"
+          @pointermove="onDividerMove"
+          @dblclick="board.master.listWidth = 0.33"
+        >
+          <i />
+        </div>
+        <div
+          v-if="board.master.list"
+          class="list-pane"
+          :style="board.master.rack ? { width: `${board.master.listWidth * 100}vw` } : undefined"
+        >
+          <TabBar />
+          <TagStrip v-if="board.sounds.length || board.patches.length" />
+          <main class="deck">
+        <template v-if="board.master.tab === 'patches'">
+          <PatchTable v-if="board.master.view === 'grid' && board.patches.length" />
+          <PatchCards v-else />
+        </template>
+        <template v-else>
+          <GridView v-if="board.master.view === 'grid' && board.sounds.length" />
+          <SoundGrid v-else @add="fileInput?.click()" />
+        </template>
       </main>
       <footer v-if="board.master.view === 'pads'" class="legend">
         <template v-if="board.master.play">
           PLAY MODE · Z–/ AND Q–P ROWS = PIANO (Q = C4, ORIGINAL PITCH) · - / = = OCTAVE · SPACE = PANIC · ESC = CLOSE
           PANELS
         </template>
+        <template v-else-if="board.master.tab === 'patches'">
+          CLICK A PATCH = AUDITION · PIANO BUTTON = KEYBOARD PATCH · ☰ = EDIT ITS SLOTS · ◀ ▶ IN THE HEADER = STEP PATCHES ·
+          ♥ = FAVOURITE · SPACE = PANIC
+        </template>
         <template v-else>
-          CLICK PAD = PLAY · ☰ / RIGHT-CLICK = CONTROLS · PIANO BUTTON = SELECT PATCH · 1–0 Q–P A–L Z–M = PADS · SPACE = PANIC ·
+          CLICK PAD = PLAY · 1 2 3 = PUT IN THAT VCO SLOT · DRAG ⋮⋮ INTO A SLOT · ☰ = CONTROLS · ♥ = FAVOURITE · 1–0 Q–P A–L Z–M = PADS · SPACE = PANIC ·
           ESC = CLOSE PANELS · KNOBS: DRAG / SCROLL / DOUBLE-CLICK RESET / SHIFT = FINE
         </template>
       </footer>
+        </div>
+      </div>
     </div>
     <DropZone />
     <MatrixDialog />
@@ -141,6 +190,57 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.chrome {
+  position: relative;
+  z-index: 10;
+  flex: none;
+}
+/* everything under the header: rack, list, or rack | list (list = right third) */
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.rack-pane {
+  flex: 1;
+  min-width: 0;
+}
+.list-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.split .list-pane {
+  flex: none;
+  box-shadow: -3px 0 8px rgba(0, 0, 0, 0.45);
+}
+.divider {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 8px;
+  cursor: ew-resize;
+  touch-action: none;
+  background: #000;
+}
+.divider i {
+  width: 3px;
+  height: 60px;
+  border-radius: 2px;
+  background: var(--text-faint);
+}
+.divider:hover i {
+  background: var(--c-primary);
+}
+.list-pane .deck {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+.legend {
+  flex: none;
+}
 .toast {
   font-family: 'VT323', monospace;
   font-size: 20px;

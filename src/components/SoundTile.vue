@@ -66,7 +66,7 @@ function onDrop(e: DragEvent) {
   flex-direction: column;
   align-items: center;
   justify-content: flex-end;
-  padding: 4px;
+  padding: 2px;
   border-radius: 12px;
   transition: background 120ms;
 }

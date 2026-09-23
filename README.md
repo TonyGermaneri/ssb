@@ -1,6 +1,8 @@
-# SSB — Simple Sound Board
+# SSB — Super Sound Board
 
-An 80s-console soundboard: drop audio files onto the page and each one becomes a pad.
+An 80s-console sampler, synth and sound board: drop audio files (or SFZ instruments) onto the page and each one
+becomes a pad; layer them into patches with VCO slots, a mod matrix, grains and global effects. (It started life as
+the *Simple* Sound Board — it outgrew the name, kept the acronym.)
 
 ```sh
 npm install
@@ -18,6 +20,53 @@ npm run build    # typecheck + production build
 - **Keys** `1–0`, `Q–P`, `A–L`, `Z–M` trigger pads in grid order. **Space** = PANIC, **Esc** = close panels.
 - **Knobs**: drag up/down, scroll, arrow keys; **Shift** = fine; **double-click** = reset.
 - **Waveform**: drag to move clip in/out. Grains flash on it while they play.
+
+### Sounds and patches
+
+Two catalogs, as tabs under the header, each with card and grid views and its own tag filter:
+- **Sounds** — the audio you've loaded (pads). Clicking a pad plays it; the piano button edits it in the rack.
+- **Patches** — playable instruments built from up to **3 VCO slots**, each holding a sound (as the patch's own
+  copy of its settings, so editing a patch never changes the sound), plus the header knobs (volume, glide, mono/poly,
+  MPE + bend range, BPM, chorus / delay / reverb, global mod matrix). Selecting a patch loads those header settings;
+  changing them while it's selected saves them into it.
+
+The header **◀ ▶** step through patches (in the Patches tab's filtered order) and the keyboard (PLAY) plays the selected
+patch. **♥** marks favourites on sound cards, patch cards, the rack and in the grids (♥ column); **♥ FAV** in the tag
+strip shows only those.
+
+**Factory patches** built on the built-in synth waves (saw, square, sine, triangle, noise) are installed on a new board:
+POLY SAW, PURE SINE, FM PIANO, SQUARE LEAD, WARM PAD, SUB BASS, BRASS STAB, WIND, RING BELL. **+ → ADD FACTORY
+PATCHES** adds them again.
+
+### VCO slots + rack
+
+The **rack** under the header shows the selected patch's three slots side by side, each with its sound's full panel.
+- **Fill a slot** by dragging a sound card by its ⋮⋮ grip into it, or pressing **1 / 2 / 3** on the card (the number
+  lights while the sound sits in that slot; the previous sound is replaced). With no patch selected this starts one.
+- **REMOVE** empties a slot.
+- **VCO 1** is the main voice. VCOs 2–3 have **MIX / MOD** (heard, or a silent modulator only), **TRACK / FIXED**
+  (follow the played key keeping TRANS / FINE, or always play NOTE) and **LEVEL**.
+- The header's **layout** button cycles rack + list → rack only → list only. Beside the rack the list starts at a
+  third of the window; drag the divider to resize it (double-click = 33%).
+- Each panel section has a **fold** triangle (top right) that shrinks it to its title. EQ, DELAY and REVERB start
+  folded; folds are shared by every panel and saved.
+
+Each VCO's live signal (after its own envelope and filter) is a mod-matrix source (**VCO 1–3** = slots 1–3): route
+VCO 2 → pitch for FM, → volume for AM, → cutoff for audio-rate filter sweeps. VCOs are full sounds, so SFZ instruments
+and grain clouds work as oscillators too. Note-offs, STOP, choke and PANIC treat the patch as one group.
+
+### Tags
+
+A pad's TAGS field holds comma-separated tags (chips in the panel). The **tag strip** under the header lists every tag
+with how many pads carry it; click tags to filter (AND) — the strip then shows only tags that co-occur with the
+selection, with counts for the remaining pads. **ALL** clears the filter. Imports are tagged automatically with where
+they came from: `dropped, <folder>`, `sfzinstruments, <repo>`, `gm, <set>, <family>`, `dirt-samples, <bank>`,
+`url, <host>`, or `imported, <board>` — plus `sfz` or `sample`.
+
+### Big boards
+
+The card view is virtualised (Vuetify `v-virtual-scroll` over rows sized to the window and pad scale), so only the
+rows on screen exist in the DOM; grid mode (canvas-datagrid) handles very large lists natively.
 
 ### Per-pad panel
 
@@ -60,7 +109,8 @@ The panel shows a zone map (keys across, velocity up) that lights as notes sound
 
 Supported:
 - structure: `<control>` (default_path, note_offset, octave_offset, set_ccN, set_hdccN), `<global>/<master>/<group>/<region>`
-  inheritance, `#define` (shared across includes), `#include` (relative to the main file)
+  inheritance, `#define` (shared across includes), `#include` (relative to the main file) — anywhere on a line, in
+  reading order (a macro can be redefined per region, and include paths can use macros); `../` paths above the .sfz
 - mapping: sample, key / lokey / hikey, lovel / hivel, locc / hicc, pitch_keycenter, pitch_keytrack, transpose, tune,
   seq_length / seq_position (round robin), lorand / hirand, sw_last / sw_default (default articulation)
 - playback: volume, amplitude, pan, offset, end, loop_mode, loop_start / loop_end, ampeg_attack / hold / decay /
@@ -82,6 +132,7 @@ A .zip containing `board.json` still imports as a board; any other .zip is unpac
 **+ → Browse library…** fetches free, CORS-enabled collections straight into the board (no download step):
 - **SFZ instruments** — the [sfzinstruments](https://github.com/sfzinstruments) GitHub org (70+ instruments). Pick an
   instrument, then one of its .sfz files; only the samples that .sfz uses are fetched (the size is shown first).
+  Samples an .sfz names wrongly (case, a missing default_path) are found in the repo by their path's tail.
 - **GM soundfonts** — all 128 General MIDI instruments from
   [gleitz/midi-js-soundfonts](https://github.com/gleitz/midi-js-soundfonts) (FluidR3_GM or MusyngKite), one MP3
   every 3 semitones, mapped as an SFZ.
@@ -91,7 +142,8 @@ A .zip containing `board.json` still imports as a board; any other .zip is unpac
 
 ### Grain streams
 
-GRAIN → **STREAMS** runs up to 8 independent grain streams per note; **SCATTER** randomises each stream's timing and
+GRAIN → **SIZE** goes from OFF up to the whole sample (the knob's range follows the sample's length, finest at the
+low end). **STREAMS** runs up to 8 independent grain streams per note; **SCATTER** randomises each stream's timing and
 **DRIFT** gives each its own speed and direction through the clip. The waveform shows every playing grain's playhead.
 
 ### Grid mode
@@ -122,10 +174,10 @@ included in exports.
 
 ### Header
 
-OUTPUT + VU · NOW PLAYING · PATCH (◀ selected ▶, PLAY, POLY/MONO, octave, GLIDE) · PERFORM (MOD, spring-loaded BEND, global MATRIX) ·
+OUTPUT + vertical VU · PATCH (◀ selected ▶, PLAY, POLY/MONO, octave, GLIDE) · PERFORM (MOD, spring-loaded BEND, global MATRIX) ·
 global CHORUS / DELAY / REVERB · TAGS filter · BOARD (pad SCALE, scanlines, undo, redo, add, MIDI, export, import). Wraps into rows on narrow windows.
 
-- **Select a patch** with the piano button in a pad's lower-right corner, or ◀ ▶ in the header.
+- **Select a patch** in the Patches tab, or with ◀ ▶ in the header.
 - **PLAY** turns MIDI and the computer keyboard into a piano for the selected patch (C4 = original pitch).
   Computer keys: `Z` row = C3 octave, `Q` row = C4 octave, `-` / `=` = octave down/up.
 - **MONO** + **GLIDE** = legato portamento; **POLY** = each note its own voice (glide slides from the last note).

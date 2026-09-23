@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { activeVoices, buffers, clock } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { midiNoteName } from '../lib/format'
+import { splitTags } from '../lib/tags'
 import { TRIGGER_MODE_INFO, type Sound } from '../types'
 
 const props = defineProps<{ sound: Sound; hue: number; keyLabel?: string; open: boolean }>()
@@ -13,6 +14,9 @@ const voices = computed(() => activeVoices.value.filter((v) => v.soundId === pro
 const playing = computed(() => voices.value.length > 0)
 const pressed = computed(() => board.pressed.has(props.sound.id))
 const selected = computed(() => board.master.selectedId === props.sound.id)
+const tagList = computed(() => splitTags(props.sound.settings.tag))
+/** slots of the selected patch this sound is in */
+const inSlots = computed(() => board.slotsOf(props.sound.id))
 const midiNote = computed(() => board.noteFor.get(props.sound.id))
 /** newest voice id: changes on every trigger, which replays the flash */
 const lastVoice = computed(() => voices.value.reduce((m, v) => Math.max(m, v.id), 0))
@@ -81,9 +85,23 @@ function onUp() {
     <div class="backlight" />
     <div v-if="lastVoice" :key="lastVoice" class="flash" />
 
-    <div class="led" />
+    <!-- 1 / 2 / 3: put this sound into that VCO slot of the selected patch (lit = it's there) -->
+    <div class="slots" @pointerdown.stop @pointerup.stop @mousedown.stop>
+      <button
+        v-for="n in 3"
+        :key="n"
+        class="slot"
+        :class="{ on: inSlots.has(n) }"
+        :title="inSlots.has(n) ? `Remove from VCO ${n}` : `Put in VCO ${n} of the selected patch`"
+        @click.stop="board.toggleSlot(n - 1, sound.id)"
+      >
+        {{ n }}
+      </button>
+    </div>
     <div class="name">{{ sound.settings.name }}</div>
-    <div v-if="sound.settings.tag" class="tag">{{ sound.settings.tag }}</div>
+    <div v-if="tagList.length" class="tag" :title="tagList.join(', ')">
+      {{ tagList.slice(0, 2).join(' · ') }}<span v-if="tagList.length > 2" class="more"> +{{ tagList.length - 2 }}</span>
+    </div>
 
     <div class="badges">
       <v-icon size="12" :icon="TRIGGER_MODE_INFO[sound.settings.mode].icon" />
@@ -95,10 +113,21 @@ function onUp() {
       <kbd v-if="keyLabel" class="key">{{ keyLabel.toUpperCase() }}</kbd>
     </div>
     <button
+      class="heart"
+      :class="{ on: sound.fav }"
+      :title="sound.fav ? 'Unfavourite' : 'Favourite'"
+      @pointerdown.stop
+      @pointerup.stop
+      @mousedown.stop
+      @click.stop="board.toggleFav('sound', sound.id)"
+    >
+      <v-icon size="13" :icon="sound.fav ? 'mdi-heart' : 'mdi-heart-outline'" />
+    </button>
+    <button
       class="select"
       :class="{ on: selected }"
       :aria-pressed="selected"
-      :title="selected ? 'Selected patch (plays on the keyboard)' : 'Select as the keyboard patch'"
+      :title="selected ? 'Editing in the rack' : 'Edit in the rack (and play on the keyboard when there are no patches)'"
       @pointerdown.stop
       @pointerup.stop
       @mousedown.stop
@@ -262,6 +291,9 @@ function onUp() {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.tag .more {
+  opacity: 0.7;
+}
 .corner {
   position: absolute;
   top: 4px;
@@ -339,6 +371,54 @@ function onUp() {
   background: linear-gradient(#f1ebdc, #c9c0aa);
   border-radius: 2px;
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+}
+.slots {
+  position: absolute;
+  top: 5px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+  z-index: 2;
+}
+.slot {
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border-radius: 3px;
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid rgba(0, 0, 0, 0.35);
+}
+.slot:hover {
+  color: #fff;
+  background: rgba(0, 0, 0, 0.5);
+}
+.slot.on {
+  color: #1a1200;
+  background: var(--c-primary);
+  box-shadow: 0 0 8px var(--c-primary);
+}
+.heart {
+  position: absolute;
+  right: 30px;
+  bottom: 8px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 18px;
+  padding: 0;
+  border-radius: 3px;
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(0, 0, 0, 0.25);
+  z-index: 2;
+}
+.heart.on {
+  color: #ff3d6e;
+  filter: drop-shadow(0 0 4px #ff3d6e);
 }
 .select {
   position: absolute;

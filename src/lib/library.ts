@@ -63,40 +63,72 @@ const dirOf = (url: string) => url.slice(0, url.lastIndexOf('/') + 1)
 
 /**
  * An .sfz at a URL plus everything it needs: #include files and the samples its regions use
- * (only those — big libraries often ship many alternates). Paths stay relative to the .sfz.
+ * (only those — big libraries often ship many alternates). Files keep their layout relative to the deepest folder
+ * that holds them all, so `../Samples/…` from a `Programs/` .sfz still resolves.
+ * `locate`: where a sample really is (URL), or null to skip it — for repos whose .sfz paths don't match their files;
+ * the file still gets the path the .sfz asks for.
  */
-export async function sfzFromUrl(sfzUrl: string, progress?: Progress): Promise<PathFile[]> {
+export async function sfzFromUrl(
+  sfzUrl: string,
+  progress?: Progress,
+  locate?: (sample: string) => string | null,
+): Promise<PathFile[]> {
   const { base, texts, samples } = await sfzTexts(sfzUrl)
+  const abs = (rel: string) => new URL(encodePath(rel), base).href
+  const wanted = samples.map((s) => ({ as: abs(s), from: locate ? locate(s) : abs(s) }))
+  const textUrls = [...texts.keys()].map(abs)
+  const root = commonDir([...textUrls, ...wanted.map((w) => w.as)])
+  const rel = (url: string) => decodeURIComponent(url.slice(root.length))
   const files = await fetchAll(
-    samples.map((s) => ({ url: base + encodePath(s), path: s })),
+    wanted.filter((w) => w.from).map((w) => ({ url: w.from!, path: rel(w.as) })),
     progress,
   )
-  return [...[...texts].map(([path, text]) => ({ file: new Blob([text]), path })), ...files]
+  return [...[...texts.values()].map((text, i) => ({ file: new Blob([text]), path: rel(textUrls[i]) })), ...files]
 }
 
-/** The .sfz text plus its #includes, and the sample paths its regions reference. */
+/** Longest shared folder URL (ends in '/'). */
+function commonDir(urls: string[]): string {
+  let dir = dirOf(urls[0])
+  while (!urls.every((u) => u.startsWith(dir))) dir = dirOf(dir.slice(0, -1))
+  return dir
+}
+
+/**
+ * The .sfz text plus its #includes (keyed by path relative to the .sfz), and the sample paths its regions reference.
+ * Includes are found by parsing — so paths built from macros (`#include "$DIR/$DYN.txt"`) and includes that only
+ * appear once another include has defined something are fetched too — repeating until nothing new turns up.
+ * #include paths are relative to the main .sfz (as in sfizz / ARIA), not to the including file.
+ */
 async function sfzTexts(sfzUrl: string) {
   const base = dirOf(sfzUrl)
-  const name = decodeURIComponent(sfzUrl.slice(base.length))
-  const texts = new Map<string, string>()
-  // #include paths are relative to the main .sfz (as in sfizz / ARIA), not to the including file
-  const load = async (rel: string, required = false) => {
-    const key = normalisePath(rel)
-    if (texts.has(key)) return
-    const res = await fetch(base + encodePath(key))
-    if (!res.ok) {
-      if (required) throw new Error(`${res.status} ${rel}`)
-      console.warn('library: missing include', rel)
-      return
+  const name = normalisePath(decodeURIComponent(sfzUrl.slice(base.length)))
+  const res = await fetch(sfzUrl)
+  if (!res.ok) throw new Error(`${res.status} ${sfzUrl}`)
+  const texts = new Map([[name, await res.text()]])
+  const failed = new Set<string>()
+  for (let pass = 0; pass < 12; pass++) {
+    const want = new Set<string>()
+    const { regions } = parseSfz(texts.get(name)!, (p) => {
+      const key = normalisePath(p)
+      if (!texts.has(key) && !failed.has(key)) want.add(key)
+      return texts.get(key) ?? null
+    })
+    if (!want.size) {
+      const samples = [...new Set(regions.map((r) => r.sample).filter((s) => !s.startsWith('*')))]
+      return { base, texts, samples }
     }
-    const text = await res.text()
-    texts.set(key, text)
-    for (const m of text.matchAll(/#include\s+"([^"]+)"/g)) await load(m[1])
+    await Promise.all(
+      [...want].map(async (key) => {
+        const r = await fetch(new URL(encodePath(key), base)).catch(() => null)
+        if (r?.ok) texts.set(key, await r.text())
+        else {
+          failed.add(key)
+          console.warn('library: missing include', key)
+        }
+      }),
+    )
   }
-  await load(name, true)
-  const { regions } = parseSfz(texts.get(normalisePath(name))!, (p) => texts.get(normalisePath(p)) ?? null)
-  const samples = [...new Set(regions.map((r) => r.sample).filter((s) => !s.startsWith('*')))]
-  return { base, texts, samples }
+  throw new Error(`${name}: #include chain too deep`)
 }
 
 // ── sfzinstruments (github.com/sfzinstruments) ────────────────────────────
@@ -142,12 +174,40 @@ export async function repoTree(repo: Repo): Promise<RepoTree> {
 export const rawUrl = (repo: Repo, path: string) =>
   `https://raw.githubusercontent.com/sfzinstruments/${repo.name}/${repo.branch}/${encodePath(path)}`
 
+/**
+ * A sample path from an .sfz → the repo file it means. Exact path first; then ignoring case (Windows-authored
+ * packs); then the file whose path ends with the sample's (an .sfz that forgot its default_path, or a mapping file
+ * written for the folder above it). null = not in the repo.
+ */
+export function repoSampleFinder(tree: RepoTree, sfzPath: string) {
+  const dir = sfzPath.includes('/') ? sfzPath.slice(0, sfzPath.lastIndexOf('/') + 1) : ''
+  const files = [...tree.sizes.keys()]
+  const lower = new Map(files.map((f) => [f.toLowerCase(), f]))
+  return (sample: string): string | null => {
+    const want = normalisePath(dir + sample)
+    if (tree.sizes.has(want)) return want
+    const hit = lower.get(want.toLowerCase())
+    if (hit) return hit
+    const tail = '/' + normalisePath(sample).replace(/^(\.\.\/)+/, '').toLowerCase()
+    return files.find((f) => ('/' + f.toLowerCase()).endsWith(tail)) ?? null
+  }
+}
+
+/** An .sfz from a sfzinstruments repo, its samples found in the repo tree. */
+export function repoSfz(repo: Repo, tree: RepoTree, sfzPath: string, progress?: Progress) {
+  const find = repoSampleFinder(tree, sfzPath)
+  return sfzFromUrl(rawUrl(repo, sfzPath), progress, (s) => {
+    const path = find(s)
+    return path === null ? null : rawUrl(repo, path)
+  })
+}
+
 /** Bytes an .sfz will pull (its samples only), from the repo tree. */
 export async function sfzDownloadSize(repo: Repo, tree: RepoTree, sfzPath: string): Promise<number> {
   const { samples } = await sfzTexts(rawUrl(repo, sfzPath))
-  const dir = sfzPath.includes('/') ? sfzPath.slice(0, sfzPath.lastIndexOf('/') + 1) : ''
+  const find = repoSampleFinder(tree, sfzPath)
   let bytes = 0
-  for (const s of samples) bytes += tree.sizes.get(normalisePath(dir + s)) ?? 0
+  for (const s of new Set(samples.map(find))) if (s) bytes += tree.sizes.get(s) ?? 0
   return bytes
 }
 
@@ -157,6 +217,13 @@ export type GmSet = (typeof GM_SETS)[number]
 const GM_BASE = 'https://gleitz.github.io/midi-js-soundfonts'
 const FLATS = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B']
 const noteFile = (n: number) => `${FLATS[n % 12]}${Math.floor(n / 12) - 1}.mp3`
+
+/** General MIDI families: programs come in blocks of 8. */
+const GM_FAMILIES = [
+  'piano', 'chromatic percussion', 'organ', 'guitar', 'bass', 'strings', 'ensemble', 'brass',
+  'reed', 'pipe', 'synth lead', 'synth pad', 'synth effects', 'ethnic', 'percussive', 'sound effects',
+]
+export const gmFamily = (program: number) => GM_FAMILIES[Math.floor(program / 8)] ?? 'gm'
 
 export const listGm = (set: GmSet) => fetchJson<string[]>(`${GM_BASE}/${set}/names.json`, `ssb:lib:gm:${set}`)
 

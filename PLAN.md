@@ -1,4 +1,4 @@
-# SSB — Simple Sound Board: Implementation Plan
+# SSB — Super Sound Board: Implementation Plan
 
 ## 1. Stack
 
@@ -18,7 +18,7 @@ Scaffold: hand-written Vite config, plus `vuetify`, `vite-plugin-vuetify`, `@mdi
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ [VOL ◔] [MUTE] [PANIC!]  ▸ NOW PLAYING: airhorn · rimshot · sad-trombone │  ← master strip (thin)
+│ [VOL ◔] [MUTE] [PANIC!] [VU]  [◀ PATCH ▶] …                              │  ← master strip (thin)
 ├──────────────────────────────────────────────────────────────────────────┤
 │                    ┌────────────── panel ─────────────┐                  │
 │                    │ ~waveform~  name[____] tag[____] │                  │
@@ -250,3 +250,45 @@ fills exactly the remaining window.
 - Poly grains: per-note streams with random start, offset, drift speed; overlap = density × streams.
 - Library (`lib/library.ts`, `LibraryDialog.vue`): GitHub API (tree listing, cached a day), raw.githubusercontent,
   GitHub Pages; 6 fetches in flight; results go through `addFiles`.
+
+## 21. Scaling + tags
+
+- Card view: rows packed from measured width ÷ (pad width × scale); an open pad is its own row; rendered with
+  `v-virtual-scroll` (variable row heights). The console is a fixed-height app; the header (strip + tag strip) height
+  is published as `--strip-h` and both views fill the rest.
+- Tags: comma-separated per pad (`lib/tags.ts`); faceted AND filter with live counts; auto-tags on every import path.
+- Known cost: adding thousands of pads at once takes ~2 s (the undo snapshot + save serialise the whole board).
+
+## 22. Multi-VCO
+
+VCOs are a patch's slots 2–3 (see §23); `vcoLinks(sound)` turns them into the engine's link list (layer id, level,
+audible, track, transpose, fine, fixedNote). `startNote` starts the VCO voices first (grouped under the carrier's id,
+level / detune applied, mod-only ones into a silent bus that still feeds the graph), then the carrier's own voices with
+`modTaps` = each VCO's first voice's post-filter node; the matrix sources `vco1..3` (= slots 1–3) connect those taps
+through the usual route gains (bipolar, like LFOs). Engine release / stop / isHeld match a voice's own id or its group.
+Known limits: grain destinations can't read VCO signals; MONO legato retriggers instead of gliding when VCOs are linked.
+
+## 23. Patches
+
+`Patch { id, name, tag, fav?, slots: (PatchSlot | null)[3], header: PatchHeader }`;
+`PatchSlot { layer: PatchLayer, level, audible, track, transpose, fine, fixedNote }`; `PatchLayer { id, soundId, settings }`.
+The carrier is slot 1 (else the first filled slot). `assignSlot(i, soundId | null)` fills / swaps (keeping the slot's
+mix params) / empties a slot, creating a patch when none is selected; sound cards' 1 / 2 / 3 buttons call
+`toggleSlot`, and the rack's slots accept the card grip's `application/x-ssb-sound` drag. Old layer-based patches are
+migrated on load (`migratePatch`). Layers resolve to playable `Sound` objects (`layerSound`: the layer's settings
+over the source sound's audio / zones, cached per layer), so the engine, panels and matrix are shared with sounds.
+`resolveSound(id)` finds a sound or a layer. Header binding: selectPatch copies the header into master; a watcher on
+`headerOf(master)` writes changes back into the selected patch. Patches are persisted, exported, undoable, and
+remapped to new sound ids on import. `DataGrid.vue` is the shared themed canvas-datagrid for both catalogs.
+
+Factory content (`lib/factory.ts`): five built-in wave sounds (reused if present) and nine patches, installed once per
+board (`master.factory`) and on demand from the + menu. Favourites: `fav` on sounds and patches, filtered by
+`master.favSounds` / `favPatches`. Layout (App.vue): the header, then `.body` = rack | list; with both on, the list
+pane (tab bar, tag strip, cards / grid) is `master.listWidth` of the window (divider drag, default 0.33) and every view fills its pane (flex, `height: 100%`). Panel sections fold via `master.folded` (keys like
+`eq`, `filter-adsr`); narrow panels (container query ≤ 440px) put GRAIN on one row and show icon-only footer buttons,
+so three slots fit a 1920×1080 screen with up to ~316px of browser chrome.
+
+SFZ preprocessing (`lib/sfz.ts`) is one left-to-right scan for `#define`, `#include` and `$MACRO`, so directives work
+mid-line and redefinitions apply to what follows. `normalisePath` keeps leading `..`. The library finds includes by
+parsing repeatedly until nothing new is requested (handles macro-built include paths), and for sfzinstruments repos
+`repoSampleFinder` maps each sample to a tree path (exact → case-insensitive → path tail).

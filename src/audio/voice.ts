@@ -47,6 +47,14 @@ export interface VoiceOptions {
   timbre?: number
   /** play one zone of a multi-sample (SFZ) instrument instead of the pad's clip */
   zone?: ZonePlay
+  /** the patch this voice plays for when it's a linked VCO (note-offs / stops follow the group) */
+  group?: string
+  /** VCO mix level */
+  level?: number
+  /** extra tuning in cents (VCO fine) */
+  detune?: number
+  /** VCO 1–3 signals for this voice's mod matrix (audio-rate FM / AM) */
+  modTaps?: (AudioNode | null)[]
 }
 
 /** A zone, resolved for playback. Times in seconds of the zone's buffer. */
@@ -104,13 +112,16 @@ export interface ModHub {
   cc: Float32Array
   matrix: () => ModMatrix
   mpeBendRange: () => number
+  /** a silent source for unconnected VCO slots */
+  zero: ConstantSourceNode
 }
 
 type Scope = 'global' | 'pad'
 const LFO_INDEX = { lfo1: 0, lfo2: 1 } as const
 /** matrix units → AudioParam units */
 const PARAM_UNIT: Partial<Record<ModDest, number>> = { pitch: 100, cutoff: 1200 }
-const BIPOLAR = new Set<ModSource>(['lfo1', 'lfo2', 'bend'])
+const BIPOLAR = new Set<ModSource>(['lfo1', 'lfo2', 'bend', 'vco1', 'vco2', 'vco3'])
+const VCO_INDEX = { vco1: 0, vco2: 1, vco3: 2 } as const
 
 const zoneBounds = (z: ZonePlay, duration: number): ClipBounds => {
   const clipIn = Math.min(Math.max(0, z.start), Math.max(0, duration - 0.005))
@@ -137,6 +148,9 @@ export class Voice {
   readonly kind: VoiceKind
   midiNote?: number
   readonly channel?: number
+  readonly groupId?: string
+  private level: number
+  private modTaps: (AudioNode | null)[]
   endTime: number
   playing = true
   /** when the release starts (Infinity until note-off / scheduled end) */
@@ -250,6 +264,9 @@ export class Voice {
 
     this.midiNote = opts.midiNote
     this.velocity = opts.velocity ?? 1
+    this.groupId = opts.group
+    this.level = opts.level ?? 1
+    this.modTaps = opts.modTaps ?? []
     this.channel = opts.channel
     this.atValue = opts.pressure ?? hub.state.pressure
     this.bendValue = hub.state.bend
@@ -283,8 +300,9 @@ export class Voice {
     this.wireRoutes()
     this.startZoneLfos()
     this.applyCC()
-    const note = opts.note ?? 0
-    this.glide = { from: opts.glideFrom ?? note, to: note, start: this.t0, dur: opts.glideTime ?? 0 }
+    const detune = (opts.detune ?? 0) / 100
+    const note = (opts.note ?? 0) + detune
+    this.glide = { from: (opts.glideFrom ?? opts.note ?? 0) + detune, to: note, start: this.t0, dur: opts.glideTime ?? 0 }
     this.endTime = this.t0 + (this.zone ? this.zoneSeconds(note) : playSeconds(s, this.clip.clipLen, this.kind === 'cloud', note))
 
     if (this.kind === 'sample') this.startSource()
@@ -328,6 +346,11 @@ export class Voice {
       return Math.min(x, clipOut)
     }
     return clipIn + ((x - clipIn) % clipLen)
+  }
+
+  /** Post-envelope, post-filter signal: what this voice feeds a patch's matrix as a VCO. */
+  get tap(): AudioNode {
+    return this.hi
   }
 
   /** Length of the buffer this voice plays (zones each have their own). */
@@ -408,7 +431,7 @@ export class Voice {
     for (const st of this.streams) {
       while (st.next < horizon) {
         if (cloud) size = Math.max(0.005, (s.grainSize + this.jsMod('grainSize', st.next)) / 1000)
-        this.spawnGrain(st.next, size, st)
+        size = this.spawnGrain(st.next, size, st)
         let step = size / (cloud ? Math.max(1, s.grainDensity) : STRETCH_OVERLAP)
         if (cloud && s.grainScatter > 0) step *= Math.max(0.1, 1 + (Math.random() * 2 - 1) * s.grainScatter)
         st.next += step
@@ -423,7 +446,8 @@ export class Voice {
     }
   }
 
-  private spawnGrain(when: number, size: number, st: GrainStream) {
+  /** Returns the grain's real length in seconds (capped by the clip). */
+  private spawnGrain(when: number, size: number, st: GrainStream): number {
     const s = this.settings
     const cloud = this.kind === 'cloud'
     const { clipIn, clipOut, clipLen } = this.clip
@@ -471,6 +495,7 @@ export class Voice {
     this.grains.add(src)
     this.marks.push({ pos: offset, len: bufLen, when, dur, rate, reverse })
     if (this.marks.length > MAX_MARKS) this.marks.shift()
+    return dur
   }
 
   // ── live knobs ───────────────────────────────────────────────────────────
@@ -480,7 +505,7 @@ export class Voice {
     const s = this.settings
     const now = this.ctx.currentTime
     const set = (p: AudioParam, v: number) => (immediate ? (p.value = v) : p.setTargetAtTime(v, now, RAMP))
-    set(this.out.gain, s.volume * (1 - s.velAmount + s.velAmount * this.velocity) * (this.zone?.gain ?? 1) * this.ccGain)
+    set(this.out.gain, s.volume * (1 - s.velAmount + s.velAmount * this.velocity) * (this.zone?.gain ?? 1) * this.ccGain * this.level)
     set(this.panner.pan, Math.min(1, Math.max(-1, s.pan + (this.zone?.pan ?? 0) + this.ccPan)))
     const zf = this.zone?.filter
     if (zf) {
@@ -569,6 +594,10 @@ export class Voice {
         return this.bendSrc
       case 'timbre':
         return this.timbreSrc
+      case 'vco1':
+      case 'vco2':
+      case 'vco3':
+        return this.modTaps[VCO_INDEX[src]] ?? this.hub.zero
     }
   }
 
@@ -638,7 +667,11 @@ export class Voice {
 
   private unwire() {
     for (const { from, gain } of this.links) {
-      from.disconnect(gain)
+      try {
+        from.disconnect(gain)
+      } catch {
+        /* the source (a VCO voice) may already be gone */
+      }
       gain.disconnect()
     }
     this.links = []
@@ -663,6 +696,8 @@ export class Voice {
         return this.bendValue
       case 'timbre':
         return this.timbreValue
+      default:
+        return 0 // VCO signals are audio-rate: no per-grain reading
     }
   }
 
