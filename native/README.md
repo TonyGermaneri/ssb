@@ -41,7 +41,13 @@ list. `-G "Unix Makefiles"` works as well as Ninja.
 | `../src/native/engineSync.ts` | Keeps the engine in step with the board (sounds, patches, master, pad notes; only what changed) and uploads each sample once. |
 
 **The standalone** opens every MIDI input it finds on launch, so a controller plugged in before
-starting just plays. **Options** (top left) picks inputs and the audio device.
+starting just plays. **Options** (top left) picks inputs and the audio device. Its window is SSB's
+own (`plugin/StandaloneApp.cpp`): every edge resizes it, a double-click on the title bar (or the
+maximise button) zooms it to fill the screen and back, and it reopens at the size it was left.
+
+**The host's clock**: in a DAW, SSB takes its tempo from the host (the header's tempo chip reads
+HOST): synced LFOs lock to the song position while the transport plays, and synced delays use the
+host tempo, in the engine itself, so they follow even with the window closed.
 
 ---
 
@@ -121,6 +127,7 @@ remember a plugin by those two codes alone, so they never change after a release
 ctest --test-dir native/build --output-on-failure
 
 # the whole thing: page -> sync -> engine -> audio, then a reopened session with no editor.
+# --bpm sets the tempo of the transport ssb-host plays (the page should read HOST at that tempo).
 # SSB_PROBE_SETUP sets the board up.
 SSB_PROBE_DELAY_MS=5000 SSB_PROBE_SETUP="const b = __ssb.board; b.selectPatch(b.patches[0].id); b.master.play = true" \
   native/build/tools/ssb-host_artefacts/RelWithDebInfo/ssb-host.app/Contents/MacOS/ssb-host \

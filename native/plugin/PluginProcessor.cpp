@@ -50,11 +50,17 @@ void SsbProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
         return;
     }
 
-    double bpm = 0;
+    ssb::Engine::HostClock clock;
     if (auto* head = getPlayHead())
         if (const auto position = head->getPosition())
-            if (const auto hostBpm = position->getBpm())
-                bpm = *hostBpm;
+        {
+            if (const auto b = position->getBpm()) clock.bpm = *b;
+            if (const auto p = position->getPpqPosition()) clock.ppq = *p;
+            clock.playing = position->getIsPlaying();
+        }
+    hostBpm.store (clock.bpm, std::memory_order_relaxed);
+    hostPpq.store (clock.ppq, std::memory_order_relaxed);
+    hostPlaying.store (clock.playing, std::memory_order_relaxed);
 
     auto* left = buffer.getWritePointer (0);
     float* right = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -64,7 +70,7 @@ void SsbProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
             return buffer.clear();   // the host broke its block-size promise; stay silent
         right = scratch.data();
     }
-    engine.process (left, right, n, events.data(), (int) events.size(), bpm);
+    engine.process (left, right, n, events.data(), (int) events.size(), clock);
     if (buffer.getNumChannels() == 1)
         for (int i = 0; i < n; ++i)
             left[i] = 0.5f * (left[i] + right[i]);

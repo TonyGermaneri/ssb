@@ -53,12 +53,14 @@ struct Rig
     {
         engine.setPerformance (ssb::buildPerformance (meta, sounds));
         std::vector<float> l (block), r (block);
-        engine.process (l.data(), r.data(), 1, nullptr, 0, 0);   // adopt it
+        engine.process (l.data(), r.data(), 1, nullptr, 0);   // adopt it
     }
 
     std::vector<float> left, right;
 
     /** Render `seconds`, with MIDI `events` ({sample offset, status, d1, d2}) at their times. */
+    ssb::HostClock host;   // what the "DAW" reports
+
     void render (double seconds, std::vector<ssb::MidiEvent> events = {})
     {
         const auto total = (int) (seconds * rate);
@@ -71,7 +73,8 @@ struct Rig
             for (const auto& e : events)
                 if (e.offset >= done && e.offset < done + n)
                     here.push_back ({ e.offset - done, e.status, e.data1, e.data2 });
-            engine.process (left.data() + done, right.data() + done, n, here.data(), (int) here.size(), 0);
+            engine.process (left.data() + done, right.data() + done, n, here.data(), (int) here.size(), host);
+            if (host.ppq >= 0 && host.playing) host.ppq += n / rate * host.bpm / 60.0;
         }
         engine.collectGarbage();
     }
@@ -429,4 +432,23 @@ TEST ("engine: an SFZ region LFO on pitch makes vibrato")
     CHECK_NEAR (flat->hz (0.03, 0.07), 440.0, 15.0);
     CHECK (vib->hz (0.03, 0.07) > 455.0);
     CHECK (vib->hz (0.13, 0.17) < 425.0);
+}
+
+TEST ("engine: a synced delay follows the host's tempo, not the page's")
+{
+    Rig rig;
+    rig.add ("a", sine (440, 0.05), [] (auto& s) { s.repeat = 1; s.release = 0.005f; });
+    juce::var fx (new juce::DynamicObject());
+    fx.getDynamicObject()->setProperty ("delayMix", 1.0);
+    fx.getDynamicObject()->setProperty ("delayFeedback", 0.0);
+    fx.getDynamicObject()->setProperty ("delaySync", true);
+    fx.getDynamicObject()->setProperty ("delayBeats", 1.0);   // a quarter note
+    rig.set ("fx", fx);
+    rig.set ("bpm", 90);                                     // the page's own tempo: 0.667 s
+    rig.commit();
+    rig.host = { 120, 0, true };                              // the host's: 0.5 s
+    rig.press ("a");
+    rig.render (0.8);
+    CHECK (rig.rms (0.49, 0.56) > 0.05);
+    CHECK (rig.rms (0.64, 0.72) < 1e-3);
 }

@@ -50,6 +50,10 @@ public:
     /** Host / controller MIDI on its way to the page. Audio thread pushes, editor pops. */
     ssb::MidiQueue midiToPage;
 
+    /** The host's transport as of the last block, for the page's tempo display. */
+    std::atomic<double> hostBpm { 0 }, hostPpq { -1 };
+    std::atomic<bool> hostPlaying { false };
+
     /** True in a DAW (AU / VST3): the native engine makes the sound. */
     const bool usesEngine;
     ssb::Engine engine;

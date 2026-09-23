@@ -441,7 +441,7 @@ export const defaultMaster = (): MasterState => ({
   favSounds: false,
   favPatches: false,
   factory: false,
-  rack: true,
+  rack: false,
   tab: 'sounds',
   patchId: null,
   fx: defaultGlobalFx(),

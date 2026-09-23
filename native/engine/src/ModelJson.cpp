@@ -295,6 +295,8 @@ PerformancePtr buildPerformance (const juce::var& meta, const std::map<std::stri
         p->fx.delayTime = num (fx, "delayTime", p->fx.delayTime);
         p->fx.delayFeedback = num (fx, "delayFeedback", p->fx.delayFeedback);
         p->fx.delayMix = num (fx, "delayMix", 0);
+        p->fx.delaySync = flag (fx, "delaySync", false);
+        p->fx.delayBeats = num (fx, "delayBeats", 0.75f);
         p->fx.reverbSize = num (fx, "reverbSize", p->fx.reverbSize);
         p->fx.reverbDecay = num (fx, "reverbDecay", p->fx.reverbDecay);
         p->fx.reverbMix = num (fx, "reverbMix", 0);

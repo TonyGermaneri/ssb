@@ -60,6 +60,11 @@ Each VCO's live signal (after its own envelope and filter) is a mod-matrix sourc
 VCO 2 → pitch for FM, → volume for AM, → cutoff for audio-rate filter sweeps. VCOs are full sounds, so SFZ instruments
 and grain clouds work as oscillators too. Note-offs, STOP, choke and PANIC treat the patch as one group.
 
+### Starting up
+
+Every launch starts as a **soundboard**: the pads as cards, the VCO rack put away (the header's
+layout button brings it back).
+
 ### Tags
 
 A pad's TAGS field holds comma-separated tags (chips in the panel). The **tag strip** under the header lists every tag
@@ -199,3 +204,8 @@ global CHORUS / DELAY / REVERB · TAGS filter · BOARD (pad SCALE, scanlines, un
 - **MONO** + **GLIDE** = legato portamento; **POLY** = each note its own voice (glide slides from the last note).
 
 See [PLAN.md](PLAN.md) for the design and audio graph.
+
+## License
+
+[MIT](LICENSE). The desktop app and plugins are built with [JUCE](https://juce.com), which has its own license
+terms for distributed binaries.

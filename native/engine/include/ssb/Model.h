@@ -204,7 +204,9 @@ using SoundPtr = std::shared_ptr<const Sound>;
 struct GlobalFx
 {
     float chorusRate { 0.6f }, chorusDepth { 0.5f }, chorusMix { 0 };
-    float delayTime { 0.375f }, delayFeedback { 0.4f }, delayMix { 0 };   // delayTime already tempo-resolved
+    float delayTime { 0.375f }, delayFeedback { 0.4f }, delayMix { 0 };   // seconds, when not synced
+    bool delaySync { false };
+    float delayBeats { 0.75f };   // synced: quarter notes (resolved against the host's tempo)
     float reverbSize { 3 }, reverbDecay { 3 }, reverbMix { 0 };
 };
 

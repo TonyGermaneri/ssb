@@ -1668,7 +1668,9 @@ struct Engine::Impl
         const auto& fx = perf->fx;
         const double dt = 1.0 / engine.rate;
         const float gain = perf->muted ? 0.0f : perf->volume;
-        const double delaySamples = std::max (0.01f, fx.delayTime) * engine.rate;
+        // synced: the division at the current tempo (the host's in a DAW), as the page computes it
+        const double delaySeconds = fx.delaySync ? std::min (2.4, fx.delayBeats * 60.0 / std::max (1.0, bpm)) : (double) fx.delayTime;
+        const double delaySamples = std::max (0.01, delaySeconds) * engine.rate;
         const float fb = std::min (0.95f, fx.delayFeedback);
 
         // reverb on the input, into its own buffer
@@ -1889,8 +1891,9 @@ bool Engine::post (const Command& c) noexcept
     return impl->commands.push (Command (c));
 }
 
-void Engine::process (float* left, float* right, int n, const MidiEvent* midi, int midiCount, double hostBpm) noexcept
+void Engine::process (float* left, float* right, int n, const MidiEvent* midi, int midiCount, HostClock host) noexcept
 {
+    const double hostBpm = host.bpm;
     auto& m = *impl;
     if (auto* holder = m.incoming.exchange (nullptr))
     {
@@ -1910,6 +1913,16 @@ void Engine::process (float* left, float* right, int n, const MidiEvent* midi, i
         for (int i = 0; i < 2; ++i)
             m.globalLfo[(size_t) i].set (i ? m.perf->globalMod.lfo2 : m.perf->globalMod.lfo1, m.bpm);
     }
+
+    // Synced global LFOs lock to the host's song position while it plays (MIDI Start's job
+    // otherwise), so they land on the same beat every time the song is played.
+    if (host.playing && host.ppq >= 0 && m.perf)
+        for (int i = 0; i < 2; ++i)
+        {
+            const auto& def = i ? m.perf->globalMod.lfo2 : m.perf->globalMod.lfo1;
+            if (def.sync && def.divisionBeats > 0)
+                m.globalLfo[(size_t) i].syncTo (host.ppq / (double) def.divisionBeats);
+        }
 
     Command c;
     while (m.commands.pop (c))

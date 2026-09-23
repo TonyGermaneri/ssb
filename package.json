@@ -29,5 +29,6 @@
     "vitest": "^4.1.11",
     "vue-tsc": "^3.3.11"
   },
-  "description": "SSB — Super Sound Board: an 80s-console sampler, synth and sound board in the browser"
+  "description": "SSB — Super Sound Board: an 80s-console sampler, synth and sound board in the browser",
+  "license": "MIT"
 }

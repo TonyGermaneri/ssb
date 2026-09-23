@@ -193,9 +193,13 @@ SsbEditor::SsbEditor (SsbProcessor& p)
     addAndMakeVisible (browser);
     browser.goToURL (juce::WebBrowserComponent::getResourceProviderRoot());
 
+    // Read the saved size first: setResizeLimits clamps this (still 0 x 0) editor to the minimum,
+    // and resized() would otherwise record that as the size to reopen at.
+    const auto width = plugin.editorWidth, height = plugin.editorHeight;
     setResizable (true, true);
-    setResizeLimits (960, 600, 4096, 2400);
-    setSize (plugin.editorWidth, plugin.editorHeight);
+    setResizeLimits (960, 600, 8192, 8192);
+    setSize (width, height);
+    sized = true;
 
     enableAllMidiInputs (plugin);
 
@@ -244,8 +248,11 @@ SsbEditor::~SsbEditor()
 void SsbEditor::resized()
 {
     browser.setBounds (getLocalBounds());
-    plugin.editorWidth = getWidth();
-    plugin.editorHeight = getHeight();
+    if (sized)
+    {
+        plugin.editorWidth = getWidth();
+        plugin.editorHeight = getHeight();
+    }
 }
 
 void SsbEditor::timerCallback()
@@ -258,6 +265,14 @@ void SsbEditor::timerCallback()
         m->setProperty ("l", plugin.engine.peak (0));
         m->setProperty ("r", plugin.engine.peak (1));
         m->setProperty ("voices", plugin.engine.activeVoices());
+        if (const auto bpm = plugin.hostBpm.load(); bpm > 0)
+        {
+            auto* host = new juce::DynamicObject();
+            host->setProperty ("bpm", bpm);
+            host->setProperty ("ppq", plugin.hostPpq.load());
+            host->setProperty ("playing", plugin.hostPlaying.load());
+            m->setProperty ("host", juce::var (host));
+        }
 
         // what is playing, for the pads' LEDs, progress rings and waveform playheads
         std::vector<ssb::VoiceView> views;

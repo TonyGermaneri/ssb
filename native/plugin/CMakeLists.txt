@@ -43,12 +43,14 @@ target_sources(SsbInstrument PRIVATE
     PluginProcessor.cpp
     PluginEditor.cpp
     PluginPaths.cpp
-    SoundLibrary.cpp)
+    SoundLibrary.cpp
+    StandaloneApp.cpp)
 
 target_compile_definitions(SsbInstrument PUBLIC
     JUCE_WEB_BROWSER=1
     JUCE_USE_CURL=0
-    JUCE_VST3_CAN_REPLACE_VST2=0)
+    JUCE_VST3_CAN_REPLACE_VST2=0
+    JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)   # StandaloneApp.cpp: a resizable, maximisable window
 
 if(WIN32)
     target_compile_definitions(SsbInstrument PUBLIC JUCE_USE_WIN_WEBVIEW2=1)

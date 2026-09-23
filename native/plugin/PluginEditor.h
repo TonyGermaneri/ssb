@@ -28,6 +28,7 @@ private:
     /** Held while a save dialog is open: it is asynchronous and outlives the call that opened it. */
     std::unique_ptr<juce::FileChooser> chooser;
     int meterTick { 0 };
+    bool sized { false };   // until the constructor has set the saved size, resizes aren't the user's
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SsbEditor)
 };

@@ -80,7 +80,12 @@ function metaJson(board: Board, ids: string[]) {
     glide: m.glide,
     mpeBendRange: m.mpeBendRange,
     bpm,
-    fx: { ...fx, delayTime: fx.delaySync ? Math.min(2.4, (divisionBeats(fx.delayDivision) * 60) / bpm) : fx.delayTime },
+    // synced delays resolve against the host's tempo in the engine (the page may be closed)
+    fx: {
+      ...fx,
+      delayTime: fx.delaySync ? Math.min(2.4, (divisionBeats(fx.delayDivision) * 60) / bpm) : fx.delayTime,
+      delayBeats: divisionBeats(fx.delayDivision),
+    },
     mod: matrix(m.mod),
     playable: board.playable?.id ?? null,
     padNotes: [...board.noteFor].map(([id, note]) => [note, id]),
@@ -159,8 +164,13 @@ export function startEngineSync(board: Board) {
   watch(() => board.loaded, (loaded) => loaded && schedule(), { immediate: true })
 
   // the engine's levels drive the VU meter; its voices light the pads and move the playheads
-  onNative<{ l: number; r: number; list?: engine.ExternalVoice[]; time?: number }>('ssbMeter', ({ l, r, list, time }) => {
+  type Meter = { l: number; r: number; list?: engine.ExternalVoice[]; time?: number; host?: { bpm: number; ppq: number; playing: boolean } }
+  onNative<Meter>('ssbMeter', ({ l, r, list, time, host }) => {
     engine.setExternalLevels(l, r)
+    // the DAW's clock: tempo (drives synced LFOs / delays and the display), position, transport
+    board.tempo.host = host && host.bpm > 0 ? Math.round(host.bpm * 100) / 100 : 0
+    board.tempo.hostPpq = host?.ppq ?? -1
+    board.tempo.hostPlaying = !!host?.playing
     if (list && time !== undefined) engine.setExternalVoices(list, time)
   })
 }

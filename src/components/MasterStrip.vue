@@ -45,8 +45,14 @@ const octaveLabel = computed(() => {
 
 // tempo
 const following = computed(() => board.master.clockSource === 'midi')
-const beatLed = computed(() => (clock.value * board.bpm) / 60 % 1 < 0.15)
-const bpmLabel = computed(() => (following.value && !board.tempo.extBpm ? '---' : board.bpm.toFixed(board.bpm % 1 ? 1 : 0)))
+/** in a DAW the host's transport sets the tempo */
+const hosted = computed(() => board.tempo.host > 0)
+const beatLed = computed(() =>
+  hosted.value && board.tempo.hostPlaying && board.tempo.hostPpq >= 0
+    ? board.tempo.hostPpq % 1 < 0.2
+    : (clock.value * board.bpm) / 60 % 1 < 0.15,
+)
+const bpmLabel = computed(() => (!hosted.value && following.value && !board.tempo.extBpm ? '---' : board.bpm.toFixed(board.bpm % 1 ? 1 : 0)))
 const delayDiv = computed(() => Math.max(0, DIVISIONS.findIndex((d) => d.id === fx.value.delayDivision)))
 const fmtDiv = (v: number) => DIVISIONS[Math.round(v)]?.id ?? ''
 const fmtNote = (v: number) => midiNoteName(Math.round(v))
@@ -169,7 +175,10 @@ function onImport(e: Event) {
     <section class="group">
       <h5>TEMPO · MIDI</h5>
       <div class="controls">
-        <div class="bpm-knob" :title="following ? 'Following MIDI clock (knob sets the fallback tempo)' : 'Internal tempo'">
+        <div
+          class="bpm-knob"
+          :title="hosted ? 'Following the host (DAW) tempo' : following ? 'Following MIDI clock (knob sets the fallback tempo)' : 'Internal tempo'"
+        >
           <Knob
             v-model="board.master.bpm"
             label="BPM"
@@ -180,10 +189,18 @@ function onImport(e: Event) {
             :format="() => bpmLabel"
             :size="K"
           />
-          <i class="beat" :class="{ on: beatLed && (!following || board.tempo.extBpm) }" />
+          <i class="beat" :class="{ on: beatLed && (hosted || !following || board.tempo.extBpm) }" />
         </div>
         <div class="stack">
           <button
+            v-if="hosted"
+            class="chip on"
+            title="Tempo source: the host. Synced LFOs and delays follow the DAW's tempo and song position."
+          >
+            HOST
+          </button>
+          <button
+            v-else
             class="chip"
             :class="{ on: following }"
             title="Tempo source: INT = BPM knob, EXT = incoming MIDI clock (MIDI Start restarts global LFOs)"

@@ -2,7 +2,7 @@
 // the board to the engine), play MIDI into it from a real-time-paced "audio thread", and record
 // what comes out.
 //
-//   ssb-host <SSB.vst3 | SSB.component> <out.wav> [--note 69] [--wait 6] [--hold 1.5] [--reload]
+//   ssb-host <SSB.vst3 | SSB.component> <out.wav> [--note 69] [--wait 6] [--hold 1.5] [--bpm 120] [--reload]
 //
 // Prints the output's RMS and pitch, and exits non-zero if it was silent. --reload then does what
 // reopening a DAW session does: saves the plugin's state, destroys it, loads a new instance with
@@ -34,6 +34,22 @@ struct Window final : juce::DocumentWindow
         toFront (true);
     }
     void closeButtonPressed() override {}
+};
+
+/** A transport for the plugin to follow: --bpm, playing from the start, position advancing. */
+struct Transport final : juce::AudioPlayHead
+{
+    double bpm { 120 }, rate { 48000 };
+    std::atomic<juce::int64> samples { 0 };
+    juce::Optional<PositionInfo> getPosition() const override
+    {
+        PositionInfo p;
+        p.setBpm (bpm);
+        p.setIsPlaying (true);
+        p.setTimeInSamples (samples.load());
+        p.setPpqPosition ((double) samples.load() / rate * bpm / 60.0);
+        return p;
+    }
 };
 
 double argDouble (const juce::StringArray& args, const char* name, double fallback)
@@ -80,6 +96,9 @@ int main (int argc, char** argv)
     }
     std::printf ("loaded %s (%s)\n", found[0]->name.toRawUTF8(), found[0]->pluginFormatName.toRawUTF8());
     plugin->setPlayConfigDetails (0, 2, rate, block);
+    Transport transport;
+    transport.bpm = argDouble (args, "--bpm", 120);
+    plugin->setPlayHead (&transport);
     plugin->prepareToPlay (rate, block);
 
     auto window = std::make_unique<Window> (plugin->createEditorIfNeeded());
@@ -101,6 +120,7 @@ int main (int argc, char** argv)
             if (off >= pos && off < pos + block) midi.addEvent (juce::MidiMessage::noteOff (1, note), off - pos);
             buffer.clear();
             plugin->processBlock (buffer, midi);
+            transport.samples += block;
             for (int ch = 0; ch < 2; ++ch)
                 recorded.copyFrom (ch, pos, buffer, ch, 0, block);
             std::this_thread::sleep_until (start + std::chrono::microseconds ((juce::int64) ((pos + block) / rate * 1e6)));

@@ -62,8 +62,11 @@ export const useBoard = defineStore('board', () => {
   /** live performance controllers (not saved) */
   const perform = reactive({ mod: 0, bend: 0, pressure: 0, timbre: 0, sustain: false })
   /** MIDI clock follower state (runtime only) */
-  const tempo = reactive({ extBpm: 0, running: false, beats: 0 })
-  const bpm = computed(() => (master.clockSource === 'midi' && tempo.extBpm > 0 ? tempo.extBpm : master.bpm))
+  /** host: the DAW's transport (plugin only) -- its tempo wins over the knob and MIDI clock */
+  const tempo = reactive({ extBpm: 0, running: false, beats: 0, host: 0, hostPpq: -1, hostPlaying: false })
+  const bpm = computed(() =>
+    tempo.host > 0 ? tempo.host : master.clockSource === 'midi' && tempo.extBpm > 0 ? tempo.extBpm : master.bpm,
+  )
   const presets = ref<Preset[]>([])
   /** settings copied with COPY, for PASTE onto another pad */
   const clipboard = ref<Partial<SoundSettings> | null>(null)
@@ -357,6 +360,8 @@ export const useBoard = defineStore('board', () => {
       const saved = await get<SavedBoard>(BOARD_KEY)
       if (saved) {
         Object.assign(master, migrateMaster(saved.master))
+        // every launch starts as a soundboard: the pads as cards, the VCO rack put away
+        Object.assign(master, { rack: false, view: 'pads', list: true, tab: 'sounds' })
         presets.value = saved.presets ?? []
         patches.value = (saved.patches ?? []).map(migratePatch)
         const ok: Sound[] = []

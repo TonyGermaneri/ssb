@@ -167,6 +167,18 @@ public:
 
     void restart() noexcept { phase = 0; }
 
+    /** Jump to an absolute phase (cycles), e.g. the host's position / the LFO's division, so a
+        synced LFO stays locked to the song. Random shapes step when a cycle boundary is crossed. */
+    void syncTo (double cycles) noexcept
+    {
+        if (std::floor (cycles) != std::floor (phase))
+        {
+            prev = shape == LfoShape::random ? nextRandom() : next;
+            next = nextRandom();
+        }
+        phase = cycles;
+    }
+
     float value() const noexcept
     {
         if (shape == LfoShape::random)

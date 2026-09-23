@@ -57,6 +57,15 @@ struct VoiceView
 /** FNV-1a: how a VoiceView names its sound without the audio thread touching a string. */
 uint64_t idHash (std::string_view id) noexcept;
 
+/** Where the host's transport is: its tempo, and (when it knows) its position in quarter notes and
+    whether it is playing. A default HostClock = no host (the page's tempo). */
+struct HostClock
+{
+    double bpm { 0 };
+    double ppq { -1 };      // < 0 = unknown
+    bool playing { false };
+};
+
 /** Short MIDI message at a sample offset within the block. */
 struct MidiEvent
 {
@@ -87,8 +96,10 @@ public:
     bool post (const Command& c) noexcept;
 
     // ---- audio thread ----------------------------------------------------------------------
-    /** Render `n` samples into `left` / `right` (overwritten). `hostBpm` <= 0 = use the page's. */
-    void process (float* left, float* right, int n, const MidiEvent* midi, int midiCount, double hostBpm) noexcept;
+    using HostClock = ssb::HostClock;
+
+    /** Render `n` samples into `left` / `right` (overwritten), following the host's clock. */
+    void process (float* left, float* right, int n, const MidiEvent* midi, int midiCount, HostClock host = {}) noexcept;
 
     // ---- meters (any thread) ---------------------------------------------------------------
     float peak (int channel) const noexcept { return peaks[(size_t) (channel & 1)].load (std::memory_order_relaxed); }
