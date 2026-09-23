@@ -250,7 +250,7 @@ h3 {
   border-radius: 3px;
   font-family: 'VT323', monospace;
   font-size: 16px;
-  color: var(--text-mute);
+  color: var(--ink-mute);
   background: #111;
   border: 1px solid #000;
 }

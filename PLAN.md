@@ -207,6 +207,10 @@ bend / pressure / timbre per member channel so a note starts where its channel a
 
 - Themes: colours are CSS variables on :root (`src/theme/themes.ts`), mirrored as Vuetify themes; pads take hue
   palette, saturation and lightness from the theme. Hardware buttons and knob caps stay dark in every theme.
+- Theme packs (`theme/themePacks.ts`, compact `th()` rows) add games / computers / movies / TV / more eras; `THEMES` is
+  sorted by group then year. `themes.test.ts` checks contrast for every theme (body text 4.5:1 on panels, labels and
+  headings 3:1, primary / secondary 3:1 on the LCD). Light-panelled themes get `--ink-dim` / `--ink-mute` (light grey)
+  for text on the dark insets (chips, tabs, rack slot bars). `ThemePicker.vue` previews on hover via `applyThemeVars`.
 - LfoSource: one output GainNode; periodic shapes via OscillatorNode (saw-down = inverted saw), random shapes via a
   scheduled ConstantSourceNode (S&H steps / smooth ramps) with a JS mirror (`valueAt`) for grain destinations.
 - Tempo: internal BPM or MIDI clock (24 ppqn → BPM once per beat); synced LFOs and delay follow the effective BPM.

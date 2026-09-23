@@ -155,8 +155,19 @@ value, and click a column title to sort. Playing rows light up; the grid follows
 
 ### Themes
 
-Click the **SSB** logo to cycle 13 era/genre themes (Shift-click goes back): Console '85, Diner '55, Surf '62,
-Psych '67, Funk '74, Disco '77, Roots '78, Outrun '86, Metal '88, 8-Bit '89, Grunge '93, Vapor '95, Noir '49.
+Click the **SSB** logo for the theme picker: 68 themes in five groups, each tile with its swatches. Hover a tile to
+preview it on the whole board, click to keep it; ◀ ▶ at the top step through them in order.
+- **ERAS** — Noir '49, Diner '55, Surf '62, Psych '67, Avocado '72, Funk '74, LED Calc '76, Disco '77, Punk '77,
+  Roots '78, Cassette '79, Laserium '83, Console '85, Outrun '86, Mall '87, Metal '88, Boombox '88, 8-Bit '89,
+  Rave '92, Grunge '93, Vapor '95
+- **GAMES** — Invaders '78, Vector '79, Pac-Maze '80, Arcade '81, Plumber '85, Legend '86, Pocket '89, Hedgehog '91,
+  Fighter '91, 16-Bit '91, Hellfire '93, Island '93, Red Visor '95
+- **COMPUTERS** — Woodgrain '77, Phosphor '78, CGA '81, Breadbin '82, Rubber Keys '82, Platinum '84, Workbench '85,
+  Commander '86, Desktop '95, Bondi '98
+- **MOVIES** — Galaxy '77, Nostromo '79, Replicant '82, Grid '82, Norad '83, Slimer '84, Cyborg '84, Flux '85,
+  Neo-Tokyo '88, Afterlife '88, Dino Park '93, Code '99
+- **TV** — Test Card '75, VJ '81, Knight '82, The Van '83, Vice '84, LCARS '87, Headroom '87, Bayside '89, Peaks '90,
+  Splat '91, Gotham '92, Unexplained '93
 
 ### MPE
 

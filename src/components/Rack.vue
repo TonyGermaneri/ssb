@@ -144,7 +144,7 @@ function onDrop(e: DragEvent, i: number) {
   font-size: 9px;
   font-weight: 900;
   letter-spacing: 0.15em;
-  color: var(--c-primary);
+  color: var(--text-head);
 }
 .title input {
   height: 24px;
@@ -204,9 +204,15 @@ function onDrop(e: DragEvent, i: number) {
   height: 53px;
   font-family: 'VT323', monospace;
   font-size: 15px;
-  color: var(--text-dim);
+  /* a dark strip (like the LCDs) so names and chips read on light themes too */
+  color: var(--ink-dim);
   text-transform: uppercase;
+  border-radius: 5px 5px 0 0;
+  background: rgba(0, 0, 0, 0.5);
   border-bottom: 1px solid rgba(0, 0, 0, 0.5);
+}
+.bar :deep(.knob .label) {
+  color: var(--ink-dim);
 }
 .bar b {
   flex: none;
@@ -237,7 +243,7 @@ function onDrop(e: DragEvent, i: number) {
   border-radius: 2px;
   font-size: 13px;
   line-height: 14px;
-  color: var(--text-dim);
+  color: var(--ink-dim);
   background: #111;
   border: 1px solid #000;
 }

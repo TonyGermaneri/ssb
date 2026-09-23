@@ -474,7 +474,7 @@ function doReset() {
   font-size: 12px;
   letter-spacing: 0.08em;
   line-height: 13px;
-  color: var(--text-dim);
+  color: var(--ink-dim);
   background: #111;
   border: 1px solid #000;
 }

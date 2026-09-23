@@ -33,7 +33,7 @@ button {
   font-size: 11px;
   font-weight: 900;
   letter-spacing: 0.16em;
-  color: var(--text-mute);
+  color: var(--ink-mute);
   background: #141317;
   border: 1px solid #000;
   border-bottom: 0;

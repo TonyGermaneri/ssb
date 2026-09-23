@@ -1,7 +1,14 @@
-/** Colour themes: eras and genres. Applied as CSS variables + a matching Vuetify theme. */
+/** Colour themes: eras and genres, games, computers, movies, TV. Applied as CSS variables + a matching Vuetify theme. */
+import { COMPUTER_THEMES, ERA_THEMES, GAME_THEMES, MOVIE_THEMES, TV_THEMES } from './themePacks'
+
+export const THEME_GROUPS = ['ERAS', 'GAMES', 'COMPUTERS', 'MOVIES', 'TV'] as const
+export type ThemeGroup = (typeof THEME_GROUPS)[number]
+
 export interface Theme {
   id: string
   name: string
+  /** picker section (the hand-written originals below are ERAS) */
+  group?: ThemeGroup
   primary: string // main LED / readouts
   secondary: string
   accent: string
@@ -19,7 +26,7 @@ export interface Theme {
   padLight: number // %
 }
 
-export const THEMES: Theme[] = [
+const ORIGINALS: Theme[] = [
   {
     id: 'console85',
     name: "CONSOLE '85",
@@ -269,7 +276,26 @@ export const THEMES: Theme[] = [
   },
 ]
 
-export const themeById = (id: string) => THEMES.find((t) => t.id === id) ?? THEMES[0]
+/** year from the name ("OUTRUN '86" → 1986) */
+const year = (t: Theme) => {
+  const y = parseInt(/'(\d\d)/.exec(t.name)?.[1] ?? '80', 10)
+  return y < 30 ? 2000 + y : 1900 + y
+}
+export const themeGroup = (t: Theme): ThemeGroup => t.group ?? 'ERAS'
+
+/** every theme, by group then year (the logo's ◀ ▶ steps through them in this order); console85 stays the default */
+export const THEMES: Theme[] = [...ORIGINALS, ...ERA_THEMES, ...GAME_THEMES, ...COMPUTER_THEMES, ...MOVIE_THEMES, ...TV_THEMES]
+  .map((t, i) => ({ t, i }))
+  .sort((a, b) => THEME_GROUPS.indexOf(themeGroup(a.t)) - THEME_GROUPS.indexOf(themeGroup(b.t)) || year(a.t) - year(b.t) || a.i - b.i)
+  .map(({ t }) => t)
+
+export const themeById = (id: string) => THEMES.find((t) => t.id === id) ?? ORIGINALS[0]
+
+/** a light colour (weighted sRGB brightness above 0.55): light-panelled themes need light ink on dark insets */
+export function isLight(hex: string) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.55
+}
 
 /** CSS custom properties for a theme (set on :root so dialogs and menus get them too). */
 export function themeVars(t: Theme): Record<string, string> {
@@ -298,6 +324,9 @@ export function themeVars(t: Theme): Record<string, string> {
     '--logo-1': t.logo[0],
     '--logo-2': t.logo[1],
     '--logo-3': t.logo[2],
+    // text on the dark insets (chips, tabs): light themes' own grey text would vanish on them
+    '--ink-dim': isLight(t.panel[1]) ? '#c8c8c8' : t.text[2],
+    '--ink-mute': isLight(t.panel[1]) ? '#949494' : t.text[3],
     '--pad-sat': `${t.padSat}%`,
     '--pad-light': `${t.padLight}%`,
   }

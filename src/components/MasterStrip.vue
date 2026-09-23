@@ -6,10 +6,12 @@ import { fmtNum, fmtPct, fmtRate, fmtScale, fmtSec, midiNoteName } from '../lib/
 import { DIVISIONS } from '../types'
 import Knob from './Knob.vue'
 import VuMeter from './VuMeter.vue'
+import ThemePicker from './ThemePicker.vue'
 
 const board = useBoard()
 const emit = defineEmits<{ add: []; addFolder: []; library: [] }>()
 const importInput = ref<HTMLInputElement>()
+const themeMenu = ref(false)
 
 const fx = computed(() => board.master.fx)
 const K = 28 // header knob size
@@ -58,14 +60,15 @@ function onImport(e: Event) {
 
 <template>
   <header class="strip">
-    <button
-      class="brand"
-      :title="`SSB — Super Sound Board · theme: ${board.theme.name} (click for next, Shift-click for previous)`"
-      @click="(e: MouseEvent) => board.cycleTheme(e.shiftKey ? -1 : 1)"
-    >
-      <span class="logo">SSB</span>
-      <span class="theme-name">{{ board.theme.name }}</span>
-    </button>
+    <v-menu v-model="themeMenu" location="bottom start" :close-on-content-click="false" offset="6">
+      <template #activator="{ props: act }">
+        <button class="brand" v-bind="act" :title="`SSB — Super Sound Board · theme: ${board.theme.name} — click for themes`">
+          <span class="logo">SSB</span>
+          <span class="theme-name">{{ board.theme.name }} ▾</span>
+        </button>
+      </template>
+      <ThemePicker v-model="themeMenu" />
+    </v-menu>
 
     <section class="group">
       <h5>OUTPUT</h5>
@@ -502,7 +505,7 @@ function onImport(e: Event) {
   font-size: 13px;
   letter-spacing: 0.08em;
   line-height: 12px;
-  color: var(--text-dim);
+  color: var(--ink-dim);
   background: #111;
   border: 1px solid #000;
   white-space: nowrap;
@@ -564,7 +567,7 @@ function onImport(e: Event) {
   border-radius: 3px;
   font-family: 'VT323', monospace;
   font-size: 16px;
-  color: var(--text-dim);
+  color: var(--ink-dim);
   background: #19181c;
   border: 1px solid #000;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);

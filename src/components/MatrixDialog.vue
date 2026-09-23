@@ -248,7 +248,7 @@ h3 {
   border-radius: 3px;
   font-family: 'VT323', monospace;
   font-size: 17px;
-  color: var(--text-mute);
+  color: var(--ink-mute);
   background: #111;
   border: 1px solid #000;
   max-width: 220px;
@@ -318,7 +318,7 @@ h3 {
   height: 22px;
   padding: 0;
   border-radius: 3px;
-  color: var(--text-mute);
+  color: var(--ink-mute);
   background: #111;
   border: 1px solid #000;
 }
@@ -328,7 +328,7 @@ h3 {
   font-family: 'VT323', monospace;
   font-size: 13px;
   line-height: 14px;
-  color: var(--text-mute);
+  color: var(--ink-mute);
   background: #111;
   border: 1px solid #000;
 }

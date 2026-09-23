@@ -119,7 +119,7 @@ h5 {
   font-family: 'VT323', monospace;
   font-size: 15px;
   line-height: 1;
-  color: var(--text-dim);
+  color: var(--ink-dim);
   background: #141317;
   border: 1px solid #000;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
