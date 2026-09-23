@@ -14,7 +14,7 @@ defineEmits<{ add: [] }>()
     <button class="cart" @click="$emit('add')">
       <div class="slot" />
       <div class="big">INSERT SOUNDS</div>
-      <div class="small">drop .mp3 files anywhere · or click to browse</div>
+      <div class="small">drop audio files, SFZ instruments or folders anywhere · or click to browse</div>
     </button>
   </div>
   <div v-else-if="!board.visible.length" class="empty">
@@ -47,15 +47,15 @@ defineEmits<{ add: [] }>()
   padding: 36px 48px;
   max-width: 100%;
   border-radius: 10px;
-  border: 2px dashed rgba(255, 176, 0, 0.45);
+  border: 2px dashed color-mix(in srgb, var(--c-primary) 45%, transparent);
   background: rgba(0, 0, 0, 0.25);
-  color: #ffb000;
+  color: var(--c-primary);
   font-family: 'Orbitron', sans-serif;
   cursor: pointer;
   text-align: center;
 }
 .cart:hover {
-  background: rgba(255, 176, 0, 0.06);
+  background: color-mix(in srgb, var(--c-primary) 6%, transparent);
 }
 .slot {
   width: 160px;
@@ -68,13 +68,13 @@ defineEmits<{ add: [] }>()
   font-size: 22px;
   font-weight: 900;
   letter-spacing: 0.2em;
-  text-shadow: 0 0 10px rgba(255, 176, 0, 0.6);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--c-primary) 60%, transparent);
   animation: pulse 1.6s ease-in-out infinite;
 }
 .small {
   font-family: 'VT323', monospace;
   font-size: 18px;
-  color: #b9b4a8;
+  color: var(--text-dim);
   letter-spacing: 0.05em;
 }
 @keyframes pulse {

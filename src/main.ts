@@ -4,28 +4,32 @@ import { createVuetify } from 'vuetify'
 import 'vuetify/styles'
 import '@mdi/font/css/materialdesignicons.css'
 import './theme/console.css'
+import { THEMES } from './theme/themes'
 import App from './App.vue'
 
 const vuetify = createVuetify({
   theme: {
-    defaultTheme: 'console',
-    themes: {
-      console: {
-        dark: true,
-        colors: {
-          background: '#151417',
-          surface: '#1f1e23',
-          'surface-variant': '#0a090c',
-          primary: '#ffb000', // amber LED
-          secondary: '#27e0ff', // cyan
-          accent: '#ff3d7f', // hot pink
-          success: '#33ff66', // phosphor green
-          error: '#ff3b2f',
-          warning: '#ffb000',
-          info: '#27e0ff',
+    defaultTheme: 'console85',
+    themes: Object.fromEntries(
+      THEMES.map((t) => [
+        t.id,
+        {
+          dark: true,
+          colors: {
+            background: t.bg[2],
+            surface: t.panel[2],
+            'surface-variant': '#0a090c',
+            primary: t.primary,
+            secondary: t.secondary,
+            accent: t.accent,
+            success: t.success,
+            error: t.danger,
+            warning: t.primary,
+            info: t.secondary,
+          },
         },
-      },
-    },
+      ]),
+    ),
   },
 })
 

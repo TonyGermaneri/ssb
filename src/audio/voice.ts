@@ -1,5 +1,8 @@
-import { MOD_DESTS, type ModDest, type ModMatrix, type ModSource, type SoundSettings } from '../types'
-import { lfoValue, modSum } from '../lib/modulation'
+import {
+  lfoHz, MOD_DESTS, type ModDest, type ModMatrix, type ModSource, type SoundSettings, type ZoneCcMod, type ZoneLfo,
+} from '../types'
+import { modSum } from '../lib/modulation'
+import { LfoSource } from './lfo'
 import { scheduleAttack, scheduleRelease, type Env } from './envelope'
 import { getImpulse } from './impulse'
 import {
@@ -42,6 +45,26 @@ export interface VoiceOptions {
   noteBend?: number
   pressure?: number
   timbre?: number
+  /** play one zone of a multi-sample (SFZ) instrument instead of the pad's clip */
+  zone?: ZonePlay
+}
+
+/** A zone, resolved for playback. Times in seconds of the zone's buffer. */
+export interface ZonePlay {
+  audioId: string
+  gain: number
+  pan: number // -1..1, added to the pad's pan
+  start: number
+  end: number // 0 = end of buffer
+  loop: [number, number] | null
+  oneShot: boolean
+  env?: Partial<Env>
+  /** SFZ filter, already resolved for this note (keytrack / veltrack applied) */
+  filter?: { type: BiquadFilterType; freq: number; resonance: number; env?: Env & { depth: number } }
+  lfos?: ZoneLfo[]
+  ccMods?: ZoneCcMod[]
+  /** base amplitude % when amplitude_onccN is used (otherwise folded into gain) */
+  amplitude?: number
 }
 
 /** A grain, for drawing on the waveform. Positions are forward buffer seconds. */
@@ -50,6 +73,15 @@ export interface GrainMark {
   len: number
   when: number
   dur: number
+  rate: number
+  reverse: boolean
+}
+
+/** One stream of a grain cloud (poly grains): its own timing, start offset and drift speed. */
+interface GrainStream {
+  next: number
+  offset: number // fraction of the clip
+  speed: number // buffer seconds per second (drift)
 }
 
 /** Hann windows overlapping N times sum to N/2; scale grains so density doesn't change loudness. */
@@ -63,11 +95,13 @@ function grainWindow(overlap: number): Float32Array {
 
 /** Engine-wide modulation sources shared by every voice. */
 export interface ModHub {
-  globalLfos: OscillatorNode[]
-  globalLfoStart: number
+  globalLfos: LfoSource[]
+  bpm: () => number
   modWheel: ConstantSourceNode
   /** channel-wide controller values (non-MPE) */
   state: { mod: number; bend: number; pressure: number; timbre: number }
+  /** CC values 0..1, for SFZ locc/hicc and *_onccN */
+  cc: Float32Array
   matrix: () => ModMatrix
   mpeBendRange: () => number
 }
@@ -77,6 +111,12 @@ const LFO_INDEX = { lfo1: 0, lfo2: 1 } as const
 /** matrix units → AudioParam units */
 const PARAM_UNIT: Partial<Record<ModDest, number>> = { pitch: 100, cutoff: 1200 }
 const BIPOLAR = new Set<ModSource>(['lfo1', 'lfo2', 'bend'])
+
+const zoneBounds = (z: ZonePlay, duration: number): ClipBounds => {
+  const clipIn = Math.min(Math.max(0, z.start), Math.max(0, duration - 0.005))
+  const clipOut = z.end > clipIn ? Math.min(z.end, duration) : duration
+  return { clipIn, clipOut, clipLen: clipOut - clipIn }
+}
 
 let nextId = 1
 
@@ -104,6 +144,7 @@ export class Voice {
   readonly marks: GrainMark[] = []
 
   private clip: ClipBounds
+  private zone?: ZonePlay
   private kRate: number
   private speed: number
   private glide: Glide
@@ -135,8 +176,15 @@ export class Voice {
   private noteBendSrc: ConstantSourceNode
   private timbreSrc: ConstantSourceNode
   private timbreValue = 0
-  private padLfos: (OscillatorNode | null)[] = [null, null]
-  private padLfoStart = [0, 0]
+  private zoneLfoNodes: OscillatorNode[] = []
+  private zoneLfoGains: GainNode[] = []
+  private ccPitch?: ConstantSourceNode
+  private ccCut?: ConstantSourceNode
+  private ccGain = 1
+  private ccPan = 0
+  private ccRes = 0
+  private streams: GrainStream[] = []
+  private padLfos: (LfoSource | null)[] = [null, null]
   private links: { from: AudioNode; gain: GainNode }[] = []
   private routeSig = ''
   private atValue = 0
@@ -212,12 +260,20 @@ export class Voice {
     this.noteBendSrc.offset.value = opts.noteBend ?? 0
     this.timbreSrc.offset.value = this.timbreValue
     this.kind = s.grainSize > 0 ? 'cloud' : s.timeMode === 'stretch' ? 'stretch' : 'sample'
-    this.clip = clipBounds(s, buffer.duration)
+    this.zone = opts.zone
+    this.clip = this.zone ? zoneBounds(this.zone, buffer.duration) : clipBounds(s, buffer.duration)
     this.kRate = knobRate(s)
     this.speed = s.speed
-    this.ampEnv = { a: s.attack, d: s.decay, s: s.sustain, r: s.release }
+    // an SFZ region's own envelope wins over the pad's ADSR, field by field
+    this.ampEnv = { a: s.attack, d: s.decay, s: s.sustain, r: s.release, ...this.zone?.env }
     this.filtEnv = { a: s.fAttack, d: s.fDecay, s: s.fSustain, r: s.fRelease }
     this.filtPeak = s.fEnvAmount * 1200
+    // an SFZ filter EG replaces the pad's filter envelope
+    const zf = this.zone?.filter?.env
+    if (zf) {
+      this.filtEnv = { a: zf.a, d: zf.d, s: zf.s, r: zf.r }
+      this.filtPeak = zf.depth
+    }
 
     this.setImpulse()
     this.apply(true)
@@ -225,15 +281,23 @@ export class Voice {
     this.t0 = c.currentTime + 0.005
     for (const k of [this.atSrc, this.bendSrc, this.velSrc, this.noteBendSrc, this.timbreSrc]) k.start(this.t0)
     this.wireRoutes()
+    this.startZoneLfos()
+    this.applyCC()
     const note = opts.note ?? 0
     this.glide = { from: opts.glideFrom ?? note, to: note, start: this.t0, dur: opts.glideTime ?? 0 }
-    this.endTime = this.t0 + playSeconds(s, this.clip.clipLen, this.kind === 'cloud', note)
+    this.endTime = this.t0 + (this.zone ? this.zoneSeconds(note) : playSeconds(s, this.clip.clipLen, this.kind === 'cloud', note))
 
     if (this.kind === 'sample') this.startSource()
     scheduleAttack(this.env.gain, this.t0, this.ampEnv, 1)
     if (this.filtPeak) scheduleAttack(this.filter.detune, this.t0, this.filtEnv, this.filtPeak)
     if (Number.isFinite(this.endTime)) this.releaseAt(Math.max(this.t0, this.endTime - this.ampEnv.r))
     if (this.kind !== 'sample') this.startGrains()
+  }
+
+  /** How long a zone plays: until note-off when it loops, else to the end of its sample. */
+  private zoneSeconds(note: number) {
+    if (this.zone?.loop) return Infinity
+    return this.kind === 'sample' ? this.clip.clipLen / this.tapeRate(note) : this.clip.clipLen / this.speed
   }
 
   /** Note offset (semitones) at time t, following any glide. */
@@ -254,9 +318,21 @@ export class Voice {
   positionAt(t: number): number | null {
     if (this.kind === 'cloud') return null
     const elapsed = Math.max(0, t - this.t0)
-    const { clipIn, clipLen } = this.clip
-    const rate = this.kind === 'stretch' ? this.speed : this.tapeRate(this.glide.to)
-    return clipIn + ((elapsed * rate) % clipLen)
+    const { clipIn, clipOut, clipLen } = this.clip
+    if (this.kind === 'stretch') return clipIn + ((elapsed * this.speed) % clipLen)
+    const x = clipIn + elapsed * this.tapeRate(this.glide.to)
+    if (this.zone) {
+      // SFZ: play into the loop, then cycle inside it; no loop = stop at the end
+      const lp = this.zone.loop
+      if (lp && x > lp[1]) return lp[0] + ((x - lp[0]) % (lp[1] - lp[0]))
+      return Math.min(x, clipOut)
+    }
+    return clipIn + ((x - clipIn) % clipLen)
+  }
+
+  /** Length of the buffer this voice plays (zones each have their own). */
+  get bufferDuration() {
+    return this.buffer.duration
   }
 
   /** Wall-clock seconds per pass through the clip. */
@@ -268,9 +344,13 @@ export class Voice {
     const { clipIn, clipOut } = this.clip
     const src = this.ctx.createBufferSource()
     src.buffer = this.buffer
-    src.loop = true
-    src.loopStart = clipIn
-    src.loopEnd = clipOut
+    // zones loop only between their loop points (if any); pads loop the clip (repeat count stops them)
+    const loop = this.zone ? this.zone.loop : ([clipIn, clipOut] as [number, number])
+    src.loop = !!loop
+    if (loop) {
+      src.loopStart = loop[0]
+      src.loopEnd = loop[1]
+    }
     const p = src.playbackRate
     const to = this.tapeRate(this.glide.to)
     if (this.glide.dur > 0 && this.glide.from !== this.glide.to) {
@@ -301,13 +381,23 @@ export class Voice {
 
   // ── grains ───────────────────────────────────────────────────────────────
   private startGrains() {
-    this.nextGrain = this.t0
+    const s = this.settings
+    const cloud = this.kind === 'cloud'
+    const n = cloud ? Math.min(8, Math.max(1, Math.round(s.grainStreams))) : 1
+    const size = cloud ? Math.max(0.005, s.grainSize / 1000) : STRETCH_GRAIN
+    // poly grains: each stream starts at a random time and offset, and drifts at its own speed
+    this.streams = Array.from({ length: n }, (_, i) => ({
+      next: this.t0 + (i ? Math.random() * size : 0),
+      offset: n > 1 ? (Math.random() - 0.5) * Math.max(s.grainWidth, 0.2) : 0,
+      speed: cloud ? (Math.random() * 2 - 1) * s.grainDrift : 0,
+    }))
     this.tick()
     this.timer = setInterval(() => this.tick(), TICK_MS)
   }
 
+  /** Grains sounding at once: density × streams (sets each grain's gain). */
   private get overlap() {
-    return this.kind === 'cloud' ? Math.max(1, this.settings.grainDensity) : STRETCH_OVERLAP
+    return this.kind === 'cloud' ? Math.max(1, this.settings.grainDensity) * Math.max(1, this.streams.length) : STRETCH_OVERLAP
   }
 
   private tick() {
@@ -315,11 +405,16 @@ export class Voice {
     const cloud = this.kind === 'cloud'
     const horizon = Math.min(this.ctx.currentTime + LOOKAHEAD, this.endTime)
     let size = STRETCH_GRAIN
-    while (this.nextGrain < horizon) {
-      if (cloud) size = Math.max(0.005, (s.grainSize + this.jsMod('grainSize', this.nextGrain)) / 1000)
-      this.spawnGrain(this.nextGrain, size)
-      this.nextGrain += size / this.overlap
+    for (const st of this.streams) {
+      while (st.next < horizon) {
+        if (cloud) size = Math.max(0.005, (s.grainSize + this.jsMod('grainSize', st.next)) / 1000)
+        this.spawnGrain(st.next, size, st)
+        let step = size / (cloud ? Math.max(1, s.grainDensity) : STRETCH_OVERLAP)
+        if (cloud && s.grainScatter > 0) step *= Math.max(0.1, 1 + (Math.random() * 2 - 1) * s.grainScatter)
+        st.next += step
+      }
     }
+    this.nextGrain = Math.min(...this.streams.map((st) => st.next))
     if (this.nextGrain >= this.endTime && this.timer !== undefined) {
       clearInterval(this.timer)
       this.timer = undefined
@@ -328,7 +423,7 @@ export class Voice {
     }
   }
 
-  private spawnGrain(when: number, size: number) {
+  private spawnGrain(when: number, size: number, st: GrainStream) {
     const s = this.settings
     const cloud = this.kind === 'cloud'
     const { clipIn, clipOut, clipLen } = this.clip
@@ -338,7 +433,9 @@ export class Voice {
 
     let start: number
     if (cloud) {
-      const pos = Math.min(1, Math.max(0, s.grainPos + this.jsMod('grainPos', when)))
+      let pos = s.grainPos + this.jsMod('grainPos', when) + st.offset + (st.speed * (when - this.t0)) / clipLen
+      // a single fixed stream clamps at the clip edges; drifting streams wrap around the clip
+      pos = st.speed || st.offset ? ((pos % 1) + 1) % 1 : Math.min(1, Math.max(0, pos))
       const center = clipIn + pos * clipLen + (Math.random() - 0.5) * s.grainWidth * clipLen
       start = center - bufLen / 2
     } else {
@@ -372,7 +469,7 @@ export class Voice {
       this.grains.delete(src)
     }
     this.grains.add(src)
-    this.marks.push({ pos: offset, len: bufLen, when, dur })
+    this.marks.push({ pos: offset, len: bufLen, when, dur, rate, reverse })
     if (this.marks.length > MAX_MARKS) this.marks.shift()
   }
 
@@ -383,11 +480,19 @@ export class Voice {
     const s = this.settings
     const now = this.ctx.currentTime
     const set = (p: AudioParam, v: number) => (immediate ? (p.value = v) : p.setTargetAtTime(v, now, RAMP))
-    set(this.out.gain, s.volume * (1 - s.velAmount + s.velAmount * this.velocity))
-    set(this.panner.pan, s.pan)
-    this.filter.type = s.filterType
-    set(this.filter.frequency, s.cutoff)
-    set(this.filter.Q, s.resonance)
+    set(this.out.gain, s.volume * (1 - s.velAmount + s.velAmount * this.velocity) * (this.zone?.gain ?? 1) * this.ccGain)
+    set(this.panner.pan, Math.min(1, Math.max(-1, s.pan + (this.zone?.pan ?? 0) + this.ccPan)))
+    const zf = this.zone?.filter
+    if (zf) {
+      // SFZ-defined filter replaces the pad's (resonance dB → Q around Butterworth)
+      this.filter.type = zf.type
+      set(this.filter.frequency, Math.min(20000, Math.max(10, zf.freq)))
+      set(this.filter.Q, Math.max(0.1, 0.707 * Math.pow(10, (zf.resonance + this.ccRes) / 20)))
+    } else {
+      this.filter.type = s.filterType
+      set(this.filter.frequency, s.cutoff)
+      set(this.filter.Q, Math.max(0.1, s.resonance * Math.pow(10, this.ccRes / 20)))
+    }
     set(this.lo.gain, s.eqLow)
     set(this.mid.gain, s.eqMid)
     set(this.hi.gain, s.eqHigh)
@@ -399,14 +504,16 @@ export class Voice {
 
     this.updatePadLfos()
     this.wireRoutes()
-    this.clip = clipBounds(s, this.buffer.duration)
+    if (!this.zone) this.clip = clipBounds(s, this.buffer.duration)
     const kr = knobRate(s)
     const tuned = kr !== this.kRate || s.speed !== this.speed
     this.kRate = kr
     this.speed = s.speed
     if (this.src) {
-      this.src.loopStart = this.clip.clipIn
-      this.src.loopEnd = this.clip.clipOut
+      if (!this.zone) {
+        this.src.loopStart = this.clip.clipIn
+        this.src.loopEnd = this.clip.clipOut
+      }
       if (tuned) set(this.src.playbackRate, this.tapeRate(this.glide.to))
     }
     clearTimeout(this.impulseTimer)
@@ -429,28 +536,21 @@ export class Voice {
     ]
   }
 
-  private padLfo(i: 0 | 1): OscillatorNode {
-    let osc = this.padLfos[i]
-    if (!osc) {
-      osc = this.ctx.createOscillator()
-      const lfo = i ? this.settings.mod.lfo2 : this.settings.mod.lfo1
-      osc.type = lfo.shape
-      osc.frequency.value = lfo.rate
-      // pad LFOs restart with every note
-      this.padLfoStart[i] = Math.max(this.t0, this.ctx.currentTime)
-      osc.start(this.padLfoStart[i])
-      this.padLfos[i] = osc
+  /** Pad LFOs are created on first use and restart with every note. */
+  private padLfo(i: 0 | 1): LfoSource {
+    let lfo = this.padLfos[i]
+    if (!lfo) {
+      const cfg = i ? this.settings.mod.lfo2 : this.settings.mod.lfo1
+      lfo = new LfoSource(this.ctx, cfg.shape, lfoHz(cfg, this.hub.bpm()), Math.max(this.t0, this.ctx.currentTime))
+      this.padLfos[i] = lfo
     }
-    return osc
+    return lfo
   }
 
   private updatePadLfos() {
-    const now = this.ctx.currentTime
-    this.padLfos.forEach((osc, i) => {
-      if (!osc) return
-      const lfo = i ? this.settings.mod.lfo2 : this.settings.mod.lfo1
-      osc.type = lfo.shape
-      osc.frequency.setTargetAtTime(lfo.rate, now, RAMP)
+    this.padLfos.forEach((lfo, i) => {
+      const cfg = i ? this.settings.mod.lfo2 : this.settings.mod.lfo1
+      lfo?.set(cfg.shape, lfoHz(cfg, this.hub.bpm()))
     })
   }
 
@@ -458,7 +558,7 @@ export class Voice {
     switch (src) {
       case 'lfo1':
       case 'lfo2':
-        return scope === 'global' ? this.hub.globalLfos[LFO_INDEX[src]] : this.padLfo(LFO_INDEX[src])
+        return scope === 'global' ? this.hub.globalLfos[LFO_INDEX[src]].output : this.padLfo(LFO_INDEX[src]).output
       case 'mod':
         return this.hub.modWheel
       case 'aftertouch':
@@ -551,10 +651,7 @@ export class Voice {
       case 'lfo1':
       case 'lfo2': {
         const i = LFO_INDEX[src]
-        const m = scope === 'global' ? this.hub.matrix() : this.settings.mod
-        const lfo = i ? m.lfo2 : m.lfo1
-        const start = scope === 'global' ? this.hub.globalLfoStart : this.padLfoStart[i] || this.t0
-        return lfoValue(lfo.shape, (t - start) * lfo.rate)
+        return (scope === 'global' ? this.hub.globalLfos[i] : this.padLfo(i)).valueAt(t)
       }
       case 'mod':
         return this.hub.state.mod
@@ -598,6 +695,82 @@ export class Voice {
     this.timbreSrc.offset.setTargetAtTime(v, this.ctx.currentTime, 0.01)
   }
 
+  // ── SFZ zone LFOs and CC opcodes ──────────────────────────────────────────
+  private startZoneLfos() {
+    for (const l of this.zone?.lfos ?? []) {
+      const osc = this.ctx.createOscillator()
+      osc.type = l.wave
+      osc.frequency.value = l.freq
+      const g = this.ctx.createGain()
+      const sign = l.invert ? -1 : 1
+      switch (l.target) {
+        case 'pitch':
+          g.gain.value = sign * l.depth // cents
+          osc.connect(g).connect(this.pitchBus)
+          break
+        case 'cutoff':
+          g.gain.value = sign * l.depth // cents
+          osc.connect(g).connect(this.filter.detune)
+          break
+        case 'volume':
+          g.gain.value = sign * (Math.pow(10, Math.abs(l.depth) / 20) - 1) // ±dB → gain swing
+          osc.connect(g).connect(this.trem.gain)
+          break
+        case 'pan':
+          g.gain.value = (sign * l.depth) / 100
+          osc.connect(g).connect(this.panner.pan)
+          break
+      }
+      osc.start(this.t0 + l.delay)
+      this.zoneLfoNodes.push(osc)
+      this.zoneLfoGains.push(g)
+    }
+  }
+
+  /** Recompute SFZ *_onccN offsets from the current CC values. */
+  applyCC() {
+    const mods = this.zone?.ccMods
+    if (!mods || this.disposed) return
+    const cc = this.hub.cc
+    let db = 0
+    // amplitude_onccN modifiers multiply (as in ARIA / sfizz): 100 % at CC 127 = unity when the CC is full
+    let amp = (this.zone?.amplitude ?? 100) / 100
+    let pan = 0
+    let cents = 0
+    let cut = 0
+    let res = 0
+    for (const m of mods) {
+      const v = cc[m.cc] ?? 0
+      if (m.target === 'volume') db += m.amount * v
+      else if (m.target === 'amplitude') amp *= (m.amount / 100) * v
+      else if (m.target === 'pan') pan += (m.amount / 100) * v
+      else if (m.target === 'pitch') cents += m.amount * v
+      else if (m.target === 'cutoff') cut += m.amount * v
+      else res += m.amount * v
+    }
+    this.ccGain = Math.pow(10, db / 20) * Math.max(0, amp)
+    this.ccPan = pan
+    this.ccRes = res
+    const now = this.ctx.currentTime
+    if (mods.some((m) => m.target === 'pitch')) {
+      if (!this.ccPitch) {
+        this.ccPitch = this.ctx.createConstantSource()
+        this.ccPitch.connect(this.pitchBus)
+        this.ccPitch.start()
+      }
+      this.ccPitch.offset.setTargetAtTime(cents, now, RAMP)
+    }
+    if (mods.some((m) => m.target === 'cutoff')) {
+      if (!this.ccCut) {
+        this.ccCut = this.ctx.createConstantSource()
+        this.ccCut.connect(this.filter.detune)
+        this.ccCut.start()
+      }
+      this.ccCut.offset.setTargetAtTime(cut, now, RAMP)
+    }
+    this.apply(!this.playing)
+  }
+
   // ── ending ───────────────────────────────────────────────────────────────
   private releaseAt(tr: number) {
     this.releaseTime = tr
@@ -609,6 +782,7 @@ export class Voice {
 
   /** Note-off: run the release, then let FX tails ring out. */
   release() {
+    if (this.zone?.oneShot) return // one_shot regions ignore note-off
     const now = this.ctx.currentTime
     if (!this.playing || now >= this.releaseTime) return
     this.releaseAt(Math.max(now, this.t0))
@@ -658,8 +832,14 @@ export class Voice {
     if (this.src) this.src.onended = null
     this.unwire()
     const consts = [this.atSrc, this.bendSrc, this.velSrc, this.noteBendSrc, this.timbreSrc]
-    for (const n of [...consts, ...this.padLfos]) n?.stop()
-    for (const n of [this.pitchBus, this.trem, ...consts, ...this.padLfos]) n?.disconnect()
+    for (const n of consts) n.stop()
+    for (const n of this.padLfos) n?.stop()
+    for (const n of [...this.zoneLfoNodes, this.ccPitch, this.ccCut]) {
+      n?.stop()
+      n?.disconnect()
+    }
+    for (const g of this.zoneLfoGains) g.disconnect()
+    for (const n of [this.pitchBus, this.trem, ...consts]) n.disconnect()
     for (const n of [this.env, this.filter, this.lo, this.mid, this.hi, this.dry, this.delay, this.feedback,
       this.delayWet, this.convolver, this.reverbWet, this.out, this.panner, this.kill]) n.disconnect()
     this.src?.disconnect()

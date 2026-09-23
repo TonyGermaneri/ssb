@@ -53,10 +53,10 @@ i {
 i.on {
   opacity: 1;
 }
-.green { background: #33ff66; }
-.amber { background: #ffb000; }
-.red { background: #ff3b2f; }
-.green.on { box-shadow: 0 0 4px #33ff66; }
-.amber.on { box-shadow: 0 0 4px #ffb000; }
-.red.on { box-shadow: 0 0 4px #ff3b2f; }
+.green { background: var(--c-success); }
+.amber { background: var(--c-primary); }
+.red { background: var(--c-danger); }
+.green.on { box-shadow: 0 0 4px var(--c-success); }
+.amber.on { box-shadow: 0 0 4px var(--c-primary); }
+.red.on { box-shadow: 0 0 4px var(--c-danger); }
 </style>

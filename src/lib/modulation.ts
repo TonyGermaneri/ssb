@@ -16,6 +16,10 @@ export function lfoValue(shape: LfoShape, phase: number): number {
       return p < 0.5 ? 1 : -1
     case 'sawtooth':
       return p < 0.5 ? 2 * p : 2 * p - 2
+    case 'rampDown':
+      return p < 0.5 ? -2 * p : 2 - 2 * p
+    default:
+      return 0 // random shapes are stateful: see LfoSource
   }
 }
 

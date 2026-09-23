@@ -13,15 +13,12 @@ export const fmtNum = (v: number) => v.toFixed(1)
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 export const midiNoteName = (n: number) => `${NOTE_NAMES[n % 12]}${Math.floor(n / 12) - 1}`
 
-/** 80s pad palette: hot pink, cyan, amber, green, violet, orange, magenta, sky. */
-const PAD_HUES = [330, 188, 42, 135, 268, 18, 300, 205]
-
-/** Stable pad hue: pads sharing a tag share a color; untagged pads vary by name. */
-export function padHue(tag: string, name: string): number {
+/** Stable pad hue from the theme's palette: pads sharing a tag share a color; untagged pads vary by name. */
+export function padHue(tag: string, name: string, hues: number[]): number {
   const key = (tag.trim() || name).toLowerCase()
   let h = 0
   for (const c of key) h = (h * 31 + c.charCodeAt(0)) >>> 0
-  return PAD_HUES[h % PAD_HUES.length]
+  return hues[h % hues.length]
 }
 
 export const stripExt = (name: string) => name.replace(/\.[^.]+$/, '')

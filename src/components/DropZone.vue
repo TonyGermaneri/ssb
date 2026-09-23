@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useBoard } from '../stores/board'
+import { collectDropped } from '../lib/dropFiles'
 
 const board = useBoard()
 const active = ref(false)
@@ -28,7 +29,8 @@ function onDrop(e: DragEvent) {
   e.preventDefault()
   depth = 0
   active.value = false
-  board.addFiles([...(e.dataTransfer?.files ?? [])])
+  // folders are walked, so an SFZ can be dropped with its sample directory
+  if (e.dataTransfer) void collectDropped(e.dataTransfer).then((files) => board.addFiles(files))
 }
 
 onMounted(() => {
@@ -50,7 +52,7 @@ onBeforeUnmount(() => {
     <div v-if="active" class="dropzone">
       <div class="msg">
         <div class="big">DROP TO LOAD</div>
-        <div class="small">MP3 · WAV · OGG · M4A · FLAC</div>
+        <div class="small">MP3 · WAV · OGG · M4A · FLAC · SFZ + SAMPLES · FOLDERS · ZIP</div>
       </div>
     </div>
   </Transition>
@@ -68,11 +70,11 @@ onBeforeUnmount(() => {
 }
 .msg {
   padding: 40px 60px;
-  border: 3px dashed #33ff66;
+  border: 3px dashed var(--c-success);
   border-radius: 12px;
   text-align: center;
-  color: #33ff66;
-  text-shadow: 0 0 12px rgba(51, 255, 102, 0.8);
+  color: var(--c-success);
+  text-shadow: 0 0 12px color-mix(in srgb, var(--c-success) 80%, transparent);
 }
 .big {
   font-family: 'Orbitron', sans-serif;

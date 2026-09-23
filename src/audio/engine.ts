@@ -1,5 +1,7 @@
 import { markRaw, ref, shallowRef } from 'vue'
-import { defaultMatrix, type GlobalFx, type ModMatrix, type Sound } from '../types'
+import { defaultMatrix, lfoHz, type GlobalFx, type ModMatrix, type Sound } from '../types'
+import { LfoSource } from './lfo'
+import { isSynthAudioId, makeSynthBuffer, type SynthWave } from './synthWaves'
 import { MasterFx } from './masterFx'
 import { Voice, type ModHub, type VoiceOptions } from './voice'
 
@@ -18,6 +20,7 @@ let analysers: [AnalyserNode, AnalyserNode]
 let hub: ModHub
 let globalMatrix: ModMatrix = defaultMatrix()
 let mpeBendRange = 48
+let bpm = 120
 const voices = new Set<Voice>() // includes voices whose tails are still ringing
 
 /** Decoded audio by audioId. Not reactive — AudioBuffers are big. */
@@ -45,30 +48,46 @@ export function getCtx(): AudioContext {
     split.connect(a, i)
   })
   const now = ctx.currentTime
-  const globalLfos = [ctx.createOscillator(), ctx.createOscillator()]
-  globalLfos.forEach((o) => o.start(now))
+  const globalLfos = [globalMatrix.lfo1, globalMatrix.lfo2].map((l) => new LfoSource(ctx!, l.shape, lfoHz(l, bpm), now))
   const modWheel = ctx.createConstantSource()
   modWheel.offset.value = 0
   modWheel.start(now)
   hub = {
     globalLfos,
-    globalLfoStart: now,
+    bpm: () => bpm,
     modWheel,
     state: { mod: 0, bend: 0, pressure: 0, timbre: 0 },
+    cc: new Float32Array(128),
     matrix: () => globalMatrix,
     mpeBendRange: () => mpeBendRange,
   }
+  // MIDI's usual power-on CCs: volume 100, pan centre, expression full
+  hub.cc[7] = 100 / 127
+  hub.cc[10] = 64 / 127
+  hub.cc[11] = 1
   applyGlobalLfos()
   startMeterLoop()
   return ctx
 }
 
 function applyGlobalLfos() {
-  const now = getCtx().currentTime
-  ;[globalMatrix.lfo1, globalMatrix.lfo2].forEach((lfo, i) => {
-    hub.globalLfos[i].type = lfo.shape
-    hub.globalLfos[i].frequency.setTargetAtTime(lfo.rate, now, 0.02)
-  })
+  getCtx()
+  ;[globalMatrix.lfo1, globalMatrix.lfo2].forEach((lfo, i) => hub.globalLfos[i].set(lfo.shape, lfoHz(lfo, bpm)))
+}
+
+/** Tempo for synced LFOs (internal knob or MIDI clock). */
+export function setTempo(next: number) {
+  if (!(next > 0) || next === bpm) return
+  bpm = next
+  if (!ctx) return
+  applyGlobalLfos()
+  for (const v of voices) v.apply()
+}
+
+/** MIDI Start: global LFOs restart their cycle on the downbeat. */
+export function restartGlobalLfos() {
+  const c = getCtx()
+  for (const l of hub.globalLfos) l.restart(c.currentTime)
 }
 
 /** Global modulation matrix changed (LFO settings or routes). */
@@ -134,6 +153,29 @@ export function decode(data: ArrayBuffer): Promise<AudioBuffer> {
   return getCtx().decodeAudioData(data)
 }
 
+/** Buffer for an audio id; SFZ generators ("synth:sine" …) are built on first use. */
+export function getBuffer(audioId: string): AudioBuffer | undefined {
+  let b = buffers.get(audioId)
+  if (!b && isSynthAudioId(audioId)) {
+    b = makeSynthBuffer(getCtx(), audioId.slice(6) as SynthWave)
+    buffers.set(audioId, b)
+  }
+  return b
+}
+
+/** Current CC values (0..1), shared with voices for SFZ CC opcodes. */
+export function ccValues(): Float32Array {
+  getCtx()
+  return hub.cc
+}
+
+/** A CC moved: SFZ *_onccN offsets follow on every voice. */
+export function setCC(cc: number, v: number) {
+  getCtx()
+  hub.cc[cc] = v
+  for (const voice of voices) voice.applyCC()
+}
+
 export function forget(audioId: string) {
   buffers.delete(audioId)
   reversedBuffers.delete(audioId)
@@ -143,7 +185,7 @@ export function forget(audioId: string) {
 function reversed(audioId: string): AudioBuffer {
   let r = reversedBuffers.get(audioId)
   if (r) return r
-  const src = buffers.get(audioId)!
+  const src = getBuffer(audioId)!
   r = getCtx().createBuffer(src.numberOfChannels, src.length, src.sampleRate)
   for (let ch = 0; ch < src.numberOfChannels; ch++) r.getChannelData(ch).set(src.getChannelData(ch).slice().reverse())
   reversedBuffers.set(audioId, r)
@@ -167,13 +209,14 @@ export function publish() {
 }
 
 export function startVoice(sound: Sound, opts: VoiceOptions = {}): Voice | null {
-  const buffer = buffers.get(sound.audioId)
+  const audioId = opts.zone?.audioId ?? sound.audioId
+  const buffer = getBuffer(audioId)
   if (!buffer) return null
   const c = getCtx()
   const v = new Voice(
     c,
     buffer,
-    () => reversed(sound.audioId),
+    () => reversed(audioId),
     sound.id,
     sound.settings,
     fx.input,

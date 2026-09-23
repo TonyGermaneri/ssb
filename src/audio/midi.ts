@@ -5,10 +5,21 @@ export type MidiEvent =
   | { type: 'channelPressure'; channel: number; value: number }
   | { type: 'pitchBend'; channel: number; value: number } // -1..1
   | { type: 'cc'; channel: number; cc: number; value: number } // 0..1
+  | { type: 'clock' | 'start' | 'continue' | 'stop' } // system realtime
 
 /** Decode one MIDI message (channels 0-15). Values normalised. */
 export function parseMidi(data: ArrayLike<number>): MidiEvent | null {
   const status = data[0]
+  switch (status) {
+    case 0xf8:
+      return { type: 'clock' }
+    case 0xfa:
+      return { type: 'start' }
+    case 0xfb:
+      return { type: 'continue' }
+    case 0xfc:
+      return { type: 'stop' }
+  }
   const cmd = status & 0xf0
   const channel = status & 0x0f
   const d1 = data[1] ?? 0
@@ -33,12 +44,12 @@ export function parseMidi(data: ArrayLike<number>): MidiEvent | null {
 }
 
 /** Listen to every MIDI input, including devices plugged in later. Returns input count. */
-export async function connectMidi(onEvent: (e: MidiEvent) => void): Promise<number> {
+export async function connectMidi(onEvent: (e: MidiEvent, time: number) => void): Promise<number> {
   if (!navigator.requestMIDIAccess) throw new Error('Web MIDI is not supported in this browser')
   const access = await navigator.requestMIDIAccess()
   const onMessage = (e: MIDIMessageEvent) => {
     const ev = e.data && parseMidi(e.data)
-    if (ev) onEvent(ev)
+    if (ev) onEvent(ev, e.timeStamp)
   }
   const bind = () => access.inputs.forEach((input) => (input.onmidimessage = onMessage))
   bind()

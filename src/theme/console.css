@@ -1,6 +1,6 @@
 html,
 body {
-  background: #0e0d10;
+  background: var(--bg);
   overscroll-behavior: none;
 }
 
@@ -8,11 +8,11 @@ body {
   position: relative;
   min-height: 100vh;
   background:
-    radial-gradient(ellipse at 50% -10%, rgba(255, 176, 0, 0.07), transparent 55%),
-    radial-gradient(ellipse at 50% 120%, rgba(255, 61, 127, 0.06), transparent 50%),
+    radial-gradient(ellipse at 50% -10%, color-mix(in srgb, var(--c-primary) 7%, transparent), transparent 55%),
+    radial-gradient(ellipse at 50% 120%, color-mix(in srgb, var(--c-accent) 6%, transparent), transparent 50%),
     repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.012) 0 1px, transparent 1px 3px),
-    linear-gradient(180deg, #1b1a1f, #121114);
-  color: #e8e2d4;
+    linear-gradient(180deg, var(--bg-hi), var(--bg-lo));
+  color: var(--text);
 }
 
 /* CRT scanlines + vignette */
@@ -38,7 +38,7 @@ body {
   font-family: 'VT323', monospace;
   font-size: 14px;
   letter-spacing: 0.08em;
-  color: #57534b;
+  color: var(--text-faint);
 }
 
 /* chunky hardware push button, used across strip + panels */
@@ -81,12 +81,12 @@ body {
   padding: 0;
 }
 .hw-btn.lit {
-  color: #ffb000;
-  text-shadow: 0 0 6px rgba(255, 176, 0, 0.8);
+  color: var(--c-primary);
+  text-shadow: 0 0 6px color-mix(in srgb, var(--c-primary) 80%, transparent);
   box-shadow:
     0 2px 0 #0a0a0b,
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    inset 0 0 10px rgba(255, 176, 0, 0.25);
+    inset 0 0 10px color-mix(in srgb, var(--c-primary) 25%, transparent);
 }
 .hw-btn.danger {
   color: #fff;
@@ -98,6 +98,6 @@ body {
   width: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #3a3940;
+  background: var(--panel-hi);
   border-radius: 4px;
 }

@@ -8,8 +8,10 @@ import {
 import { FILTER_LABEL, TRIGGER_MODE_INFO, TRIGGER_MODES, type Sound } from '../types'
 import Knob from './Knob.vue'
 import Waveform from './Waveform.vue'
+import KeyMap from './KeyMap.vue'
 
-const props = defineProps<{ sound: Sound; hue: number }>()
+/** wide: spread across the full row (pads view); otherwise a fixed-width column (grid side panel) */
+const props = defineProps<{ sound: Sound; hue: number; wide?: boolean }>()
 const board = useBoard()
 const s = computed(() => props.sound.settings)
 const confirmDelete = ref(false)
@@ -34,11 +36,14 @@ function doReset() {
 </script>
 
 <template>
-  <div class="panel" @pointerdown.stop @click.stop>
+  <div class="panel" :class="{ wide }" @pointerdown.stop @click.stop>
     <div class="screws"><i /><i /><i /><i /></div>
 
-    <Waveform :sound="sound" :hue="hue" />
-
+    <div class="top">
+      <div class="scope">
+        <Waveform :sound="sound" :hue="hue" :height="wide ? 72 : 52" />
+        <KeyMap v-if="sound.zones?.length" :sound="sound" />
+      </div>
     <div class="fields">
       <v-text-field v-model="s.name" label="NAME" density="compact" variant="outlined" hide-details spellcheck="false" />
       <v-combobox
@@ -50,6 +55,7 @@ function doReset() {
         hide-details
         @update:model-value="(v: string | null) => (s.tag = (v ?? '').trim())"
       />
+    </div>
     </div>
 
     <div class="modules">
@@ -154,6 +160,9 @@ function doReset() {
           <Knob v-model="s.grainJitter" label="JITTER" :max="12" :step="0.1" :default="0" :format="fmtSemisJitter" color="accent" />
           <Knob v-model="s.grainReverse" label="REVERSE" :default="0" :format="fmtPct" color="accent" />
           <Knob v-model="s.grainSpread" label="SPREAD" :default="0" :format="fmtPct" color="accent" />
+          <Knob v-model="s.grainStreams" label="STREAMS" :min="1" :max="8" :step="1" :default="1" :format="(v: number) => `${Math.round(v)}`" color="accent" />
+          <Knob v-model="s.grainScatter" label="SCATTER" :default="0" :format="fmtPct" color="accent" />
+          <Knob v-model="s.grainDrift" label="DRIFT" :default="0" :format="fmtPct" color="accent" />
         </div>
       </section>
 
@@ -272,7 +281,7 @@ function doReset() {
   border-radius: 6px;
   background:
     repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.015) 0 1px, transparent 1px 3px),
-    linear-gradient(180deg, #3a3940 0%, #2a292f 55%, #222126 100%);
+    linear-gradient(180deg, var(--panel-hi) 0%, var(--panel-mid) 55%, var(--panel-lo) 100%);
   box-shadow:
     0 10px 24px rgba(0, 0, 0, 0.6),
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
@@ -298,10 +307,37 @@ function doReset() {
   gap: 8px;
   margin: 8px 0 6px;
 }
+.scope {
+  min-width: 0;
+}
+/* full-width panel: scope + name/tag side by side, modules flow across the row */
+.panel.wide {
+  width: 100%;
+}
+.panel.wide .top {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+.panel.wide .scope {
+  flex: 1;
+}
+.panel.wide .fields {
+  flex: 0 0 340px;
+  grid-template-columns: 1fr;
+  margin: 0;
+}
+.panel.wide .module.wide {
+  flex-basis: auto;
+}
+.panel.wide .module {
+  flex-grow: 1;
+}
 .fields :deep(.v-field) {
   font-family: 'VT323', monospace;
   font-size: 18px;
-  background: #0d0c0f;
+  background: var(--lcd-bg);
   color: rgb(var(--v-theme-primary));
 }
 .fields :deep(.v-label) {
@@ -333,7 +369,7 @@ function doReset() {
   font-size: 8px;
   font-weight: 900;
   letter-spacing: 0.18em;
-  color: #e8dcc0;
+  color: var(--text-head);
 }
 .chip {
   padding: 0 5px;
@@ -342,13 +378,13 @@ function doReset() {
   font-size: 12px;
   letter-spacing: 0.08em;
   line-height: 13px;
-  color: #b9b4a8;
+  color: var(--text-dim);
   background: #111;
   border: 1px solid #000;
 }
 .chip.on {
-  color: #27e0ff;
-  text-shadow: 0 0 4px rgba(39, 224, 255, 0.7);
+  color: var(--c-secondary);
+  text-shadow: 0 0 4px color-mix(in srgb, var(--c-secondary) 70%, transparent);
 }
 .row {
   display: flex;
@@ -370,13 +406,13 @@ function doReset() {
   font-size: 13px;
   line-height: 13px;
   color: #111;
-  background: #ffb000;
+  background: var(--c-primary);
 }
 .preset-menu {
   width: 260px;
   padding: 8px;
   border-radius: 6px;
-  background: linear-gradient(180deg, #3a3940, #26252b);
+  background: linear-gradient(180deg, var(--panel-hi), var(--panel-lo));
   border: 1px solid #000;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
   font-family: 'VT323', monospace;
@@ -393,8 +429,8 @@ function doReset() {
   border-radius: 3px;
   font-family: 'VT323', monospace;
   font-size: 17px;
-  color: #ffb000;
-  background: #0d0c0f;
+  color: var(--c-primary);
+  background: var(--lcd-bg);
   border: 1px solid #000;
   outline: none;
 }
@@ -402,7 +438,7 @@ function doReset() {
 .pm-hint {
   padding: 4px 2px;
   font-size: 14px;
-  color: #8a8579;
+  color: var(--text-mute);
 }
 .pm-item {
   display: flex;
@@ -415,18 +451,18 @@ function doReset() {
   text-align: left;
   font-family: 'VT323', monospace;
   font-size: 18px;
-  color: #27e0ff;
+  color: var(--c-secondary);
   text-transform: uppercase;
 }
 .pm-load:hover {
-  background: rgba(39, 224, 255, 0.08);
+  background: color-mix(in srgb, var(--c-secondary) 8%, transparent);
 }
 .pm-del {
   padding: 0 4px;
-  color: #8a8579;
+  color: var(--text-mute);
 }
 .pm-del:hover {
-  color: #ff3b2f;
+  color: var(--c-danger);
 }
 .mode {
   min-width: 108px;
@@ -443,8 +479,8 @@ function doReset() {
   background: #3a1a08;
 }
 .leds i.on {
-  background: #ffb000;
-  box-shadow: 0 0 5px #ffb000;
+  background: var(--c-primary);
+  box-shadow: 0 0 5px var(--c-primary);
 }
 .blink {
   animation: blink 0.6s steps(2) infinite;
@@ -452,7 +488,7 @@ function doReset() {
 @keyframes blink {
   50% {
     color: #111;
-    background: #ffb000;
+    background: var(--c-primary);
   }
 }
 </style>

@@ -13,6 +13,9 @@ const voices = computed(() => activeVoices.value.filter((v) => v.soundId === pro
 const playing = computed(() => voices.value.length > 0)
 const pressed = computed(() => board.pressed.has(props.sound.id))
 const selected = computed(() => board.master.selectedId === props.sound.id)
+const midiNote = computed(() => board.noteFor.get(props.sound.id))
+/** newest voice id: changes on every trigger, which replays the flash */
+const lastVoice = computed(() => voices.value.reduce((m, v) => Math.max(m, v.id), 0))
 
 /** 0..1 through the whole play (finite repeats) or through the current loop cycle. */
 const progress = computed(() => {
@@ -74,16 +77,21 @@ function onUp() {
       <v-icon size="16" icon="mdi-drag" />
     </div>
 
+    <!-- light under the plastic: glows while playing, flashes on every hit -->
+    <div class="backlight" />
+    <div v-if="lastVoice" :key="lastVoice" class="flash" />
+
     <div class="led" />
     <div class="name">{{ sound.settings.name }}</div>
     <div v-if="sound.settings.tag" class="tag">{{ sound.settings.tag }}</div>
 
     <div class="badges">
       <v-icon size="12" :icon="TRIGGER_MODE_INFO[sound.settings.mode].icon" />
+      <span v-if="sound.zones?.length" class="sfz" :title="`SFZ instrument · ${sound.zones.length} zones`">SFZ</span>
       <span v-if="sound.settings.repeat === 0">∞</span>
       <span v-else-if="sound.settings.repeat > 1">×{{ sound.settings.repeat }}</span>
       <span v-if="sound.settings.choke">G{{ sound.settings.choke }}</span>
-      <span v-if="sound.settings.midiNote !== null">{{ midiNoteName(sound.settings.midiNote) }}</span>
+      <span v-if="midiNote !== undefined">{{ midiNoteName(midiNote) }}</span>
       <kbd v-if="keyLabel" class="key">{{ keyLabel.toUpperCase() }}</kbd>
     </div>
     <button
@@ -105,9 +113,9 @@ function onUp() {
 
 <style scoped>
 .pad {
-  --face: hsl(var(--hue) 85% 52%);
-  --face-hi: hsl(var(--hue) 100% 72%);
-  --face-lo: hsl(var(--hue) 80% 26%);
+  --face: hsl(var(--hue) var(--pad-sat, 85%) var(--pad-light, 52%));
+  --face-hi: hsl(var(--hue) 100% calc(var(--pad-light, 52%) + 20%));
+  --face-lo: hsl(var(--hue) calc(var(--pad-sat, 85%) - 5%) calc(var(--pad-light, 52%) - 26%));
   --glow: hsl(var(--hue) 100% 60%);
   position: relative;
   zoom: var(--pad-scale, 1);
@@ -131,7 +139,7 @@ function onUp() {
     linear-gradient(180deg, var(--face) 0%, var(--face-lo) 100%);
   border: 1px solid rgba(0, 0, 0, 0.7);
   box-shadow:
-    0 6px 0 #0b0a0d,
+    0 6px 0 var(--lcd-bg),
     0 8px 14px rgba(0, 0, 0, 0.6),
     inset 0 1px 0 rgba(255, 255, 255, 0.45),
     inset 0 -3px 6px rgba(0, 0, 0, 0.35);
@@ -141,13 +149,13 @@ function onUp() {
     filter 120ms;
 }
 .pad:focus-visible {
-  outline: 2px solid #ffb000;
+  outline: 2px solid var(--c-primary);
   outline-offset: 3px;
 }
 .pad.pressed {
   transform: translateY(5px);
   box-shadow:
-    0 1px 0 #0b0a0d,
+    0 1px 0 var(--lcd-bg),
     0 2px 5px rgba(0, 0, 0, 0.6),
     inset 0 1px 0 rgba(255, 255, 255, 0.3),
     inset 0 3px 8px rgba(0, 0, 0, 0.45);
@@ -155,7 +163,7 @@ function onUp() {
 .pad.playing {
   filter: brightness(1.18) saturate(1.15);
   box-shadow:
-    0 6px 0 #0b0a0d,
+    0 6px 0 var(--lcd-bg),
     0 0 22px var(--glow),
     0 0 4px var(--glow),
     inset 0 1px 0 rgba(255, 255, 255, 0.45),
@@ -163,13 +171,65 @@ function onUp() {
 }
 .pad.playing.pressed {
   box-shadow:
-    0 1px 0 #0b0a0d,
+    0 1px 0 var(--lcd-bg),
     0 0 22px var(--glow),
     inset 0 3px 8px rgba(0, 0, 0, 0.45);
 }
 .pad.open {
-  outline: 2px solid rgba(255, 176, 0, 0.7);
+  outline: 2px solid color-mix(in srgb, var(--c-primary) 70%, transparent);
   outline-offset: 3px;
+}
+.backlight,
+.flash {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+.backlight {
+  opacity: 0;
+  transition: opacity 0.45s ease-out;
+  background: radial-gradient(
+    ellipse 75% 85% at 50% 55%,
+    hsl(var(--hue) 100% 82% / 0.6) 0%,
+    hsl(var(--hue) 100% 65% / 0.4) 42%,
+    hsl(var(--hue) 100% 55% / 0) 80%
+  );
+}
+/* frosted diffuser texture, only visible when lit */
+.backlight::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.22) 0.8px, transparent 1.4px) 0 0 / 4px 4px;
+}
+.playing .backlight {
+  opacity: 1;
+  transition-duration: 0.05s;
+}
+.flash {
+  background: radial-gradient(ellipse at 50% 55%, rgba(255, 255, 255, 0.7), hsl(var(--hue) 100% 75% / 0.4) 55%, transparent 85%);
+  animation: flash 0.4s ease-out forwards;
+}
+@keyframes flash {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+.name,
+.tag {
+  position: relative;
+  z-index: 1;
+}
+.playing .name {
+  text-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.7),
+    0 0 6px rgba(0, 0, 0, 0.55);
 }
 .name {
   max-width: 100%;
@@ -222,7 +282,7 @@ function onUp() {
 .burger:hover,
 .burger.active {
   background: rgba(0, 0, 0, 0.55);
-  color: #ffb000;
+  color: var(--c-primary);
 }
 .grip {
   right: 4px;
@@ -252,7 +312,7 @@ function onUp() {
 .badges {
   position: absolute;
   left: 7px;
-  bottom: 7px;
+  bottom: 10px;
   display: flex;
   gap: 4px;
   align-items: center;
@@ -260,6 +320,13 @@ function onUp() {
   font-size: 13px;
   line-height: 1;
   opacity: 0.85;
+}
+.sfz {
+  padding: 0 3px;
+  border-radius: 2px;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
 }
 .key {
   min-width: 16px;
@@ -276,7 +343,7 @@ function onUp() {
 .select {
   position: absolute;
   right: 5px;
-  bottom: 5px;
+  bottom: 8px;
   display: grid;
   place-items: center;
   width: 22px;
@@ -294,15 +361,15 @@ function onUp() {
 }
 .select.on {
   color: #062a30;
-  background: #27e0ff;
-  box-shadow: 0 0 8px #27e0ff;
+  background: var(--c-secondary);
+  box-shadow: 0 0 8px var(--c-secondary);
 }
 .pad.selected::after {
   content: '';
   position: absolute;
   inset: -1px;
   border-radius: inherit;
-  box-shadow: inset 0 0 0 2px rgba(39, 224, 255, 0.85), inset 0 0 14px rgba(39, 224, 255, 0.35);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--c-secondary) 85%, transparent), inset 0 0 14px color-mix(in srgb, var(--c-secondary) 35%, transparent);
   pointer-events: none;
 }
 .progress {

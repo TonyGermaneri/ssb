@@ -5,7 +5,7 @@ import { useBoard } from '../stores/board'
 import { fmtPct, fmtRate } from '../lib/format'
 import { fmtRouteAmount, lfoValue } from '../lib/modulation'
 import {
-  LFO_SHAPES, MOD_DEST_IDS, MOD_DESTS, MOD_SOURCES, type Lfo, type LfoShape, type ModDest, type ModMatrix,
+  DIVISIONS, lfoHz, LFO_SHAPES, MOD_DEST_IDS, MOD_DESTS, MOD_SOURCES, type Lfo, type LfoShape, type ModDest, type ModMatrix,
   type ModSource,
 } from '../types'
 import Knob from './Knob.vue'
@@ -17,7 +17,21 @@ const SHAPE_ICON: Record<LfoShape, string> = {
   triangle: 'mdi-triangle-wave',
   square: 'mdi-square-wave',
   sawtooth: 'mdi-sawtooth-wave',
+  rampDown: 'mdi-sawtooth-wave',
+  random: 'mdi-stairs',
+  smooth: 'mdi-waves',
 }
+const SHAPE_NAME: Record<LfoShape, string> = {
+  sine: 'Sine',
+  triangle: 'Triangle',
+  square: 'Square',
+  sawtooth: 'Saw up',
+  rampDown: 'Saw down',
+  random: 'Sample & hold (random steps)',
+  smooth: 'Smooth random',
+}
+const divIndex = (lfo: Lfo) => Math.max(0, DIVISIONS.findIndex((d) => d.id === lfo.division))
+const fmtDiv = (v: number) => DIVISIONS[Math.round(v)]?.id ?? ''
 const DEST_SHORT: Record<ModDest, string> = {
   pitch: 'PITCH',
   cutoff: 'CUTOFF',
@@ -60,7 +74,7 @@ function clearAll() {
   if (matrix.value) matrix.value.routes.splice(0)
 }
 /** blinking LED per LFO (display only) */
-const lfoLed = (lfo: Lfo) => (lfoValue(lfo.shape, clock.value * lfo.rate) + 1) / 2
+const lfoLed = (lfo: Lfo) => (lfoValue(lfo.shape === 'random' || lfo.shape === 'smooth' ? 'square' : lfo.shape, clock.value * lfoHz(lfo, board.bpm)) + 1) / 2
 const routeCount = computed(() => matrix.value?.routes.length ?? 0)
 </script>
 
@@ -102,14 +116,34 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
                 v-for="sh in LFO_SHAPES"
                 :key="sh"
                 class="shape"
-                :class="{ on: lfo.shape === sh }"
-                :title="sh"
+                :class="{ on: lfo.shape === sh, flip: sh === 'rampDown' }"
+                :title="SHAPE_NAME[sh]"
                 @click="lfo.shape = sh"
               >
                 <v-icon size="16" :icon="SHAPE_ICON[sh]" />
               </button>
+              <button
+                class="shape sync"
+                :class="{ on: lfo.sync }"
+                :title="lfo.sync ? 'Synced to tempo — click for free rate (Hz)' : 'Free rate — click to sync to tempo'"
+                @click="lfo.sync = !lfo.sync"
+              >
+                <v-icon size="15" icon="mdi-sync" />
+              </button>
             </div>
-            <Knob v-model="lfo.rate" label="RATE" :min="0.02" :max="20" curve="log" :default="i ? 0.5 : 5" :format="fmtRate" color="accent" />
+            <Knob
+              v-if="lfo.sync"
+              :model-value="divIndex(lfo)"
+              label="DIV"
+              :min="0"
+              :max="DIVISIONS.length - 1"
+              :step="1"
+              :default="6"
+              :format="fmtDiv"
+              color="accent"
+              @update:model-value="(v: number) => (lfo.division = DIVISIONS[Math.round(v)].id)"
+            />
+            <Knob v-else v-model="lfo.rate" label="RATE" :min="0.02" :max="20" curve="log" :default="i ? 0.5 : 5" :format="fmtRate" color="accent" />
           </div>
         </section>
         <section class="module perform">
@@ -180,10 +214,10 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
 .matrix {
   padding: 12px 14px;
   border-radius: 8px;
-  color: #e8e2d4;
+  color: var(--text);
   background:
     repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.015) 0 1px, transparent 1px 3px),
-    linear-gradient(180deg, #3a3940 0%, #26252b 100%);
+    linear-gradient(180deg, var(--panel-hi) 0%, var(--panel-lo) 100%);
   border: 1px solid #000;
   box-shadow:
     0 20px 60px rgba(0, 0, 0, 0.8),
@@ -202,8 +236,8 @@ h3 {
   font-weight: 900;
   font-size: 15px;
   letter-spacing: 0.18em;
-  color: #ffb000;
-  text-shadow: 0 0 8px rgba(255, 176, 0, 0.5);
+  color: var(--c-primary);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--c-primary) 50%, transparent);
 }
 .tabs {
   display: flex;
@@ -214,7 +248,7 @@ h3 {
   border-radius: 3px;
   font-family: 'VT323', monospace;
   font-size: 17px;
-  color: #8a8579;
+  color: var(--text-mute);
   background: #111;
   border: 1px solid #000;
   max-width: 220px;
@@ -224,9 +258,9 @@ h3 {
   text-transform: uppercase;
 }
 .tabs button.on {
-  color: #27e0ff;
-  text-shadow: 0 0 5px rgba(39, 224, 255, 0.7);
-  box-shadow: inset 0 0 8px rgba(39, 224, 255, 0.2);
+  color: var(--c-secondary);
+  text-shadow: 0 0 5px color-mix(in srgb, var(--c-secondary) 70%, transparent);
+  box-shadow: inset 0 0 8px color-mix(in srgb, var(--c-secondary) 20%, transparent);
 }
 .tabs button:disabled {
   opacity: 0.4;
@@ -235,7 +269,7 @@ h3 {
   margin: 6px 0;
   font-family: 'VT323', monospace;
   font-size: 15px;
-  color: #8a8579;
+  color: var(--text-mute);
 }
 .top {
   display: flex;
@@ -259,14 +293,14 @@ h3 {
   font-size: 8px;
   font-weight: 900;
   letter-spacing: 0.18em;
-  color: #e8dcc0;
+  color: var(--text-head);
 }
 .led {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #ff3d7f;
-  box-shadow: 0 0 6px #ff3d7f;
+  background: var(--c-accent);
+  box-shadow: 0 0 6px var(--c-accent);
 }
 .row {
   display: flex;
@@ -275,7 +309,7 @@ h3 {
 }
 .shapes {
   display: grid;
-  grid-template-columns: repeat(2, 28px);
+  grid-template-columns: repeat(4, 26px);
   gap: 3px;
 }
 .shape {
@@ -284,7 +318,7 @@ h3 {
   height: 22px;
   padding: 0;
   border-radius: 3px;
-  color: #8a8579;
+  color: var(--text-mute);
   background: #111;
   border: 1px solid #000;
 }
@@ -294,23 +328,26 @@ h3 {
   font-family: 'VT323', monospace;
   font-size: 13px;
   line-height: 14px;
-  color: #8a8579;
+  color: var(--text-mute);
   background: #111;
   border: 1px solid #000;
 }
 .chip.on {
-  color: #27e0ff;
-  text-shadow: 0 0 4px rgba(39, 224, 255, 0.7);
+  color: var(--c-secondary);
+  text-shadow: 0 0 4px color-mix(in srgb, var(--c-secondary) 70%, transparent);
+}
+.shape.flip :deep(.v-icon) {
+  transform: scaleX(-1);
 }
 .shape.on {
-  color: #ff3d7f;
-  box-shadow: inset 0 0 8px rgba(255, 61, 127, 0.35);
+  color: var(--c-accent);
+  box-shadow: inset 0 0 8px color-mix(in srgb, var(--c-accent) 35%, transparent);
 }
 .grid-wrap {
   overflow-x: auto;
   padding: 6px;
   border-radius: 4px;
-  background: #0b0a0d;
+  background: var(--lcd-bg);
   box-shadow: inset 0 1px 6px rgba(0, 0, 0, 0.9);
 }
 .grid {
@@ -323,13 +360,13 @@ h3 {
   font-size: 7.5px;
   font-weight: 700;
   letter-spacing: 0.1em;
-  color: #b9b4a8;
+  color: var(--text-dim);
   padding: 2px 3px;
   white-space: nowrap;
 }
 .grid th.src {
   text-align: right;
-  color: #ff3d7f;
+  color: var(--c-accent);
 }
 .grid td {
   padding: 2px 1px 0;
@@ -341,8 +378,8 @@ h3 {
   text-shadow: none;
 }
 .grid td.active {
-  background: rgba(255, 176, 0, 0.09);
-  box-shadow: inset 0 0 0 1px rgba(255, 176, 0, 0.35);
+  background: color-mix(in srgb, var(--c-primary) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-primary) 35%, transparent);
 }
 .grid :deep(.label) {
   display: none;
@@ -359,6 +396,6 @@ footer .hint {
   white-space: nowrap;
   font-family: 'VT323', monospace;
   font-size: 17px;
-  color: #ffb000;
+  color: var(--c-primary);
 }
 </style>

@@ -70,7 +70,7 @@ describe('parseMidi', () => {
     expect(parseMidi([0xe0, 127, 127])?.type === 'pitchBend' && parseMidi([0xe0, 127, 127])).toMatchObject({ value: 1 })
     expect(parseMidi([0xe0, 0, 0])).toMatchObject({ value: -1 })
     expect(parseMidi([0xb0, 1, 127])).toEqual({ type: 'cc', channel: 0, cc: 1, value: 1 })
-    expect(parseMidi([0xf8])).toBeNull()
+    expect(parseMidi([0xf1])).toBeNull()
   })
 })
 
@@ -84,5 +84,39 @@ describe('presets & migration', () => {
     const raw = { ...defaultSettings() } as Record<string, unknown>
     delete raw.mod
     expect(migrateSettings(raw).mod.lfo1.rate).toBe(5)
+  })
+})
+
+import { ClockTracker } from './midiClock'
+import { divisionBeats, lfoHz } from '../types'
+
+describe('tempo', () => {
+  it('derives BPM from 24 ppqn clock', () => {
+    const c = new ClockTracker()
+    let bpm: number | null = null
+    for (let i = 0; i <= 24; i++) bpm = c.tick(i * (500 / 24)) // 500 ms per beat
+    expect(bpm).toBeCloseTo(120)
+    expect(c.ticks).toBe(25)
+  })
+  it('syncs LFO rate to divisions', () => {
+    expect(divisionBeats('1/8')).toBe(0.5)
+    expect(lfoHz({ shape: 'sine', rate: 3, sync: true, division: '1/4' }, 120)).toBe(2)
+    expect(lfoHz({ shape: 'sine', rate: 3, sync: false, division: '1/4' }, 120)).toBe(3)
+  })
+  it('parses realtime clock messages', () => {
+    expect(parseMidi([0xf8])).toEqual({ type: 'clock' })
+    expect(parseMidi([0xfa])).toEqual({ type: 'start' })
+  })
+  it('ramp-down mirrors sawtooth', () => {
+    expect(lfoValue('rampDown', 0.25)).toBe(-0.5)
+  })
+})
+
+import { mix } from '../theme/gridStyle'
+describe('mix', () => {
+  it('blends hex colours', () => {
+    expect(mix('#000000', '#ffffff', 0.5)).toBe('#808080')
+    expect(mix('#ff0000', '#0000ff', 0)).toBe('#ff0000')
+    expect(mix('#ff0000', '#0000ff', 1)).toBe('#0000ff')
   })
 })

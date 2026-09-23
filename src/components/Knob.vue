@@ -174,7 +174,7 @@ function reset() {
   font-size: 13px;
   line-height: 1;
   color: rgb(var(--v-theme-primary));
-  text-shadow: 0 0 4px rgba(var(--v-theme-primary), 0.6);
+  text-shadow: 0 0 4px color-mix(in srgb, rgb(var(--v-theme-primary)) 60%, transparent);
   white-space: nowrap;
 }
 .label {
@@ -182,7 +182,7 @@ function reset() {
   font-size: 7.5px;
   font-weight: 700;
   letter-spacing: 0.08em;
-  color: #b9b4a8;
+  color: var(--text-dim);
   text-transform: uppercase;
   white-space: nowrap;
 }

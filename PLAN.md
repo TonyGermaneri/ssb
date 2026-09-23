@@ -202,3 +202,51 @@ Lower zone. Voices carry their MIDI channel; per-voice ConstantSources for note 
 MPE bend range) and timbre (CC74, new matrix source) join the existing pressure source. The store keeps the latest
 bend / pressure / timbre per member channel so a note starts where its channel already is, keys poly voices by
 `channel:note`, and routes master-channel controllers to the global performance values.
+
+## 17. Round 4 — themes, sync, sustain, pads
+
+- Themes: colours are CSS variables on :root (`src/theme/themes.ts`), mirrored as Vuetify themes; pads take hue
+  palette, saturation and lightness from the theme. Hardware buttons and knob caps stay dark in every theme.
+- LfoSource: one output GainNode; periodic shapes via OscillatorNode (saw-down = inverted saw), random shapes via a
+  scheduled ConstantSourceNode (S&H steps / smooth ramps) with a JS mirror (`valueAt`) for grain destinations.
+- Tempo: internal BPM or MIDI clock (24 ppqn → BPM once per beat); synced LFOs and delay follow the effective BPM.
+- Sustain (CC64 / SUS) defers keyboard note-offs and HOLD-pad releases until pedal-up.
+- MIDI AUTO mapping: pad i ↔ BASE + i in grid order.
+- Pads: backlight layer (screen-blended radial glow + diffuser dots) while playing, and a flash keyed on the newest
+  voice id so every trigger replays it.
+
+## 18. Grid mode
+
+`GridView.vue` wraps canvas-datagrid (lazy-loaded chunk). Rows are derived from the store; when the row set is
+unchanged they're patched in place and redrawn, so sort, scroll and selection survive knob changes. Styles come from
+`theme/gridStyle.ts` (theme → canvas-datagrid style keys; colours blended in JS since canvas can't use color-mix).
+`rendercell` lights playing rows and tints the selected patch. Hidden columns aren't in `selectedData`, so
+keyboard selection maps the row's # back to the pad. The header publishes its height as `--strip-h` so grid mode
+fills exactly the remaining window.
+
+## 19. Full-width panels, SFZ
+
+- Pads view: an open tile takes `flex-basis: 100%`, so its panel spans the row; modules flow across it and the
+  waveform / zone map resize to their container.
+- SFZ: `lib/sfz.ts` parses to regions (inheritance, defines, includes); `lib/zones.ts` turns regions into Zones
+  (samples → seconds via `lib/sampleRate.ts`) and picks zones per note (key, velocity, round robin, random).
+  A Sound may carry `zones`; voices get a `ZonePlay` (own buffer, start/end, loop points, gain, pan, envelope
+  override, one-shot). Loading walks dropped folders (`webkitGetAsEntry`), unzips packs, and resolves sample paths
+  relative to the .sfz, then the drop root, then by file name.
+- Grid: sized to its host (`height: 100%`) and wheel-scrolled by us while unfocused (the library only scrolls a
+  focused grid, and focusing it would steal the pad shortcut keys).
+
+## 20. SFZ depth, grain streams, library
+
+- Generators: `audio/synthWaves.ts` builds looped band-limited wavetables (one cycle = 256 samples at a C4-derived
+  sample rate, so loops are seamless); ids `synth:*` are generated on demand, never stored or exported.
+- Release triggers fire on note-off (pads in HOLD, keyboard notes, sustain pedal-up), attenuated by rt_decay × held time,
+  and never loop. Every MIDI CC reaches the engine (`hub.cc`); zones gate on locc/hicc and apply *_onccN live
+  (amplitude modifiers multiply, as in ARIA / sfizz). Instrument CC defaults are stored per pad and re-applied on
+  load / selection.
+- Zone filter (+ filter EG) replaces the pad filter; zone LFOs are extra oscillators into pitch bus / filter detune /
+  tremolo / pan.
+- Waveform: every voice shows a transport marker; every live grain shows a playhead sweeping its slice.
+- Poly grains: per-note streams with random start, offset, drift speed; overlap = density × streams.
+- Library (`lib/library.ts`, `LibraryDialog.vue`): GitHub API (tree listing, cached a day), raw.githubusercontent,
+  GitHub Pages; 6 fetches in flight; results go through `addFiles`.

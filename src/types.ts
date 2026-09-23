@@ -18,7 +18,7 @@ export const FILTER_LABEL: Record<FilterType, string> = { lowpass: 'LP', highpas
 export type ModSource = 'lfo1' | 'lfo2' | 'mod' | 'aftertouch' | 'velocity' | 'bend' | 'timbre'
 export type ModDest =
   | 'pitch' | 'cutoff' | 'resonance' | 'volume' | 'pan' | 'grainPos' | 'grainSize' | 'delayMix' | 'reverbMix'
-export type LfoShape = 'sine' | 'triangle' | 'square' | 'sawtooth'
+export type LfoShape = 'sine' | 'triangle' | 'square' | 'sawtooth' | 'rampDown' | 'random' | 'smooth'
 
 export const MOD_SOURCES: { id: ModSource; label: string }[] = [
   { id: 'lfo1', label: 'LFO 1' },
@@ -46,12 +46,37 @@ export const MOD_DESTS: Record<ModDest, { label: string; scale: number; unit: st
   reverbMix: { label: 'REVERB MIX', scale: 1, unit: '', audio: true },
 }
 export const MOD_DEST_IDS = Object.keys(MOD_DESTS) as ModDest[]
-export const LFO_SHAPES: LfoShape[] = ['sine', 'triangle', 'square', 'sawtooth']
+export const LFO_SHAPES: LfoShape[] = ['sine', 'triangle', 'square', 'sawtooth', 'rampDown', 'random', 'smooth']
+
+/** Tempo divisions for synced LFOs / delay, in beats (quarter notes). */
+export const DIVISIONS: { id: string; beats: number }[] = [
+  { id: '4 BAR', beats: 16 },
+  { id: '2 BAR', beats: 8 },
+  { id: '1/1', beats: 4 },
+  { id: '1/2', beats: 2 },
+  { id: '1/2T', beats: 4 / 3 },
+  { id: '1/4.', beats: 1.5 },
+  { id: '1/4', beats: 1 },
+  { id: '1/4T', beats: 2 / 3 },
+  { id: '1/8.', beats: 0.75 },
+  { id: '1/8', beats: 0.5 },
+  { id: '1/8T', beats: 1 / 3 },
+  { id: '1/16.', beats: 0.375 },
+  { id: '1/16', beats: 0.25 },
+  { id: '1/16T', beats: 1 / 6 },
+  { id: '1/32', beats: 0.125 },
+]
+export const divisionBeats = (id: string) => DIVISIONS.find((d) => d.id === id)?.beats ?? 1
 
 export interface Lfo {
   shape: LfoShape
-  rate: number // Hz
+  rate: number // Hz, when not synced
+  sync: boolean
+  division: string // DIVISIONS id, when synced
 }
+
+/** LFO frequency in Hz: free rate, or one cycle per division at the current tempo. */
+export const lfoHz = (lfo: Lfo, bpm: number) => (lfo.sync ? bpm / 60 / divisionBeats(lfo.division) : lfo.rate)
 export interface ModRoute {
   source: ModSource
   dest: ModDest
@@ -63,8 +88,8 @@ export interface ModMatrix {
   routes: ModRoute[]
 }
 export const defaultMatrix = (): ModMatrix => ({
-  lfo1: { shape: 'sine', rate: 5 },
-  lfo2: { shape: 'triangle', rate: 0.5 },
+  lfo1: { shape: 'sine', rate: 5, sync: false, division: '1/8' },
+  lfo2: { shape: 'triangle', rate: 0.5, sync: false, division: '1/1' },
   routes: [],
 })
 const migrateMatrix = (m?: Partial<ModMatrix>): ModMatrix => {
@@ -115,6 +140,9 @@ export interface SoundSettings {
   grainJitter: number // random ± semitones per grain
   grainReverse: number // 0..1 chance a grain plays backwards
   grainSpread: number // 0..1 random stereo pan per grain
+  grainStreams: number // 1..8 independent grain streams per note
+  grainScatter: number // 0..1 random timing between a stream's grains
+  grainDrift: number // 0..1 each stream wanders through the clip at its own random speed (±1 = real time)
   // delay
   delayTime: number // seconds
   delayFeedback: number // 0..0.9
@@ -137,13 +165,84 @@ export interface SoundSettings {
   midiNote: number | null
 }
 
+export type LoopMode = 'no_loop' | 'one_shot' | 'loop_continuous' | 'loop_sustain'
+
+/** One sample of a multi-sample (SFZ) instrument, mapped to a key × velocity range. Times in seconds. */
+export interface Zone {
+  audioId: string
+  lokey: number
+  hikey: number
+  lovel: number // 1..127
+  hivel: number
+  keycenter: number
+  keytrack: number // cents per key / 100 (100 = normal)
+  transpose: number // semitones
+  tune: number // cents
+  volume: number // dB
+  pan: number // -100..100
+  offset: number
+  end: number // 0 = to the end of the sample
+  loopMode: LoopMode
+  loopStart: number
+  loopEnd: number
+  seqLength: number
+  seqPosition: number
+  lorand: number
+  hirand: number
+  env?: { a?: number; d?: number; s?: number; r?: number }
+  /** base amplitude % when amplitude_onccN is present */
+  amplitude?: number
+  /** 'release' regions sound on note-off (piano damper noise, etc.) */
+  trigger?: 'attack' | 'release'
+  /** release regions: dB lost per second the note was held */
+  rtDecay?: number
+  /** only sounds while these CCs are inside their ranges (0..127) */
+  ccRange?: Record<number, [number, number]>
+  /** CC-driven offsets: amount applies at CC = 127 */
+  ccMods?: ZoneCcMod[]
+  filter?: ZoneFilter
+  lfos?: ZoneLfo[]
+}
+
+export interface ZoneCcMod {
+  cc: number
+  target: 'volume' | 'amplitude' | 'pan' | 'pitch' | 'cutoff' | 'resonance'
+  amount: number // dB, %, %, cents, cents, dB
+}
+
+export interface ZoneFilter {
+  type: BiquadFilterType
+  cutoff: number // Hz
+  resonance: number // dB
+  keytrack: number // cents per key from keycenter
+  keycenter: number
+  veltrack: number // cents at velocity 127
+  env?: { a: number; d: number; s: number; r: number; depth: number } // depth in cents
+}
+
+export interface ZoneLfo {
+  target: 'pitch' | 'cutoff' | 'volume' | 'pan'
+  freq: number
+  depth: number // cents, cents, dB, %
+  delay: number // seconds before it starts
+  wave: OscillatorType
+  invert?: boolean
+}
+
 export interface Sound {
   id: string
-  /** Audio blobs are shared between duplicates, so they're keyed separately. */
+  /** Audio blobs are shared between duplicates, so they're keyed separately. For SFZ pads: the zone nearest the root. */
   audioId: string
   fileName: string
   settings: SoundSettings
+  /** present for SFZ instruments: the pad plays zones chosen by note and velocity */
+  zones?: Zone[]
+  /** SFZ <control> set_ccN / set_hdccN: controller values (0..1) the instrument expects to start from */
+  ccDefaults?: Record<number, number>
 }
+
+/** Every audio blob a pad needs (its own plus its zones'). */
+export const soundAudioIds = (s: Sound) => [s.audioId, ...(s.zones ?? []).map((z) => z.audioId)]
 
 export function defaultSettings(name = 'SOUND'): SoundSettings {
   return {
@@ -179,6 +278,9 @@ export function defaultSettings(name = 'SOUND'): SoundSettings {
     grainJitter: 0,
     grainReverse: 0,
     grainSpread: 0,
+    grainStreams: 1,
+    grainScatter: 0,
+    grainDrift: 0,
     delayTime: 0.25,
     delayFeedback: 0.35,
     delayMix: 0,
@@ -215,6 +317,8 @@ export interface GlobalFx {
   reverbSize: number
   reverbDecay: number
   reverbMix: number
+  delaySync: boolean
+  delayDivision: string
 }
 
 export const defaultGlobalFx = (): GlobalFx => ({
@@ -227,6 +331,8 @@ export const defaultGlobalFx = (): GlobalFx => ({
   reverbSize: 3,
   reverbDecay: 3,
   reverbMix: 0,
+  delaySync: false,
+  delayDivision: '1/8.',
 })
 
 export interface MasterState {
@@ -247,6 +353,15 @@ export interface MasterState {
   mpe: boolean
   /** per-note pitch bend range in MPE, semitones */
   mpeBendRange: number
+  /** MIDI notes map to pads in grid order, starting at midiBase */
+  midiAuto: boolean
+  midiBase: number
+  /** internal tempo; used unless following MIDI clock */
+  bpm: number
+  clockSource: 'internal' | 'midi'
+  theme: string
+  /** pads = button grid, grid = spreadsheet (canvas-datagrid) */
+  view: 'pads' | 'grid'
   fx: GlobalFx
   /** global modulation matrix: applies to every voice */
   mod: ModMatrix
@@ -264,6 +379,12 @@ export const defaultMaster = (): MasterState => ({
   selectedId: null,
   mpe: false,
   mpeBendRange: 48,
+  midiAuto: false,
+  midiBase: 36,
+  bpm: 120,
+  clockSource: 'internal',
+  theme: 'console85',
+  view: 'pads',
   fx: defaultGlobalFx(),
   mod: defaultMatrix(),
 })

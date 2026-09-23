@@ -5,12 +5,18 @@ import * as engine from '../audio/engine'
 import { computePeaks } from '../audio/peaks'
 import { connectMidi, type MidiEvent } from '../audio/midi'
 import { History } from '../lib/history'
-import type { Voice } from '../audio/voice'
+import { ClockTracker } from '../lib/midiClock'
+import { THEMES, themeById } from '../theme/themes'
+import type { Voice, VoiceOptions, ZonePlay } from '../audio/voice'
+import { basename, dirname, type PathFile } from '../lib/dropFiles'
+import { normalisePath, parseSfz } from '../lib/sfz'
+import { sniffSampleRate } from '../lib/sampleRate'
+import { filterPlayable, nearestZone, pickZones, regionToZone, zoneSemis } from '../lib/zones'
+import { isSynthAudioId, synthAudioId, synthWave } from '../audio/synthWaves'
 import { stripExt } from '../lib/format'
-import { ROOT_NOTE } from '../lib/piano'
 import {
-  defaultMaster, defaultSettings, FILTER_TYPES, migrateMaster, migrateSettings, presetSettings, TRIGGER_MODES,
-  type MasterState, type Preset, type Sound, type SoundSettings,
+  divisionBeats, defaultMaster, defaultSettings, FILTER_TYPES, migrateMaster, migrateSettings, presetSettings, TRIGGER_MODES,
+  soundAudioIds, type MasterState, type Preset, type Sound, type SoundSettings, type Zone,
 } from '../types'
 
 const BOARD_KEY = 'ssb:board'
@@ -20,7 +26,9 @@ const audioKey = (audioId: string) => `ssb:audio:${audioId}`
 export const PAD_KEYS = '1234567890qwertyuiopasdfghjklzxcvbnm'.split('')
 
 const AUDIO_EXT = /\.(mp3|wav|ogg|oga|m4a|aac|flac|webm|opus)$/i
-const isAudio = (f: File) => f.type.startsWith('audio/') || AUDIO_EXT.test(f.name)
+const isAudio = (path: string) => AUDIO_EXT.test(path)
+const isSfz = (path: string) => /\.sfz$/i.test(path)
+const isZip = (path: string) => /\.zip$/i.test(path)
 
 interface SavedBoard {
   version: 1
@@ -46,7 +54,10 @@ export const useBoard = defineStore('board', () => {
   /** MIDI notes currently held in keyboard-play mode (for the display). */
   const heldNotes = ref<number[]>([])
   /** live performance controllers (not saved) */
-  const perform = reactive({ mod: 0, bend: 0, pressure: 0, timbre: 0 })
+  const perform = reactive({ mod: 0, bend: 0, pressure: 0, timbre: 0, sustain: false })
+  /** MIDI clock follower state (runtime only) */
+  const tempo = reactive({ extBpm: 0, running: false, beats: 0 })
+  const bpm = computed(() => (master.clockSource === 'midi' && tempo.extBpm > 0 ? tempo.extBpm : master.bpm))
   const presets = ref<Preset[]>([])
   /** settings copied with COPY, for PASTE onto another pad */
   const clipboard = ref<Partial<SoundSettings> | null>(null)
@@ -71,6 +82,14 @@ export const useBoard = defineStore('board', () => {
   })
   const soundForKey = computed(() => new Map([...keyFor.value].map(([id, k]) => [k, id])))
   const byId = (id: string) => sounds.value.find((s) => s.id === id)
+  /** MIDI note → pad: auto-assign (grid order from BASE) or each pad's learned note. */
+  const noteFor = computed(() => {
+    const m = new Map<string, number>()
+    if (master.midiAuto) visible.value.forEach((s, i) => master.midiBase + i <= 127 && m.set(s.id, master.midiBase + i))
+    else for (const s of sounds.value) if (s.settings.midiNote !== null) m.set(s.id, s.settings.midiNote)
+    return m
+  })
+  const padsForNote = (note: number) => sounds.value.filter((s) => noteFor.value.get(s.id) === note)
   const selected = computed(() => (master.selectedId ? byId(master.selectedId) ?? null : null))
   /** 1-based position of the selected patch in the grid. */
   const selectedNumber = computed(() => {
@@ -79,31 +98,171 @@ export const useBoard = defineStore('board', () => {
   })
 
   // ── audio loading ──────────────────────────────────────────────────────
-  async function loadAudio(audioId: string, blob: Blob) {
-    const buf = await engine.decode(await blob.arrayBuffer())
+  /** Decode and cache one audio blob. Returns the file's own sample rate (for SFZ sample offsets). */
+  async function loadAudio(audioId: string, blob: Blob): Promise<number> {
+    const bytes = await blob.arrayBuffer()
+    const rate = sniffSampleRate(bytes) ?? 44100
+    const buf = await engine.decode(bytes) // detaches `bytes`
     engine.buffers.set(audioId, buf)
     peaks.set(audioId, computePeaks(buf))
+    return rate
   }
 
-  async function addFiles(files: File[]) {
-    const audio = files.filter(isAudio)
-    if (!audio.length) {
-      toast.value = 'No audio files in that drop'
+  function addSound(sound: Sound) {
+    sounds.value.push(sound)
+    if (!master.selectedId) master.selectedId = sound.id
+  }
+
+  /**
+   * Load dropped / picked files: audio files become pads, .sfz files become multi-sample instruments (their samples
+   * are looked up among the other files), and .zip files are either a board export or a sample pack to unpack.
+   */
+  async function addFiles(input: (File | PathFile)[]) {
+    let items: PathFile[] = input.map((f) => ('path' in f ? f : { file: f, path: f.webkitRelativePath || f.name }))
+    // zips: board exports import as boards; anything else is unpacked like a dropped folder
+    const zips = items.filter((i) => isZip(i.path))
+    items = items.filter((i) => !isZip(i.path))
+    for (const z of zips) {
+      try {
+        const { default: JSZip } = await import('jszip')
+        const zip = await JSZip.loadAsync(z.file)
+        if (zip.file('board.json')) {
+          await importBoard(z.file as File)
+          continue
+        }
+        for (const entry of Object.values(zip.files)) {
+          if (!entry.dir) items.push({ file: await entry.async('blob'), path: entry.name })
+        }
+      } catch (e) {
+        console.error(e)
+        toast.value = `Couldn't open ${basename(z.path)}`
+      }
+    }
+
+    const used = new Set<string>()
+    for (const sfz of items.filter((i) => isSfz(i.path))) await loadSfz(sfz, items, used)
+
+    const audio = items.filter((i) => isAudio(i.path) && !used.has(i.path))
+    if (!audio.length && !used.size && !zips.length) {
+      toast.value = 'No audio or SFZ files in that drop'
       return
     }
-    for (const file of audio) {
+    for (const { file, path } of audio) {
       const audioId = uid()
+      const name = basename(path)
       try {
         await loadAudio(audioId, file)
         await set(audioKey(audioId), file)
-        const sound: Sound = { id: uid(), audioId, fileName: file.name, settings: defaultSettings(stripExt(file.name)) }
-        sounds.value.push(sound)
-        if (!master.selectedId) master.selectedId = sound.id
+        addSound({ id: uid(), audioId, fileName: name, settings: defaultSettings(stripExt(name)) })
       } catch (e) {
         console.error(e)
-        toast.value = `Couldn't decode ${file.name}`
+        toast.value = `Couldn't decode ${name}`
       }
     }
+  }
+
+  /** One .sfz → one instrument pad whose zones map keys × velocities to samples. */
+  async function loadSfz(sfz: PathFile, items: PathFile[], used: Set<string>) {
+    const name = basename(sfz.path)
+    const dir = dirname(sfz.path)
+    const byPath = new Map(items.map((i) => [normalisePath(i.path).toLowerCase(), i]))
+    const byName = new Map<string, PathFile>()
+    for (const i of items) if (!byName.has(basename(i.path).toLowerCase())) byName.set(basename(i.path).toLowerCase(), i)
+    // relative to the .sfz, then to the drop root, then by file name alone (packs get reorganised)
+    const find = (rel: string) =>
+      byPath.get(normalisePath(dir + rel).toLowerCase()) ??
+      byPath.get(normalisePath(rel).toLowerCase()) ??
+      byName.get(basename(rel).toLowerCase())
+
+    // #include targets are read up front so the parser can stay synchronous
+    const texts = new Map<string, string>()
+    // any small non-audio file may be an #include target (.sfzh, .txt, .inc, …)
+    for (const i of items) {
+      if (isAudio(i.path) || isZip(i.path) || i.file.size > 2_000_000) continue
+      texts.set(i.path, await i.file.text())
+    }
+    const { regions, control } = parseSfz(texts.get(sfz.path) ?? (await sfz.file.text()), (p) => {
+      const hit = find(p)
+      return hit ? texts.get(hit.path) ?? null : null
+    })
+    const playable = filterPlayable(regions.map((r) => ({ ...r.opcodes, sample: r.sample })))
+    if (!playable.length) {
+      toast.value = `${name}: no playable regions`
+      return
+    }
+
+    const loaded = new Map<string, { audioId: string; rate: number } | null>()
+    const samples = [...new Set(playable.map((o) => o.sample))]
+    let done = 0
+    for (const sample of samples) {
+      toast.value = `Loading ${name} · ${++done}/${samples.length}`
+      // *sine, *saw, … : built-in wavetables, generated rather than loaded
+      const wave = sample.startsWith('*') ? synthWave(sample) : null
+      if (sample.startsWith('*')) {
+        if (!wave) {
+          loaded.set(sample, null)
+          continue
+        }
+        const audioId = synthAudioId(wave)
+        const buf = engine.getBuffer(audioId)!
+        peaks.set(audioId, computePeaks(buf))
+        loaded.set(sample, { audioId, rate: buf.sampleRate })
+        continue
+      }
+      const item = find(sample)
+      if (!item) {
+        loaded.set(sample, null)
+        continue
+      }
+      try {
+        const audioId = uid()
+        const rate = await loadAudio(audioId, item.file)
+        await set(audioKey(audioId), item.file)
+        loaded.set(sample, { audioId, rate })
+        used.add(item.path)
+      } catch (e) {
+        console.error(`${name}: couldn't decode ${sample}`, e)
+        loaded.set(sample, null)
+      }
+    }
+    used.add(sfz.path)
+
+    const zones: Zone[] = []
+    for (const o of playable) {
+      const hit = loaded.get(o.sample)
+      const zone = hit && regionToZone(o, hit.audioId, hit.rate)
+      if (!zone) continue
+      if (isSynthAudioId(zone.audioId)) {
+        // generators loop their whole wavetable unless told otherwise; noise doesn't follow the keyboard
+        const len = engine.getBuffer(zone.audioId)!.duration
+        // (release regions and ones with an explicit end play once)
+        if (!o.loop_mode && zone.trigger !== 'release' && !zone.end) zone.loopMode = 'loop_continuous'
+        if (zone.loopEnd <= zone.loopStart) Object.assign(zone, { loopStart: 0, loopEnd: len })
+        if (zone.audioId === synthAudioId('noise')) zone.keytrack = 0
+      }
+      zones.push(zone)
+    }
+    // <control> set_ccN / set_hdccN: the instrument's starting controller values (kept with the pad)
+    const ccDefaults: Record<number, number> = {}
+    for (const [k, v] of Object.entries(control)) {
+      const m = /^set_(hd)?cc(\d+)$/.exec(k)
+      // set_ccN is 0..127, set_hdccN is already 0..1
+      if (m) ccDefaults[+m[2]] = Math.min(1, Math.max(0, parseFloat(v) / (m[1] ? 1 : 127)))
+    }
+    const missing = [...loaded.values()].filter((v) => !v).length
+    if (!zones.length) {
+      toast.value = `${name}: none of its ${samples.length} samples were found`
+      return
+    }
+    const rep = nearestZone(zones, 60)!
+    const settings = defaultSettings(stripExt(name))
+    // the pad plays middle C, or the nearest key the instrument covers
+    settings.rootNote = Math.min(rep.hikey, Math.max(rep.lokey, 60))
+    const sound: Sound = { id: uid(), audioId: rep.audioId, fileName: name, settings, zones }
+    if (Object.keys(ccDefaults).length) sound.ccDefaults = ccDefaults
+    addSound(sound)
+    applyCcDefaults(sound)
+    toast.value = `${name}: ${zones.length} zones${missing ? ` · ${missing} samples missing` : ''}`
   }
 
   // ── persistence ────────────────────────────────────────────────────────
@@ -116,11 +275,21 @@ export const useBoard = defineStore('board', () => {
         const ok: Sound[] = []
         for (const s of saved.sounds) {
           try {
-            if (!engine.buffers.has(s.audioId)) {
-              const blob = await get<Blob>(audioKey(s.audioId))
-              if (!blob) continue
-              await loadAudio(s.audioId, blob)
+            let missing = false
+            for (const audioId of new Set(soundAudioIds(s))) {
+              if (engine.buffers.has(audioId)) continue
+              if (isSynthAudioId(audioId)) {
+                peaks.set(audioId, computePeaks(engine.getBuffer(audioId)!))
+                continue
+              }
+              const blob = await get<Blob>(audioKey(audioId))
+              if (!blob) {
+                missing = true
+                break
+              }
+              await loadAudio(audioId, blob)
             }
+            if (missing) continue
             ok.push({ ...s, settings: migrateSettings(s.settings) })
           } catch (e) {
             console.error(`Dropping ${s.fileName}`, e)
@@ -128,6 +297,8 @@ export const useBoard = defineStore('board', () => {
         }
         sounds.value = ok
         if (!selected.value) master.selectedId = ok[0]?.id ?? null
+        for (const s of ok) applyCcDefaults(s)
+        applyCcDefaults(selected.value)
       }
       void collectOrphanAudio()
     } finally {
@@ -138,7 +309,7 @@ export const useBoard = defineStore('board', () => {
 
   /** Deleted pads keep their audio for undo; blobs nothing references are dropped on the next load. */
   async function collectOrphanAudio() {
-    const used = new Set(sounds.value.map((s) => audioKey(s.audioId)))
+    const used = new Set(sounds.value.flatMap((s) => soundAudioIds(s).map(audioKey)))
     for (const k of await keys()) {
       if (typeof k === 'string' && k.startsWith('ssb:audio:') && !used.has(k)) await del(k)
     }
@@ -170,7 +341,7 @@ export const useBoard = defineStore('board', () => {
     master,
     () => {
       engine.setMaster(master.volume, master.muted)
-      engine.setGlobalFx(master.fx)
+      pushGlobalFx()
       engine.setGlobalMatrix(master.mod)
       scheduleSave()
       scheduleHistory()
@@ -178,7 +349,20 @@ export const useBoard = defineStore('board', () => {
     { deep: true, immediate: true },
   )
   watch(presets, scheduleSave, { deep: true })
-  watch(() => perform.mod, (v) => engine.setModWheel(v))
+  function pushGlobalFx() {
+    const fx = master.fx
+    const delayTime = fx.delaySync ? Math.min(2.4, (divisionBeats(fx.delayDivision) * 60) / bpm.value) : fx.delayTime
+    engine.setGlobalFx({ ...fx, delayTime })
+  }
+  watch(bpm, (v) => {
+    engine.setTempo(v)
+    pushGlobalFx()
+  }, { immediate: true })
+  watch(() => perform.sustain, (on) => !on && releaseSustained())
+  watch(() => perform.mod, (v) => {
+    engine.setModWheel(v)
+    engine.setCC(1, v)
+  })
   watch(() => perform.bend, (v) => engine.setBend(v))
   watch(() => perform.pressure, (v) => engine.setChannelPressure(v))
   watch(() => perform.timbre, (v) => engine.setTimbre(v))
@@ -238,7 +422,77 @@ export const useBoard = defineStore('board', () => {
   }
 
   // ── pads ───────────────────────────────────────────────────────────────
-  function press(id: string) {
+  // ── notes: plain pads shift their one sample; SFZ pads pick zones by key × velocity ──
+  const roundRobin = new Map<string, number>()
+  const semisFor = (sound: Sound, zone: Zone | undefined, note: number) =>
+    zone ? zoneSemis(zone, note) : note - sound.settings.rootNote
+  const zonePlay = (z: Zone, note: number, velocity: number, extraDb = 0): ZonePlay => ({
+    audioId: z.audioId,
+    gain: Math.pow(10, (z.volume + extraDb) / 20),
+    pan: z.pan / 100,
+    start: z.offset,
+    end: z.end,
+    loop: (z.loopMode === 'loop_continuous' || z.loopMode === 'loop_sustain') && z.loopEnd > z.loopStart ? [z.loopStart, z.loopEnd] : null,
+    oneShot: z.loopMode === 'one_shot',
+    env: z.env,
+    // filter cutoff follows the key (fil_keytrack) and velocity (fil_veltrack), in cents
+    filter: z.filter && {
+      type: z.filter.type,
+      freq: z.filter.cutoff * Math.pow(2, ((note - z.filter.keycenter) * z.filter.keytrack + velocity * z.filter.veltrack) / 1200),
+      resonance: z.filter.resonance,
+      env: z.filter.env,
+    },
+    lfos: z.lfos,
+    ccMods: z.ccMods,
+    amplitude: z.amplitude,
+  })
+
+  /** Start every voice a note needs (several when SFZ regions layer). `fromNote` = note to glide from. */
+  function startNote(sound: Sound, note: number, velocity: number, base: VoiceOptions = {}, fromNote: number | null = null): Voice[] {
+    const glide = base.glideTime ?? 0
+    const opts = (zone?: Zone): VoiceOptions => {
+      const semis = semisFor(sound, zone, note)
+      return {
+        ...base,
+        velocity,
+        note: semis,
+        glideFrom: glide > 0 && fromNote !== null ? semisFor(sound, zone, fromNote) : semis,
+        zone: zone && zonePlay(zone, note, velocity),
+      }
+    }
+    if (!sound.zones?.length) {
+      const v = engine.startVoice(sound, opts())
+      return v ? [v] : []
+    }
+    const n = roundRobin.get(sound.id) ?? 0
+    roundRobin.set(sound.id, n + 1)
+    noteStarts.set(`${sound.id}:${note}`, { velocity, at: performance.now() })
+    return pickZones(sound.zones, note, velocity * 127, n, Math.random(), { cc: engine.ccValues() })
+      .map((z) => engine.startVoice(sound, opts(z)))
+      .filter((v): v is Voice => !!v)
+  }
+
+  /** Note-off for SFZ release regions (trigger=release): quieter the longer the note was held (rt_decay). */
+  const noteStarts = new Map<string, { velocity: number; at: number }>()
+  function triggerRelease(sound: Sound | null | undefined, note: number) {
+    if (!sound?.zones?.some((z) => z.trigger === 'release')) return
+    const start = noteStarts.get(`${sound.id}:${note}`)
+    noteStarts.delete(`${sound.id}:${note}`)
+    const velocity = start?.velocity ?? 1
+    const held = start ? (performance.now() - start.at) / 1000 : 0
+    const zones = pickZones(sound.zones, note, velocity * 127, roundRobin.get(sound.id) ?? 0, Math.random(), {
+      trigger: 'release',
+      cc: engine.ccValues(),
+    })
+    for (const z of zones) {
+      const semis = semisFor(sound, z, note)
+      // release voices never get a note-off, so they must not loop
+      const zone = { ...zonePlay(z, note, velocity, -(z.rtDecay ?? 0) * held), loop: null }
+      engine.startVoice(sound, { velocity, note: semis, midiNote: note, zone })
+    }
+  }
+
+  function press(id: string, velocity = 1) {
     const sound = byId(id)
     if (!sound) return
     engine.resume()
@@ -253,18 +507,52 @@ export const useBoard = defineStore('board', () => {
         if (other.id !== id && other.settings.choke === choke) engine.stopSound(other.id)
       }
     }
-    engine.startVoice(sound)
+    startNote(sound, sound.settings.rootNote, velocity)
   }
 
   function release(id: string) {
     pressed.delete(id)
-    if (byId(id)?.settings.mode === 'hold') engine.releaseSound(id)
+    const sound = byId(id)
+    if (sound?.settings.mode !== 'hold') return
+    if (perform.sustain) sustainedPads.add(id)
+    else {
+      engine.releaseSound(id)
+      triggerRelease(sound, sound.settings.rootNote)
+    }
+  }
+
+  // ── sustain pedal ─────────────────────────────────────────────────────
+  const sustainedPads = new Set<string>()
+  /** poly voice keys released while the pedal was down */
+  const sustainedKeys = new Set<string>()
+  let monoSustained = false
+  function releaseSustained() {
+    for (const id of sustainedPads) {
+      if (pressed.has(id)) continue
+      engine.releaseSound(id)
+      const sound = byId(id)
+      if (sound) triggerRelease(sound, sound.settings.rootNote)
+    }
+    sustainedPads.clear()
+    for (const key of sustainedKeys) {
+      const vs = polyVoices.get(key)
+      releaseAll(vs)
+      polyVoices.delete(key)
+      if (vs?.[0]?.midiNote !== undefined) triggerRelease(selected.value, vs[0].midiNote)
+    }
+    sustainedKeys.clear()
+    if (monoSustained && !heldNotes.value.length) {
+      releaseAll(monoVoices)
+      monoVoices = []
+    }
+    monoSustained = false
   }
 
   // ── keyboard play (MIDI / computer keys → selected patch) ─────────────
-  const polyVoices = new Map<string, Voice>()
-  let monoVoice: Voice | null = null
-  let lastSemis: number | null = null
+  const polyVoices = new Map<string, Voice[]>()
+  let monoVoices: Voice[] = []
+  let lastNote: number | null = null
+  const releaseAll = (vs?: Voice[]) => vs?.forEach((v) => v.release())
   /** MPE member-channel controller values, kept so a note starts where its channel already is */
   const mpeChannels = new Map<number, { bend: number; pressure: number; timbre: number }>()
   const isMember = (ch?: number): ch is number => master.mpe && ch !== undefined && ch !== 0
@@ -279,53 +567,65 @@ export const useBoard = defineStore('board', () => {
     const sound = selected.value
     if (!sound) return
     engine.resume()
-    const semis = note - sound.settings.rootNote
     const glide = master.glide
     heldNotes.value = [...heldNotes.value.filter((n) => n !== note), note]
-    const opts = {
-      note: semis,
-      velocity,
+    const base: VoiceOptions = {
       midiNote: note,
       glideTime: glide,
-      glideFrom: glide > 0 && lastSemis !== null ? lastSemis : semis,
       ...(isMember(channel) ? { channel, noteBend: mpeState(channel).bend, pressure: mpeState(channel).pressure, timbre: mpeState(channel).timbre } : {}),
     }
-    lastSemis = semis
+    const from = lastNote
+    lastNote = note
     // MPE is inherently polyphonic: every note has its own channel
     if (master.mono && !isMember(channel)) {
-      if (monoVoice?.held && monoVoice.soundId === sound.id) {
-        monoVoice.glideTo(semis, glide, note)
+      // legato: slide the held voice (single-sample pads; SFZ zones change sample, so they retrigger)
+      const [only] = monoVoices
+      if (monoVoices.length === 1 && only.held && only.soundId === sound.id && !sound.zones?.length) {
+        only.glideTo(semisFor(sound, undefined, note), glide, note)
         engine.publish()
         return
       }
-      monoVoice?.release()
-      monoVoice = engine.startVoice(sound, opts)
+      releaseAll(monoVoices)
+      monoVoices = startNote(sound, note, velocity, base, from)
     } else {
       const key = voiceKey(note, channel)
-      polyVoices.get(key)?.release()
-      const v = engine.startVoice(sound, opts)
-      if (v) polyVoices.set(key, v)
+      releaseAll(polyVoices.get(key))
+      sustainedKeys.delete(key)
+      polyVoices.set(key, startNote(sound, note, velocity, base, from))
     }
   }
 
   function noteOff(note: number, channel?: number) {
     heldNotes.value = heldNotes.value.filter((n) => n !== note)
     if (master.mono && !isMember(channel)) {
-      if (!monoVoice) return
+      if (!monoVoices.length) return
       const top = heldNotes.value.at(-1)
+      const sound = selected.value
       if (top === undefined) {
-        monoVoice.release()
-        monoVoice = null
-      } else if (top !== monoVoice.midiNote) {
+        if (perform.sustain) monoSustained = true
+        else {
+          releaseAll(monoVoices)
+          monoVoices = []
+          triggerRelease(sound, note)
+        }
+      } else if (sound && top !== monoVoices[0].midiNote) {
         // fall back to the previous held note, legato
-        lastSemis = top - (selected.value?.settings.rootNote ?? ROOT_NOTE)
-        monoVoice.glideTo(lastSemis, master.glide, top)
-        engine.publish()
+        const from = lastNote
+        lastNote = top
+        if (monoVoices.length === 1 && !sound.zones?.length) {
+          monoVoices[0].glideTo(semisFor(sound, undefined, top), master.glide, top)
+          engine.publish()
+        } else {
+          releaseAll(monoVoices)
+          monoVoices = startNote(sound, top, 1, { midiNote: top, glideTime: master.glide }, from)
+        }
       }
     } else {
       const key = voiceKey(note, channel)
-      polyVoices.get(key)?.release()
+      if (perform.sustain) return void sustainedKeys.add(key)
+      releaseAll(polyVoices.get(key))
       polyVoices.delete(key)
+      triggerRelease(selected.value, note)
     }
   }
 
@@ -333,7 +633,10 @@ export const useBoard = defineStore('board', () => {
     heldNotes.value = []
     polyVoices.clear()
     mpeChannels.clear()
-    monoVoice = null
+    sustainedKeys.clear()
+    sustainedPads.clear()
+    monoSustained = false
+    monoVoices = []
   }
 
   function panic() {
@@ -342,6 +645,20 @@ export const useBoard = defineStore('board', () => {
     allNotesOff()
     perform.bend = 0
     perform.pressure = 0
+  }
+
+  /** An instrument's CC defaults: on load and whenever it becomes the selected patch. */
+  function applyCcDefaults(sound: Sound | null | undefined) {
+    for (const [cc, v] of Object.entries(sound?.ccDefaults ?? {})) engine.setCC(+cc, v)
+  }
+  watch(() => master.selectedId, () => applyCcDefaults(selected.value))
+
+  // ── themes ─────────────────────────────────────────────────────────────
+  const theme = computed(() => themeById(master.theme))
+  function cycleTheme(dir: 1 | -1 = 1) {
+    const i = THEMES.findIndex((t) => t.id === theme.value.id)
+    master.theme = THEMES[(i + dir + THEMES.length) % THEMES.length].id
+    toast.value = `THEME · ${theme.value.name}`
   }
 
   // ── patch selection ────────────────────────────────────────────────────
@@ -449,7 +766,7 @@ export const useBoard = defineStore('board', () => {
     const zip = new JSZip()
     const board: SavedBoard = { version: 1, sounds: clone(sounds.value), master: clone(master), presets: clone(presets.value) }
     zip.file('board.json', JSON.stringify(board, null, 2))
-    for (const audioId of new Set(sounds.value.map((s) => s.audioId))) {
+    for (const audioId of new Set(sounds.value.flatMap(soundAudioIds).filter((id) => !isSynthAudioId(id)))) {
       const blob = await get<Blob>(audioKey(audioId))
       if (blob) zip.file(`audio/${audioId}`, blob)
     }
@@ -471,18 +788,34 @@ export const useBoard = defineStore('board', () => {
       const board = JSON.parse(json) as SavedBoard
       const idMap = new Map<string, string>()
       let added = 0
-      for (const s of board.sounds) {
-        let audioId = idMap.get(s.audioId)
-        if (!audioId) {
-          const entry = zip.file(`audio/${s.audioId}`)
-          if (!entry) continue
-          audioId = uid()
-          const blob = await entry.async('blob')
-          await loadAudio(audioId, blob)
-          await set(audioKey(audioId), blob)
-          idMap.set(s.audioId, audioId)
+      /** New id for an exported audio blob, loading it on first use. Null if it's missing from the zip. */
+      const remap = async (old: string) => {
+        if (isSynthAudioId(old)) {
+          peaks.set(old, computePeaks(engine.getBuffer(old)!))
+          return old
         }
-        sounds.value.push({ ...s, id: uid(), audioId, settings: migrateSettings(s.settings) })
+        if (idMap.has(old)) return idMap.get(old)!
+        const entry = zip.file(`audio/${old}`)
+        if (!entry) return null
+        const audioId = uid()
+        const blob = await entry.async('blob')
+        await loadAudio(audioId, blob)
+        await set(audioKey(audioId), blob)
+        idMap.set(old, audioId)
+        return audioId
+      }
+      for (const s of board.sounds) {
+        const audioId = await remap(s.audioId)
+        if (!audioId) continue
+        let zones: Zone[] | undefined
+        if (s.zones) {
+          zones = []
+          for (const z of s.zones) {
+            const id = await remap(z.audioId)
+            if (id) zones.push({ ...z, audioId: id })
+          }
+        }
+        sounds.value.push({ ...s, id: uid(), audioId, zones, settings: migrateSettings(s.settings) })
         added++
       }
       const known = new Set(presets.value.map((p) => p.id))
@@ -506,8 +839,29 @@ export const useBoard = defineStore('board', () => {
     }
   }
 
-  function onMidi(e: MidiEvent) {
+  const clockTracker = new ClockTracker()
+
+  function onMidi(e: MidiEvent, time = performance.now()) {
     switch (e.type) {
+      case 'clock': {
+        const v = clockTracker.tick(time)
+        if (clockTracker.ticks % 24 === 0) tempo.beats++
+        // only update once per beat, and only on a meaningful change
+        if (v && clockTracker.ticks % 24 === 0 && Math.abs(v - tempo.extBpm) > 0.2) tempo.extBpm = Math.round(v * 10) / 10
+        return
+      }
+      case 'start':
+        clockTracker.reset()
+        tempo.running = true
+        tempo.beats = 0
+        if (master.clockSource === 'midi') engine.restartGlobalLfos()
+        return
+      case 'continue':
+        tempo.running = true
+        return
+      case 'stop':
+        tempo.running = false
+        return
       case 'noteOn':
         if (midi.learning) {
           for (const s of sounds.value) if (s.settings.midiNote === e.note) s.settings.midiNote = null
@@ -517,11 +871,11 @@ export const useBoard = defineStore('board', () => {
           return
         }
         if (master.play) return noteOn(e.note, e.velocity, e.channel)
-        for (const s of sounds.value) if (s.settings.midiNote === e.note) press(s.id)
+        for (const s of padsForNote(e.note)) press(s.id, e.velocity)
         return
       case 'noteOff':
         if (master.play) return noteOff(e.note, e.channel)
-        for (const s of sounds.value) if (s.settings.midiNote === e.note) release(s.id)
+        for (const s of padsForNote(e.note)) release(s.id)
         return
       case 'polyPressure':
         return engine.setPolyPressure(e.note, e.value)
@@ -541,7 +895,9 @@ export const useBoard = defineStore('board', () => {
         perform.bend = e.value
         return
       case 'cc':
+        engine.setCC(e.cc, e.value)
         if (e.cc === 1) perform.mod = e.value
+        else if (e.cc === 64) perform.sustain = e.value >= 0.5
         else if (e.cc === 74) {
           if (isMember(e.channel)) {
             mpeState(e.channel).timbre = e.value
@@ -574,7 +930,7 @@ export const useBoard = defineStore('board', () => {
 
   return {
     sounds, master, openPanels, pressed, tagFilter, peaks, loaded, toast, midi, heldNotes,
-    perform, presets, clipboard, matrixScope, canUndo, canRedo,
+    perform, presets, clipboard, matrixScope, canUndo, canRedo, tempo, bpm, noteFor, theme, cycleTheme,
     undo, redo, savePreset, loadPreset, deletePreset, copySettings, pasteSettings, openMatrix, onMidi,
     tags, visible, keyFor, soundForKey, byId, selected, selectedNumber,
     addFiles, load, press, release, panic, noteOn, noteOff,

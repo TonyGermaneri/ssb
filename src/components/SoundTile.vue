@@ -12,7 +12,7 @@ const board = useBoard()
 const el = ref<HTMLElement>()
 const dropTarget = ref(false)
 const open = computed(() => board.openPanels.has(props.sound.id))
-const hue = computed(() => padHue(props.sound.settings.tag, props.sound.settings.name))
+const hue = computed(() => padHue(props.sound.settings.tag, props.sound.settings.name, board.theme.padHues))
 
 function onDragStart(e: DragEvent) {
   if (!e.dataTransfer) return
@@ -41,13 +41,13 @@ function onDrop(e: DragEvent) {
   <div
     ref="el"
     class="tile"
-    :class="{ 'drop-target': dropTarget }"
+    :class="{ 'drop-target': dropTarget, open }"
     @dragover="onDragOver"
     @dragleave="dropTarget = false"
     @drop="onDrop"
   >
     <v-expand-transition>
-      <ControlPanel v-if="open" :sound="sound" :hue="hue" />
+      <ControlPanel v-if="open" :sound="sound" :hue="hue" wide />
     </v-expand-transition>
     <SoundButton
       :sound="sound"
@@ -70,8 +70,13 @@ function onDrop(e: DragEvent) {
   border-radius: 12px;
   transition: background 120ms;
 }
+/* an open panel spreads across the full row; its pad sits under the panel's left edge */
+.tile.open {
+  flex-basis: 100%;
+  align-items: flex-start;
+}
 .drop-target {
-  background: rgba(255, 176, 0, 0.12);
-  box-shadow: inset 0 0 0 2px rgba(255, 176, 0, 0.6);
+  background: color-mix(in srgb, var(--c-primary) 12%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--c-primary) 60%, transparent);
 }
 </style>

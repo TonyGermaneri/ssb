@@ -1,14 +1,32 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useTheme } from 'vuetify'
+import { applyThemeVars } from './theme/themes'
 import { useBoard } from './stores/board'
 import { keyToMidi } from './lib/piano'
+import { fromInput } from './lib/dropFiles'
 import DropZone from './components/DropZone.vue'
 import MatrixDialog from './components/MatrixDialog.vue'
 import MasterStrip from './components/MasterStrip.vue'
 import SoundGrid from './components/SoundGrid.vue'
+import { defineAsyncComponent } from 'vue'
+// canvas-datagrid is only loaded when grid mode is first opened
+const GridView = defineAsyncComponent(() => import('./components/GridView.vue'))
+const LibraryDialog = defineAsyncComponent(() => import('./components/LibraryDialog.vue'))
+const libraryOpen = ref(false)
 
 const board = useBoard()
+const vuetifyTheme = useTheme()
+watch(
+  () => board.theme,
+  (t) => {
+    applyThemeVars(t)
+    vuetifyTheme.change(t.id)
+  },
+  { immediate: true },
+)
 const fileInput = ref<HTMLInputElement>()
+const folderInput = ref<HTMLInputElement>()
 /** computer key → MIDI note it started, so octave changes mid-hold still release the right note */
 const pianoHeld = new Map<string, number>()
 
@@ -26,7 +44,7 @@ function onKeyDown(e: KeyboardEvent) {
     else board.undo()
     return
   }
-  if (mod || e.altKey || board.matrixScope) return
+  if (mod || e.altKey || board.matrixScope || libraryOpen.value) return
   if (e.code === 'Space') {
     e.preventDefault()
     board.panic()
@@ -70,7 +88,7 @@ function onKeyUp(e: KeyboardEvent) {
 }
 function onPick(e: Event) {
   const input = e.target as HTMLInputElement
-  board.addFiles([...(input.files ?? [])])
+  board.addFiles(fromInput(input.files ?? []))
   input.value = ''
 }
 
@@ -88,11 +106,12 @@ onBeforeUnmount(() => {
 <template>
   <v-app>
     <div class="console" :class="{ scanlines: board.master.scanlines }">
-      <MasterStrip @add="fileInput?.click()" />
+      <MasterStrip @add="fileInput?.click()" @add-folder="folderInput?.click()" @library="libraryOpen = true" />
       <main class="deck">
-        <SoundGrid @add="fileInput?.click()" />
+        <GridView v-if="board.master.view === 'grid' && board.sounds.length" />
+        <SoundGrid v-else @add="fileInput?.click()" />
       </main>
-      <footer class="legend">
+      <footer v-if="board.master.view === 'pads'" class="legend">
         <template v-if="board.master.play">
           PLAY MODE · Z–/ AND Q–P ROWS = PIANO (Q = C4, ORIGINAL PITCH) · - / = = OCTAVE · SPACE = PANIC · ESC = CLOSE
           PANELS
@@ -105,7 +124,10 @@ onBeforeUnmount(() => {
     </div>
     <DropZone />
     <MatrixDialog />
-    <input ref="fileInput" type="file" accept="audio/*,.mp3" multiple hidden @change="onPick" />
+    <LibraryDialog v-if="libraryOpen" v-model="libraryOpen" />
+    <input ref="fileInput" type="file" accept="audio/*,.mp3,.sfz,.zip" multiple hidden @change="onPick" />
+    <!-- a folder picker keeps relative paths, which SFZ files use to find their samples -->
+    <input ref="folderInput" type="file" webkitdirectory multiple hidden @change="onPick" />
     <v-snackbar
       :model-value="!!board.toast"
       timeout="3000"
