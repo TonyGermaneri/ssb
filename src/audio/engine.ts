@@ -292,7 +292,10 @@ export function readLevels(): [number, number] {
 
 function startMeterLoop() {
   const frame = () => {
-    if (ctx && !external) {
+    if (external) {
+      // the plugin engine's clock, extrapolated between its ~30 Hz reports
+      if (extClock.at) clock.value = extClock.time + (performance.now() - extClock.at) / 1000
+    } else if (ctx) {
       clock.value = ctx.currentTime
       const [l, r] = levels.value
       const [pl, pr] = readLevels()
@@ -307,6 +310,51 @@ function startMeterLoop() {
 /** The native engine's output level (plugin), for the VU. */
 export function setExternalLevels(l: number, r: number) {
   levels.value = [Math.min(1, l), Math.min(1, r)]
+}
+
+/** A voice the plugin's engine is playing, as it reports it. */
+export interface ExternalVoice {
+  id: number
+  sound: string
+  group?: string
+  note?: number
+  age: number // seconds since note-on
+  end: number // seconds after note-on it stops, -1 = until released
+  pos: number // seconds into its sample
+  rate: number // sample seconds per second
+  dur: number
+  in: number
+  out: number
+  loops: boolean
+}
+
+const extClock = { time: 0, at: 0 }
+
+/**
+ * The plugin engine's voices, shown as this engine's own: pad LEDs, progress rings and waveform
+ * playheads read activeVoices, so each reported voice gets a stand-in with the fields they use.
+ */
+export function setExternalVoices(list: ExternalVoice[], time: number) {
+  extClock.time = time
+  extClock.at = performance.now()
+  if (!ctx) getCtx() // the meter loop drives the clock
+  activeVoices.value = list.map((v) => {
+    const t0 = time - v.age
+    const clipLen = Math.max(1e-6, v.out - v.in)
+    const voice = {
+      t0,
+      endTime: v.end >= 0 ? t0 + v.end : Infinity,
+      cycle: clipLen / Math.max(1e-6, v.rate),
+      groupId: v.group,
+      bufferDuration: v.dur,
+      marks: [],
+      positionAt(t: number) {
+        const x = v.pos + (t - time) * v.rate
+        return v.loops && x > v.out ? v.in + ((x - v.in) % clipLen) : Math.min(x, v.out)
+      },
+    }
+    return { id: v.id, soundId: v.sound, name: '', midiNote: v.note, voice: voice as unknown as Voice }
+  })
 }
 
 /** Also send the master output to `node` (measurements: comparing this engine with the plugin's). */

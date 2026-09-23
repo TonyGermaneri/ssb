@@ -53,6 +53,17 @@ bool sameSound (const SoundPtr& a, const SoundPtr& b) noexcept
 
 } // namespace
 
+uint64_t idHash (std::string_view id) noexcept
+{
+    uint64_t h = 1469598103934665603ull;
+    for (const char c : id)
+    {
+        h ^= (uint8_t) c;
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
 Command Command::make (Type t, std::string_view soundId, float vel)
 {
     Command c;
@@ -156,6 +167,25 @@ struct Engine::Voice
     // control-rate values (refreshed every `controlEvery` samples)
     float cPitch { 0 }, cCut { 0 }, cRes { 0 }, cTrem { 1 }, cPan { 0 }, cDelay { 0 }, cReverb { 0 };
     int countdown { 0 };
+
+    // grains (voice.ts: 'stretch' walks grains through the clip, 'cloud' scatters them)
+    enum class Kind : uint8_t { sample, stretch, cloud };
+    Kind kind { Kind::sample };
+    struct Stream { double next { 0 }; float offset { 0 }; float speed { 0 }; };
+    std::array<Stream, 8> streams {};
+    int streamCount { 0 };
+    struct Grain
+    {
+        bool on { false };
+        double pos { 0 };        // read position, frames (moves backwards when reversed)
+        double step { 1 };       // frames per output sample at the voice's base pitch
+        int length { 0 }, index { 0 };
+        float gain { 1 };
+        bool panned { false };
+        float pan { 0 };         // SPREAD: this grain's own StereoPannerNode
+    };
+    std::array<Grain, 48> grainPool {};
+    float cGrainPos { 0 }, cGrainSize { 0 };
 
     // VCO -> pitch, held for Web Audio's 128-sample render quantum: in the page it drives an
     // AudioBufferSourceNode's detune, which is a k-rate parameter, so that is the FM the page makes
@@ -277,6 +307,40 @@ struct Engine::Impl
     std::vector<float> wetL, wetR;
     float peakL { 0 }, peakR { 0 };
 
+    // published voice views (seqlock: odd = being written)
+    std::atomic<uint32_t> viewSeq { 0 };
+    std::array<VoiceView, maxVoices> views {};
+    std::atomic<int> viewCount { 0 };
+    double viewTime { 0 };
+
+    void publishViews() noexcept
+    {
+        viewSeq.fetch_add (1, std::memory_order_acq_rel);
+        int n = 0;
+        for (const auto& v : voices)
+        {
+            if (! v.alive || ! v.sound || ! v.sample) continue;
+            auto& w = views[(size_t) n++];
+            const double sr = v.sample->rate;
+            w.id = v.order;
+            w.sound = idHash (v.sound->id);
+            w.group = v.group ? idHash (v.group->id) : 0;
+            w.midiNote = v.midiNote;
+            w.age = (float) v.t;
+            w.end = std::isfinite (v.endT) ? (float) v.endT : -1.0f;
+            w.position = (float) (v.pos / sr);
+            w.rate = (float) (v.kRate * dsp::semisToRate (v.semisAt (v.t) + v.cPitch / 100.0f) * v.speed);
+            w.duration = (float) v.sample->duration();
+            w.clipIn = (float) (v.clipIn / sr);
+            w.clipOut = (float) (v.clipOut / sr);
+            w.loops = v.loops;
+            w.grains = v.kind == Voice::Kind::cloud;
+        }
+        viewCount.store (n, std::memory_order_relaxed);
+        viewTime = now;
+        viewSeq.fetch_add (1, std::memory_order_acq_rel);
+    }
+
     // =============================================================================== helpers
 
     void discard (std::shared_ptr<const void> p) noexcept
@@ -371,7 +435,7 @@ struct Engine::Impl
         for (int scope = 0; scope < 2; ++scope)
             for (const auto& r : v.routeFrom[scope]->routes)
             {
-                if (r.amount == 0 || r.dest == ModDest::grainPos || r.dest == ModDest::grainSize)
+                if (r.amount == 0)
                     continue;
                 if (v.routeCount >= (int) v.routes.size())
                     break;
@@ -489,11 +553,32 @@ struct Engine::Impl
             v.filtPeak = e.depth;
         }
 
+        v.kind = s.grainSize > 0 ? Voice::Kind::cloud : s.stretch ? Voice::Kind::stretch : Voice::Kind::sample;
+        for (auto& g : v.grainPool) g.on = false;
+        // spread grains are panned one by one, so the voice is stereo from there on
+        if (v.kind == Voice::Kind::cloud && s.grainSpread > 0)
+            v.monoSource = false;
+        if (v.kind != Voice::Kind::sample)
+        {
+            const bool cloud = v.kind == Voice::Kind::cloud;
+            v.streamCount = cloud ? std::clamp ((int) std::lround (s.grainStreams), 1, 8) : 1;
+            const double size = cloud ? std::max (0.005, s.grainSize / 1000.0) : 0.09;
+            for (int i = 0; i < v.streamCount; ++i)
+            {
+                auto& st = v.streams[(size_t) i];
+                st.next = i ? random01() * size : 0.0;
+                st.offset = v.streamCount > 1 ? (random01() - 0.5f) * std::max (s.grainWidth, 0.2f) : 0.0f;
+                st.speed = cloud ? (random01() * 2 - 1) * s.grainDrift : 0.0f;
+            }
+        }
+
         // how long it plays: the repeat count for pads, the sample for zones (loops: until note-off)
         const double rate0 = v.kRate * dsp::semisToRate (v.glideTo) * v.speed * (sr / engine.rate);
         const double clipSeconds = (v.clipOut - v.clipIn) / sr;
         if (zone)
             v.endT = v.loops ? inf : (v.clipOut - v.clipIn) / (rate0 * engine.rate);
+        else if (v.kind != Voice::Kind::sample)   // grains: only SPEED changes the length
+            v.endT = s.repeat > 0 ? s.repeat * clipSeconds / v.speed : inf;
         else
             v.endT = s.repeat > 0 ? s.repeat * clipSeconds / (v.kRate * dsp::semisToRate (v.glideTo) * v.speed) : inf;
         if (std::isfinite (v.endT))
@@ -1191,7 +1276,7 @@ struct Engine::Impl
     {
         const auto& s = v.s();
         float pitch = s.bendRange * 100.0f * v.bend + (perf ? perf->mpeBendRange : 48.0f) * 100.0f * v.noteBend + v.ccPitch;
-        float cut = v.ccCut, res = 0, trem = v.tremBase, panMod = 0, dly = 0, rev = 0;
+        float cut = v.ccCut, res = 0, trem = v.tremBase, panMod = 0, dly = 0, rev = 0, gPos = 0, gSize = 0;
         for (int i = 0; i < v.routeCount; ++i)
         {
             const auto& r = v.routes[(size_t) i];
@@ -1207,9 +1292,27 @@ struct Engine::Impl
                 case ModDest::pan:       panMod += x; break;
                 case ModDest::delayMix:  dly += x; break;
                 case ModDest::reverbMix: rev += x; break;
+                case ModDest::grainPos:  gPos += x; break;
+                case ModDest::grainSize: gSize += x; break;
                 default: break;
             }
         }
+        // SFZ region LFOs (Voice.startZoneLfos): oscillators straight into their destinations
+        if (const Zone* z = v.z())
+            for (const auto& l : z->lfos)
+            {
+                if (v.t < l.delay) continue;
+                const float x = (l.invert ? -1.0f : 1.0f) * dsp::lfoValue (l.wave, (v.t - l.delay) * l.freq);
+                switch (l.target)
+                {
+                    case ZoneLfo::Target::pitch:  pitch += x * l.depth; break;
+                    case ZoneLfo::Target::cutoff: cut += x * l.depth; break;
+                    case ZoneLfo::Target::volume: trem += x * (std::pow (10.0f, std::abs (l.depth) / 20.0f) - 1.0f); break;
+                    case ZoneLfo::Target::pan:    panMod += x * l.depth / 100.0f; break;
+                }
+            }
+        v.cGrainPos = gPos;
+        v.cGrainSize = gSize;
         v.cPitch = pitch; v.cCut = cut; v.cRes = res; v.cTrem = trem; v.cPan = panMod; v.cDelay = dly; v.cReverb = rev;
 
         // EQ, when its knobs moved
@@ -1233,6 +1336,72 @@ struct Engine::Impl
             const double q = std::max (0.1, s.resonance * std::pow (10.0, v.ccRes / 20.0)) + v.cRes + vcoRes;
             v.fc = dsp::BiquadCoefs::make (s.filterType, s.cutoff * std::pow (2.0, cents / 1200.0), q, 0, engine.rate);
         }
+    }
+
+    /** voice.ts tick() / spawnGrain(): start every grain whose time has come. */
+    void scheduleGrains (Voice& v) noexcept
+    {
+        const auto& s = v.s();
+        const auto& smp = *v.sample;
+        const bool cloud = v.kind == Voice::Kind::cloud;
+        const double sr = smp.rate;
+        const double clipIn = v.clipIn / sr, clipOut = v.clipOut / sr, clipLen = std::max (1e-4, clipOut - clipIn);
+        const float overlap = cloud ? std::max (1.0f, s.grainDensity) * (float) std::max (1, v.streamCount) : 4.0f;
+        const float windowGain = std::min (1.0f, 2.0f / overlap);
+        for (int si = 0; si < v.streamCount; ++si)
+        {
+            auto& st = v.streams[(size_t) si];
+            int guard = 0;
+            while (st.next <= v.t && guard++ < 16)
+            {
+                double size = cloud ? std::max (0.005, (s.grainSize + v.cGrainSize) / 1000.0) : 0.09;
+                double rate = v.kRate * dsp::semisToRate (v.semisAt (st.next));
+                if (cloud && s.grainJitter > 0)
+                    rate *= dsp::semisToRate ((random01() * 2 - 1) * s.grainJitter);
+                const double bufLen = std::min (size * rate, clipLen);
+                double start;
+                if (cloud)
+                {
+                    double pos = s.grainPos + v.cGrainPos + st.offset + st.speed * st.next / clipLen;
+                    pos = (st.speed != 0 || st.offset != 0) ? pos - std::floor (pos) : std::clamp (pos, 0.0, 1.0);
+                    const double center = clipIn + pos * clipLen + (random01() - 0.5) * s.grainWidth * clipLen;
+                    start = center - bufLen / 2;
+                }
+                else
+                    start = clipIn + std::fmod (st.next * s.speed, clipLen);
+                const double offset = std::min (std::max (start, clipIn), clipOut - bufLen);
+                const bool reverse = cloud && s.grainReverse > 0 && random01() < s.grainReverse;
+                const double dur = bufLen / rate;
+
+                for (auto& g : v.grainPool)
+                {
+                    if (g.on) continue;
+                    g.on = true;
+                    g.length = std::max (2, (int) std::lround (dur * engine.rate));
+                    g.index = 0;
+                    g.gain = windowGain;
+                    const double stepFrames = rate * sr / engine.rate;
+                    g.step = reverse ? -stepFrames : stepFrames;
+                    g.pos = reverse ? (offset + bufLen) * sr : offset * sr;
+                    g.panned = cloud && s.grainSpread > 0;
+                    g.pan = g.panned ? (random01() * 2 - 1) * s.grainSpread : 0.0f;
+                    break;
+                }
+
+                size = dur;
+                double step = size / (cloud ? std::max (1.0f, s.grainDensity) : 4.0f);
+                if (cloud && s.grainScatter > 0)
+                    step *= std::max (0.1, 1.0 + (random01() * 2 - 1) * s.grainScatter);
+                st.next += std::max (step, 1.0 / engine.rate);
+            }
+        }
+    }
+
+    bool grainsRinging (const Voice& v) const noexcept
+    {
+        for (const auto& g : v.grainPool)
+            if (g.on) return true;
+        return false;
     }
 
     /** Render one voice for `n` samples, adding to the buses. Returns false once it has ended. */
@@ -1294,7 +1463,44 @@ struct Engine::Impl
             // source
             const bool ended = v.t >= v.endT || (v.killT < inf && v.t >= v.killT + v.killFade);
             float xl = 0, xr = 0;
-            if (! ended)
+            if (v.kind != Voice::Kind::sample)
+            {
+                if (--v.quantumLeft <= 0)
+                {
+                    v.quantumPitch = vPitch;
+                    v.quantumLeft = 128;
+                }
+                if (! ended)
+                    scheduleGrains (v);
+                const float bend = dsp::semisToRate ((v.cPitch + v.quantumPitch) / 100.0f);
+                for (auto& g : v.grainPool)
+                {
+                    if (! g.on) continue;
+                    const auto i0 = (size_t) std::max (0.0, g.pos);
+                    if ((double) i0 + 1 < frames)
+                    {
+                        const auto f = (float) (g.pos - (double) i0);
+                        const float w = g.gain * (0.5f - 0.5f * std::cos (2.0f * (float) dsp::pi * (float) g.index / (float) std::max (1, g.length - 1)));
+                        const float a = (chL[i0] + (chL[i0 + 1] - chL[i0]) * f) * w;
+                        const float b = (chR[i0] + (chR[i0 + 1] - chR[i0]) * f) * w;
+                        if (g.panned)
+                        {
+                            float ol, orr;
+                            dsp::pan (g.pan, smp.channels.size() < 2, a, b, ol, orr);
+                            xl += ol;
+                            xr += orr;
+                        }
+                        else
+                        {
+                            xl += a;
+                            xr += b;
+                        }
+                    }
+                    g.pos += g.step * bend;
+                    if (++g.index >= g.length) g.on = false;
+                }
+            }
+            else if (! ended)
             {
                 const double p = v.pos;
                 const auto i0 = (size_t) p;
@@ -1363,7 +1569,8 @@ struct Engine::Impl
             v.t += dt;
         }
 
-        if (v.t >= v.endT || (v.killT < inf && v.t >= v.killT + v.killFade))
+        const bool killed = v.killT < inf && v.t >= v.killT + v.killFade;
+        if (killed || (v.t >= v.endT && ! (v.kind != Voice::Kind::sample && grainsRinging (v))))
             kill (v);
     }
 
@@ -1725,6 +1932,19 @@ void Engine::process (float* left, float* right, int n, const MidiEvent* midi, i
     }
     peaks[0].store (m.peakL, std::memory_order_relaxed);
     peaks[1].store (m.peakR, std::memory_order_relaxed);
+    m.publishViews();
+}
+
+bool Engine::readVoices (std::vector<VoiceView>& out, double& time) const
+{
+    const auto& m = *impl;
+    const auto before = m.viewSeq.load (std::memory_order_acquire);
+    if (before & 1u) return false;
+    const auto n = m.viewCount.load (std::memory_order_relaxed);
+    out.assign (m.views.begin(), m.views.begin() + std::clamp (n, 0, maxVoices));
+    time = m.viewTime;
+    std::atomic_thread_fence (std::memory_order_acquire);
+    return m.viewSeq.load (std::memory_order_acquire) == before;
 }
 
 } // namespace ssb

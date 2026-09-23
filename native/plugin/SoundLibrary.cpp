@@ -163,7 +163,17 @@ juce::StringArray SoundLibrary::missingAudio()
 
 void SoundLibrary::rebuild()
 {
+    byHash.clear();
+    for (const auto& [id, s] : sounds)
+        byHash[idHash (id)] = id;
     engine.setPerformance (buildPerformance (meta, sounds));
+}
+
+juce::String SoundLibrary::idFor (uint64_t hash)
+{
+    std::lock_guard<std::recursive_mutex> g (lock);
+    auto it = byHash.find (hash);
+    return it == byHash.end() ? juce::String() : juce::String (it->second);
 }
 
 juce::String SoundLibrary::saveState()

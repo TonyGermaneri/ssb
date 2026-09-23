@@ -158,6 +158,9 @@ export function startEngineSync(board: Board) {
   // samples decode after the board loads: once it has, send what the engine lacks
   watch(() => board.loaded, (loaded) => loaded && schedule(), { immediate: true })
 
-  // the engine's levels drive the VU meter
-  onNative<{ l: number; r: number }>('ssbMeter', ({ l, r }) => engine.setExternalLevels(l, r))
+  // the engine's levels drive the VU meter; its voices light the pads and move the playheads
+  onNative<{ l: number; r: number; list?: engine.ExternalVoice[]; time?: number }>('ssbMeter', ({ l, r, list, time }) => {
+    engine.setExternalLevels(l, r)
+    if (list && time !== undefined) engine.setExternalVoices(list, time)
+  })
 }

@@ -96,13 +96,16 @@ struct Settings
     int choke { 0 };
     TriggerMode mode { TriggerMode::stop };
     float pitch { 0 }, fine { 0 }, speed { 1 };
-    bool stretch { false };     // timeMode 'stretch' -- played as tape for now
+    bool stretch { false };     // timeMode 'stretch': speed and pitch independent (grains)
     float clipIn { 0 }, clipOut { 1 };
     float attack { 0.001f }, decay { 0.2f }, sustain { 1 }, release { 0.02f };
     FilterType filterType { FilterType::lowpass };
     float cutoff { 20000 }, resonance { 0.7f };
     float fEnvAmount { 0 }, fAttack { 0.001f }, fDecay { 0.3f }, fSustain { 0 }, fRelease { 0.2f };
-    float grainSize { 0 };      // > 0 = grain cloud -- played as tape for now
+    // grains (grain cloud when grainSize > 0; STRETCH walks grains through the clip at SPEED)
+    float grainSize { 0 };      // ms
+    float grainPos { 0.5f }, grainWidth { 0 }, grainDensity { 2 }, grainJitter { 0 }, grainReverse { 0 };
+    float grainSpread { 0 }, grainStreams { 1 }, grainScatter { 0 }, grainDrift { 0 };
     float delayTime { 0.25f }, delayFeedback { 0.35f }, delayMix { 0 };
     float reverbSize { 2 }, reverbDecay { 3 }, reverbMix { 0 };
     float eqLow { 0 }, eqMid { 0 }, eqHigh { 0 };
@@ -134,6 +137,16 @@ struct ZoneFilter
     std::optional<Env> env;
 };
 
+/** An SFZ region LFO (lfoN_*): an oscillator into one destination, starting after its delay. */
+struct ZoneLfo
+{
+    enum class Target : uint8_t { pitch, cutoff, volume, pan };
+    Target target { Target::pitch };
+    LfoShape wave { LfoShape::sine };
+    float freq { 1 }, depth { 0 }, delay { 0 };   // depth: cents, cents, dB, %
+    bool invert { false };
+};
+
 /** One sample of a multi-sample (SFZ) instrument. Times in seconds of its sample. */
 struct Zone
 {
@@ -155,6 +168,7 @@ struct Zone
     std::vector<CcRange> ccRange;
     std::vector<ZoneCcMod> ccMods;
     std::optional<ZoneFilter> filter;
+    std::vector<ZoneLfo> lfos;
 
     /** Semitones to shift this zone's sample to play `note`. */
     float semisFor (float note) const noexcept { return (note - keycenter) * keytrack / 100.0f + transpose + tune / 100.0f; }

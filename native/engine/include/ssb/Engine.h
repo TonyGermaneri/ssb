@@ -37,6 +37,26 @@ struct Command
     static Command make (Type t, std::string_view soundId = {}, float vel = 1);
 };
 
+/** What the editor shows of a playing voice (pad LEDs, progress rings, waveform playheads). */
+struct VoiceView
+{
+    uint32_t id { 0 };            // unique per note-on
+    uint64_t sound { 0 };         // idHash of the sound it plays
+    uint64_t group { 0 };         // idHash of the patch sound it plays for (VCOs), 0 = none
+    int midiNote { -1 };
+    float age { 0 };              // seconds since note-on
+    float end { -1 };             // seconds after note-on it stops; -1 = until released
+    float position { 0 };         // seconds into its sample
+    float rate { 1 };             // sample seconds per second, now
+    float duration { 0 };         // of its sample, seconds
+    float clipIn { 0 }, clipOut { 0 };
+    bool loops { false };
+    bool grains { false };        // a grain cloud: no single playhead
+};
+
+/** FNV-1a: how a VoiceView names its sound without the audio thread touching a string. */
+uint64_t idHash (std::string_view id) noexcept;
+
 /** Short MIDI message at a sample offset within the block. */
 struct MidiEvent
 {
@@ -73,6 +93,10 @@ public:
     // ---- meters (any thread) ---------------------------------------------------------------
     float peak (int channel) const noexcept { return peaks[(size_t) (channel & 1)].load (std::memory_order_relaxed); }
     int activeVoices() const noexcept { return active.load (std::memory_order_relaxed); }
+
+    /** The playing voices as of the last block, and the engine's clock then (seconds). Any thread;
+        false if a block was being published at that moment (just ask again next time). */
+    bool readVoices (std::vector<VoiceView>& out, double& time) const;
 
     double sampleRate() const noexcept { return rate; }
 

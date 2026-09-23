@@ -374,3 +374,59 @@ TEST ("engine: master delay repeats the whole mix")
     rig.render (0.5);
     CHECK (rig.rms (0.26, 0.34) > 0.05);
 }
+
+TEST ("engine: a grain cloud plays grains around GRAIN POS at the note's pitch, for as long as REPEAT says")
+{
+    Rig rig;
+    // 1 s of 440 Hz, grains of 80 ms, density 4
+    rig.add ("a", sine (440, 1.0), [] (auto& s) { s.grainSize = 80; s.grainDensity = 4; s.repeat = 1; s.release = 0.01f; });
+    rig.commit();
+    rig.press ("a");
+    rig.render (1.4);
+    CHECK (rig.rms (0.1, 0.9) > 0.1);                      // overlapping grains keep it sounding
+    // grains keep the sample's pitch; overlapping grains at different phases smear the zero
+    // crossings a little (as they do in the page), hence the wider tolerance
+    CHECK_NEAR (rig.hz (0.2, 0.8), 440.0, 15.0);
+    CHECK (rig.rms (1.15, 1.4) < 1e-4);                     // one pass of the 1 s clip, then done
+    CHECK (rig.engine.activeVoices() == 0);
+}
+
+TEST ("engine: STRETCH plays at half speed without changing pitch")
+{
+    Rig rig;
+    rig.add ("a", sine (440, 0.5), [] (auto& s) { s.stretch = true; s.speed = 0.5f; s.repeat = 1; s.release = 0.01f; });
+    rig.commit();
+    rig.press ("a");
+    rig.render (1.3);
+    CHECK (rig.rms (0.1, 0.9) > 0.1);                       // a 0.5 s clip lasts 1 s
+    CHECK_NEAR (rig.hz (0.2, 0.8), 440.0, 8.0);
+    CHECK (rig.rms (1.1, 1.3) < 1e-4);
+}
+
+TEST ("engine: an SFZ region LFO on pitch makes vibrato")
+{
+    auto render = [] (float depth)
+    {
+        auto rig = std::make_unique<Rig>();
+        auto& inst = rig->add ("inst", sine (440, 3));
+        ssb::Zone z;
+        z.sample = sine (440, 3);
+        z.keycenter = 69;
+        ssb::ZoneLfo l;
+        l.target = ssb::ZoneLfo::Target::pitch;
+        l.freq = 5;
+        l.depth = depth;   // cents
+        z.lfos.push_back (l);
+        inst.zones = { z };
+        rig->set ("play", true);
+        rig->set ("playable", "inst");
+        rig->commit();
+        rig->render (1.0, { on (0.0, 69) });
+        return rig;
+    };
+    auto flat = render (0), vib = render (100);
+    // at the LFO's peak (t = 50 ms into a 5 Hz cycle) the pitch is a semitone up
+    CHECK_NEAR (flat->hz (0.03, 0.07), 440.0, 15.0);
+    CHECK (vib->hz (0.03, 0.07) > 455.0);
+    CHECK (vib->hz (0.13, 0.17) < 425.0);
+}

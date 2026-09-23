@@ -138,6 +138,22 @@ Zone zoneFromJson (const juce::var& o, const SampleLookup& samples)
             c.amount = num (m, "amount", 0);
             z.ccMods.push_back (c);
         }
+    if (auto* lfos = o.getProperty ("lfos", {}).getArray())
+        for (const auto& l : *lfos)
+        {
+            ZoneLfo z2;
+            const auto t = str (l, "target");
+            z2.target = t == "cutoff" ? ZoneLfo::Target::cutoff : t == "volume" ? ZoneLfo::Target::volume
+                      : t == "pan" ? ZoneLfo::Target::pan : ZoneLfo::Target::pitch;
+            const auto w = str (l, "wave");   // an OscillatorType
+            z2.wave = w == "square" ? LfoShape::square : w == "sawtooth" ? LfoShape::sawtooth
+                    : w == "triangle" ? LfoShape::triangle : LfoShape::sine;
+            z2.freq = num (l, "freq", 1);
+            z2.depth = num (l, "depth", 0);
+            z2.delay = num (l, "delay", 0);
+            z2.invert = flag (l, "invert", false);
+            z.lfos.push_back (z2);
+        }
     if (const auto f = o.getProperty ("filter", {}); f.isObject())
     {
         ZoneFilter zf;
@@ -202,6 +218,15 @@ Settings settingsFromJson (const juce::var& o)
     s.fSustain = num (o, "fSustain", s.fSustain);
     s.fRelease = num (o, "fRelease", s.fRelease);
     s.grainSize = num (o, "grainSize", 0);
+    s.grainPos = num (o, "grainPos", 0.5f);
+    s.grainWidth = num (o, "grainWidth", 0);
+    s.grainDensity = num (o, "grainDensity", 2);
+    s.grainJitter = num (o, "grainJitter", 0);
+    s.grainReverse = num (o, "grainReverse", 0);
+    s.grainSpread = num (o, "grainSpread", 0);
+    s.grainStreams = num (o, "grainStreams", 1);
+    s.grainScatter = num (o, "grainScatter", 0);
+    s.grainDrift = num (o, "grainDrift", 0);
     s.delayTime = num (o, "delayTime", s.delayTime);
     s.delayFeedback = num (o, "delayFeedback", s.delayFeedback);
     s.delayMix = num (o, "delayMix", 0);

@@ -52,20 +52,22 @@ Web Audio's biquad formulas (low / high-pass Q in dB), the page's linear ADSR, `
 pan law (and the fact that every page voice reaches its panner as stereo), the ConvolverNode's
 normalisation of the page's noise impulses, and FM from a VCO held per 128-sample render quantum
 (the page drives a k-rate `detune`). Measured against the page with `ssb-host`: FM PIANO's level
-matches to 0.1 % dry and its envelope and harmonics match with chorus and reverb on.
+matches to 0.1 % dry and its envelope and harmonics match with chorus and reverb on; a grain
+cloud's level matches to 0.1 %.
 
 **Ported:** pads (trigger modes, choke groups, clip, repeat, loop), keyboard play of the selected
 patch (poly / mono, glide, MPE bend / pressure / timbre, the sustain pedal), patches' VCO slots
 (MIX / MOD, TRACK / FIXED, transpose, fine, level) with VCO 1–3 as audio-rate sources, the mod
-matrix (LFO shapes including random / smooth, mod wheel, aftertouch, velocity, bend, timbre),
-amp and filter envelopes, the filter and 3-band EQ, per-sound delay and reverb, master chorus /
-delay / reverb / volume, and SFZ zones (key / velocity / round robin / random layers, loops,
-one-shots, release triggers with rt_decay, locc / hicc, the *_onccN modifiers, region filters and
-envelopes).
+matrix (LFO shapes including random / smooth, mod wheel, aftertouch, velocity, bend, timbre,
+grain position / size), amp and filter envelopes, the filter and 3-band EQ, grain clouds (streams,
+density, jitter, reverse, spread, scatter, drift) and STRETCH, per-sound delay and reverb, master
+chorus / delay / reverb / volume, and SFZ zones (key / velocity / round robin / random layers,
+loops, one-shots, release triggers with rt_decay, locc / hicc, the *_onccN modifiers, region
+filters, envelopes and LFOs). The engine reports its voices back to the page ~30 times a second,
+so pads light, progress rings turn and waveform playheads move for notes it plays.
 
-**Not yet:** grain clouds and STRETCH mode play as tape; SFZ region LFOs are skipped. The pads
-don't light up for notes the engine plays (the page's LEDs follow its own voices). Every instance
-in a host shares one board (the web view's storage is per application).
+**Not yet:** every instance in a host shares one board (the web view's storage is per
+application), and a grain cloud shows no per-grain marks on the waveform in the plugin.
 
 Per-sound delay and reverb run on buses shared by every voice with the same settings; both
 effects are linear, so that is the same sound as a copy per voice, for a fraction of the work.

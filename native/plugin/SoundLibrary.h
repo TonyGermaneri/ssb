@@ -8,6 +8,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <unordered_map>
 
 namespace ssb
 {
@@ -61,6 +62,9 @@ public:
     /** audioIds some sound needs that neither memory nor the disk cache has. */
     juce::StringArray missingAudio();
 
+    /** The id an engine VoiceView names (by idHash), or empty. */
+    juce::String idFor (uint64_t hash);
+
     juce::String saveState();
     void restoreState (const juce::String& json);
 
@@ -71,6 +75,7 @@ private:
     std::recursive_mutex lock;
     std::map<std::string, juce::var> soundJson;
     std::map<std::string, std::shared_ptr<Sound>> sounds;
+    std::unordered_map<uint64_t, std::string> byHash;
     juce::var meta;
 };
 

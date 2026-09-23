@@ -257,6 +257,33 @@ void SsbEditor::timerCallback()
         m->setProperty ("l", plugin.engine.peak (0));
         m->setProperty ("r", plugin.engine.peak (1));
         m->setProperty ("voices", plugin.engine.activeVoices());
+
+        // what is playing, for the pads' LEDs, progress rings and waveform playheads
+        std::vector<ssb::VoiceView> views;
+        double time = 0;
+        if (plugin.engine.readVoices (views, time))
+        {
+            juce::Array<juce::var> list;
+            for (const auto& v : views)
+            {
+                auto* o = new juce::DynamicObject();
+                o->setProperty ("id", (juce::int64) v.id);
+                o->setProperty ("sound", plugin.library.idFor (v.sound));
+                if (v.group) o->setProperty ("group", plugin.library.idFor (v.group));
+                if (v.midiNote >= 0) o->setProperty ("note", v.midiNote);
+                o->setProperty ("age", v.age);
+                o->setProperty ("end", v.end);
+                o->setProperty ("pos", v.position);
+                o->setProperty ("rate", v.rate);
+                o->setProperty ("dur", v.duration);
+                o->setProperty ("in", v.clipIn);
+                o->setProperty ("out", v.clipOut);
+                o->setProperty ("loops", v.loops);
+                list.add (juce::var (o));
+            }
+            m->setProperty ("list", list);
+            m->setProperty ("time", time);
+        }
         browser.emitEventIfBrowserIsVisible ("ssbMeter", juce::var (m));
     }
 
