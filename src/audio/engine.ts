@@ -1,7 +1,7 @@
 import { markRaw, ref, shallowRef } from 'vue'
-import type { GlobalFx, Sound } from '../types'
+import { defaultMatrix, type GlobalFx, type ModMatrix, type Sound } from '../types'
 import { MasterFx } from './masterFx'
-import { Voice, type VoiceOptions } from './voice'
+import { Voice, type ModHub, type VoiceOptions } from './voice'
 
 export interface VoiceInfo {
   id: number
@@ -15,6 +15,8 @@ let ctx: AudioContext | null = null
 let fx: MasterFx
 let master: GainNode
 let analysers: [AnalyserNode, AnalyserNode]
+let hub: ModHub
+let globalMatrix: ModMatrix = defaultMatrix()
 const voices = new Set<Voice>() // includes voices whose tails are still ringing
 
 /** Decoded audio by audioId. Not reactive — AudioBuffers are big. */
@@ -41,8 +43,64 @@ export function getCtx(): AudioContext {
     a.fftSize = 1024
     split.connect(a, i)
   })
+  const now = ctx.currentTime
+  const globalLfos = [ctx.createOscillator(), ctx.createOscillator()]
+  globalLfos.forEach((o) => o.start(now))
+  const modWheel = ctx.createConstantSource()
+  modWheel.offset.value = 0
+  modWheel.start(now)
+  hub = {
+    globalLfos,
+    globalLfoStart: now,
+    modWheel,
+    state: { mod: 0, bend: 0, pressure: 0 },
+    matrix: () => globalMatrix,
+  }
+  applyGlobalLfos()
   startMeterLoop()
   return ctx
+}
+
+function applyGlobalLfos() {
+  const now = getCtx().currentTime
+  ;[globalMatrix.lfo1, globalMatrix.lfo2].forEach((lfo, i) => {
+    hub.globalLfos[i].type = lfo.shape
+    hub.globalLfos[i].frequency.setTargetAtTime(lfo.rate, now, 0.02)
+  })
+}
+
+/** Global modulation matrix changed (LFO settings or routes). */
+export function setGlobalMatrix(m: ModMatrix) {
+  globalMatrix = m
+  getCtx()
+  applyGlobalLfos()
+  for (const v of voices) v.apply()
+}
+
+// ── performance controllers ───────────────────────────────────────────────
+export function setModWheel(v: number) {
+  const c = getCtx()
+  hub.state.mod = v
+  hub.modWheel.offset.setTargetAtTime(v, c.currentTime, 0.01)
+}
+
+/** Channel-wide pitch bend, -1..1: every voice, and new voices start there. */
+export function setBend(v: number) {
+  getCtx()
+  hub.state.bend = v
+  for (const voice of voices) voice.setBend(v)
+}
+
+/** Channel pressure: every voice. */
+export function setChannelPressure(v: number) {
+  getCtx()
+  hub.state.pressure = v
+  for (const voice of voices) voice.setPressure(v)
+}
+
+/** Polyphonic aftertouch: only voices playing that MIDI note. */
+export function setPolyPressure(note: number, v: number) {
+  for (const voice of voices) if (voice.midiNote === note) voice.setPressure(v)
 }
 
 /** Browsers start AudioContexts suspended until a user gesture. */
@@ -99,6 +157,7 @@ export function startVoice(sound: Sound, opts: VoiceOptions = {}): Voice | null 
     sound.settings,
     fx.input,
     opts,
+    hub,
     () => publish(),
     (dead) => voices.delete(dead),
   )

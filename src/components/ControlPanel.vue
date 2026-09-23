@@ -14,6 +14,16 @@ const board = useBoard()
 const s = computed(() => props.sound.settings)
 const confirmDelete = ref(false)
 const confirmReset = ref(false)
+const presetMenu = ref(false)
+const presetName = ref('')
+const routeCount = computed(() => s.value.mod.routes.length)
+const fmtNote = (v: number) => midiNoteName(Math.round(v))
+const fmtBend = (v: number) => `±${Math.round(v)}st`
+
+function savePreset() {
+  board.savePreset(props.sound.id, presetName.value || s.value.name)
+  presetName.value = ''
+}
 const modeInfo = computed(() => TRIGGER_MODE_INFO[s.value.mode])
 const learning = computed(() => board.midi.learning === props.sound.id)
 
@@ -71,6 +81,15 @@ function doReset() {
           <Knob v-model="s.pitch" label="PITCH" :min="-24" :max="24" :step="1" :default="0" bipolar :format="fmtSemis" />
           <Knob v-model="s.fine" label="FINE" :min="-100" :max="100" :step="1" :default="0" bipolar :format="fmtCents" />
           <Knob v-model="s.speed" label="SPEED" :min="0.25" :max="4" curve="log" :default="1" :format="fmtRatio" />
+        </div>
+      </section>
+
+      <section class="module">
+        <h4>KEYS</h4>
+        <div class="row">
+          <Knob v-model="s.rootNote" label="ROOT" :min="0" :max="127" :step="1" :default="60" :format="fmtNote" />
+          <Knob v-model="s.velAmount" label="VEL AMT" :default="1" :format="fmtPct" />
+          <Knob v-model="s.bendRange" label="BEND" :min="0" :max="48" :step="1" :default="2" :format="fmtBend" />
         </div>
       </section>
 
@@ -174,6 +193,49 @@ function doReset() {
         <v-icon size="14" icon="mdi-piano" />
         {{ learning ? 'PLAY NOTE…' : s.midiNote !== null ? midiNoteName(s.midiNote) : 'LEARN' }}
       </button>
+      <button class="hw-btn" :class="{ lit: routeCount }" title="Modulation matrix for this pad" @click="board.openMatrix(sound.id)">
+        <v-icon size="14" icon="mdi-matrix" />
+        MATRIX<span v-if="routeCount" class="badge">{{ routeCount }}</span>
+      </button>
+      <v-menu v-model="presetMenu" location="top" :close-on-content-click="false">
+        <template #activator="{ props: act }">
+          <button class="hw-btn" v-bind="act" title="Presets, copy / paste settings">
+            <v-icon size="14" icon="mdi-bookmark-music" />
+            PRESETS
+          </button>
+        </template>
+        <div class="preset-menu" @pointerdown.stop @keydown.stop>
+          <div class="pm-row">
+            <button class="hw-btn" title="Copy this pad's settings" @click="board.copySettings(sound.id)">
+              <v-icon size="14" icon="mdi-content-copy" /> COPY
+            </button>
+            <button
+              class="hw-btn"
+              :disabled="!board.clipboard"
+              title="Paste copied settings onto this pad"
+              @click="board.pasteSettings(sound.id)"
+            >
+              <v-icon size="14" icon="mdi-content-paste" /> PASTE
+            </button>
+          </div>
+          <div class="pm-row">
+            <input v-model="presetName" class="pm-input" :placeholder="s.name" maxlength="40" @keydown.enter="savePreset" />
+            <button class="hw-btn" title="Save these settings as a preset" @click="savePreset">
+              <v-icon size="14" icon="mdi-content-save" /> SAVE
+            </button>
+          </div>
+          <div v-if="!board.presets.length" class="pm-empty">NO PRESETS YET</div>
+          <div v-for="p in board.presets" :key="p.id" class="pm-item">
+            <button class="pm-load" :title="`Load ${p.name} onto this pad`" @click="board.loadPreset(sound.id, p.id)">
+              {{ p.name }}
+            </button>
+            <button class="pm-del" title="Delete preset" @click="board.deletePreset(p.id)">
+              <v-icon size="14" icon="mdi-close" />
+            </button>
+          </div>
+          <div class="pm-hint">Presets skip name, tag, clip, root note and MIDI note.</div>
+        </div>
+      </v-menu>
       <v-spacer />
       <template v-if="confirmReset">
         <button class="hw-btn danger" @click="doReset">RESET?</button>
@@ -295,9 +357,76 @@ function doReset() {
 }
 .footer {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   margin-top: 8px;
+}
+.badge {
+  margin-left: 2px;
+  padding: 0 4px;
+  border-radius: 6px;
+  font-family: 'VT323', monospace;
+  font-size: 13px;
+  line-height: 13px;
+  color: #111;
+  background: #ffb000;
+}
+.preset-menu {
+  width: 260px;
+  padding: 8px;
+  border-radius: 6px;
+  background: linear-gradient(180deg, #3a3940, #26252b);
+  border: 1px solid #000;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+  font-family: 'VT323', monospace;
+}
+.pm-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.pm-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-family: 'VT323', monospace;
+  font-size: 17px;
+  color: #ffb000;
+  background: #0d0c0f;
+  border: 1px solid #000;
+  outline: none;
+}
+.pm-empty,
+.pm-hint {
+  padding: 4px 2px;
+  font-size: 14px;
+  color: #8a8579;
+}
+.pm-item {
+  display: flex;
+  align-items: center;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.pm-load {
+  flex: 1;
+  padding: 3px 4px;
+  text-align: left;
+  font-family: 'VT323', monospace;
+  font-size: 18px;
+  color: #27e0ff;
+  text-transform: uppercase;
+}
+.pm-load:hover {
+  background: rgba(39, 224, 255, 0.08);
+}
+.pm-del {
+  padding: 0 4px;
+  color: #8a8579;
+}
+.pm-del:hover {
+  color: #ff3b2f;
 }
 .mode {
   min-width: 108px;

@@ -1,15 +1,16 @@
 import { defineStore } from 'pinia'
 import { computed, reactive, ref, shallowReactive, toRaw, watch } from 'vue'
-import { del, get, set } from 'idb-keyval'
+import { del, get, keys, set } from 'idb-keyval'
 import * as engine from '../audio/engine'
 import { computePeaks } from '../audio/peaks'
-import { connectMidi } from '../audio/midi'
+import { connectMidi, type MidiEvent } from '../audio/midi'
+import { History } from '../lib/history'
 import type { Voice } from '../audio/voice'
 import { stripExt } from '../lib/format'
 import { ROOT_NOTE } from '../lib/piano'
 import {
-  defaultGlobalFx, defaultMaster, defaultSettings, FILTER_TYPES, migrateSettings, TRIGGER_MODES,
-  type MasterState, type Sound,
+  defaultMaster, defaultSettings, FILTER_TYPES, migrateMaster, migrateSettings, presetSettings, TRIGGER_MODES,
+  type MasterState, type Preset, type Sound, type SoundSettings,
 } from '../types'
 
 const BOARD_KEY = 'ssb:board'
@@ -25,6 +26,7 @@ interface SavedBoard {
   version: 1
   sounds: Sound[]
   master: MasterState
+  presets?: Preset[]
 }
 
 const uid = () => crypto.randomUUID()
@@ -43,6 +45,15 @@ export const useBoard = defineStore('board', () => {
   const midi = reactive({ enabled: false, inputs: 0, learning: null as string | null })
   /** MIDI notes currently held in keyboard-play mode (for the display). */
   const heldNotes = ref<number[]>([])
+  /** live performance controllers (not saved) */
+  const perform = reactive({ mod: 0, bend: 0, pressure: 0 })
+  const presets = ref<Preset[]>([])
+  /** settings copied with COPY, for PASTE onto another pad */
+  const clipboard = ref<Partial<SoundSettings> | null>(null)
+  /** open matrix modal: 'global', a sound id, or null */
+  const matrixScope = ref<string | null>(null)
+  const canUndo = ref(false)
+  const canRedo = ref(false)
 
   // ── derived ────────────────────────────────────────────────────────────
   const tags = computed(() =>
@@ -100,7 +111,8 @@ export const useBoard = defineStore('board', () => {
     try {
       const saved = await get<SavedBoard>(BOARD_KEY)
       if (saved) {
-        Object.assign(master, defaultMaster(), saved.master, { fx: { ...defaultGlobalFx(), ...saved.master?.fx } })
+        Object.assign(master, migrateMaster(saved.master))
+        presets.value = saved.presets ?? []
         const ok: Sound[] = []
         for (const s of saved.sounds) {
           try {
@@ -117,8 +129,18 @@ export const useBoard = defineStore('board', () => {
         sounds.value = ok
         if (!selected.value) master.selectedId = ok[0]?.id ?? null
       }
+      void collectOrphanAudio()
     } finally {
       loaded.value = true
+      history.reset(snapshot())
+    }
+  }
+
+  /** Deleted pads keep their audio for undo; blobs nothing references are dropped on the next load. */
+  async function collectOrphanAudio() {
+    const used = new Set(sounds.value.map((s) => audioKey(s.audioId)))
+    for (const k of await keys()) {
+      if (typeof k === 'string' && k.startsWith('ssb:audio:') && !used.has(k)) await del(k)
     }
   }
 
@@ -127,7 +149,7 @@ export const useBoard = defineStore('board', () => {
     if (!loaded.value) return
     clearTimeout(saveTimer)
     saveTimer = setTimeout(() => {
-      const board: SavedBoard = { version: 1, sounds: clone(sounds.value), master: clone(master) }
+      const board: SavedBoard = { version: 1, sounds: clone(sounds.value), master: clone(master), presets: clone(presets.value) }
       set(BOARD_KEY, board).catch((e) => {
         console.error(e)
         toast.value = 'Saving the board failed'
@@ -140,6 +162,7 @@ export const useBoard = defineStore('board', () => {
     () => {
       engine.refreshVoices()
       scheduleSave()
+      scheduleHistory()
     },
     { deep: true },
   )
@@ -148,10 +171,69 @@ export const useBoard = defineStore('board', () => {
     () => {
       engine.setMaster(master.volume, master.muted)
       engine.setGlobalFx(master.fx)
+      engine.setGlobalMatrix(master.mod)
       scheduleSave()
+      scheduleHistory()
     },
     { deep: true, immediate: true },
   )
+  watch(presets, scheduleSave, { deep: true })
+  watch(() => perform.mod, (v) => engine.setModWheel(v))
+  watch(() => perform.bend, (v) => engine.setBend(v))
+  watch(() => perform.pressure, (v) => engine.setChannelPressure(v))
+
+  // ── undo / redo ────────────────────────────────────────────────────────
+  /** What undo covers: pads and the sound-shaping header state (not volume, view or selection). */
+  const snapshot = () =>
+    JSON.stringify({ sounds: sounds.value, fx: master.fx, mod: master.mod, glide: master.glide, mono: master.mono })
+  const history = new History('')
+  let historyTimer: ReturnType<typeof setTimeout> | undefined
+  function syncHistoryFlags() {
+    canUndo.value = history.canUndo
+    canRedo.value = history.canRedo
+  }
+  function commitHistory() {
+    clearTimeout(historyTimer)
+    historyTimer = undefined
+    history.commit(snapshot())
+    syncHistoryFlags()
+  }
+  /** Coalesce a burst of edits (e.g. a knob drag) into one undo step. */
+  function scheduleHistory() {
+    if (!loaded.value) return
+    clearTimeout(historyTimer)
+    historyTimer = setTimeout(commitHistory, 400)
+  }
+  function restore(state: string) {
+    const data = JSON.parse(state) as { sounds: Sound[]; fx: MasterState['fx']; mod: MasterState['mod']; glide: number; mono: boolean }
+    // update in place so playing voices (which hold the settings object) follow along
+    const current = new Map(sounds.value.map((x) => [x.id, x]))
+    sounds.value = data.sounds
+      .filter((x) => engine.buffers.has(x.audioId))
+      .map((x) => {
+        const cur = current.get(x.id)
+        if (!cur) return x
+        Object.assign(cur.settings, x.settings)
+        return cur
+      })
+    Object.assign(master.fx, data.fx)
+    Object.assign(master.mod, data.mod)
+    master.glide = data.glide
+    master.mono = data.mono
+    if (!selected.value) master.selectedId = sounds.value[0]?.id ?? null
+  }
+  function undo() {
+    if (historyTimer) commitHistory()
+    const st = history.undo()
+    if (st) restore(st)
+    syncHistoryFlags()
+  }
+  function redo() {
+    if (historyTimer) commitHistory()
+    const st = history.redo()
+    if (st) restore(st)
+    syncHistoryFlags()
+  }
 
   // ── pads ───────────────────────────────────────────────────────────────
   function press(id: string) {
@@ -186,7 +268,7 @@ export const useBoard = defineStore('board', () => {
     const sound = selected.value
     if (!sound) return
     engine.resume()
-    const semis = note - ROOT_NOTE
+    const semis = note - sound.settings.rootNote
     const glide = master.glide
     heldNotes.value = [...heldNotes.value.filter((n) => n !== note), note]
     const opts = {
@@ -222,7 +304,7 @@ export const useBoard = defineStore('board', () => {
         monoVoice = null
       } else if (top !== monoVoice.midiNote) {
         // fall back to the previous held note, legato
-        lastSemis = top - ROOT_NOTE
+        lastSemis = top - (selected.value?.settings.rootNote ?? ROOT_NOTE)
         monoVoice.glideTo(lastSemis, master.glide, top)
         engine.publish()
       }
@@ -242,6 +324,8 @@ export const useBoard = defineStore('board', () => {
     engine.stopAll()
     pressed.clear()
     allNotesOff()
+    perform.bend = 0
+    perform.pressure = 0
   }
 
   // ── patch selection ────────────────────────────────────────────────────
@@ -300,11 +384,7 @@ export const useBoard = defineStore('board', () => {
     if (master.selectedId === id) selectStep(1)
     sounds.value = sounds.value.filter((s) => s.id !== id)
     if (master.selectedId === id) master.selectedId = sounds.value[0]?.id ?? null
-    if (!sounds.value.some((s) => s.audioId === sound.audioId)) {
-      engine.forget(sound.audioId)
-      peaks.delete(sound.audioId)
-      await del(audioKey(sound.audioId))
-    }
+    // audio stays in memory + IndexedDB so undo can bring the pad back
   }
 
   /** Drag-reorder: put `fromId` where `toId` is. */
@@ -319,11 +399,39 @@ export const useBoard = defineStore('board', () => {
     sounds.value = list
   }
 
+  // ── presets ────────────────────────────────────────────────────────────
+  function applySettings(id: string, patch: Partial<SoundSettings>) {
+    const s = byId(id)?.settings
+    if (s) Object.assign(s, JSON.parse(JSON.stringify(patch)))
+  }
+  function savePreset(id: string, name: string) {
+    const s = byId(id)?.settings
+    if (!s) return
+    presets.value.push({ id: uid(), name: name.trim() || s.name, settings: presetSettings(s) })
+    toast.value = `Saved preset "${presets.value.at(-1)!.name}"`
+  }
+  function loadPreset(id: string, presetId: string) {
+    const p = presets.value.find((x) => x.id === presetId)
+    if (p) applySettings(id, p.settings)
+  }
+  function deletePreset(presetId: string) {
+    presets.value = presets.value.filter((p) => p.id !== presetId)
+  }
+  function copySettings(id: string) {
+    const s = byId(id)?.settings
+    if (!s) return
+    clipboard.value = presetSettings(s)
+    toast.value = `Copied ${s.name}'s settings`
+  }
+  function pasteSettings(id: string) {
+    if (clipboard.value) applySettings(id, clipboard.value)
+  }
+
   // ── import / export ────────────────────────────────────────────────────
   async function exportBoard() {
     const { default: JSZip } = await import('jszip')
     const zip = new JSZip()
-    const board: SavedBoard = { version: 1, sounds: clone(sounds.value), master: clone(master) }
+    const board: SavedBoard = { version: 1, sounds: clone(sounds.value), master: clone(master), presets: clone(presets.value) }
     zip.file('board.json', JSON.stringify(board, null, 2))
     for (const audioId of new Set(sounds.value.map((s) => s.audioId))) {
       const blob = await get<Blob>(audioKey(audioId))
@@ -361,6 +469,8 @@ export const useBoard = defineStore('board', () => {
         sounds.value.push({ ...s, id: uid(), audioId, settings: migrateSettings(s.settings) })
         added++
       }
+      const known = new Set(presets.value.map((p) => p.id))
+      presets.value.push(...(board.presets ?? []).filter((p) => !known.has(p.id)))
       if (!selected.value) master.selectedId = sounds.value[0]?.id ?? null
       toast.value = `Imported ${added} sound${added === 1 ? '' : 's'}`
     } catch (e) {
@@ -372,28 +482,47 @@ export const useBoard = defineStore('board', () => {
   // ── MIDI ───────────────────────────────────────────────────────────────
   async function enableMidi() {
     try {
-      midi.inputs = await connectMidi({
-        noteOn(note, velocity) {
-          if (midi.learning) {
-            for (const s of sounds.value) if (s.settings.midiNote === note) s.settings.midiNote = null
-            const s = byId(midi.learning)
-            if (s) s.settings.midiNote = note
-            midi.learning = null
-            return
-          }
-          if (master.play) return noteOn(note, velocity / 127)
-          for (const s of sounds.value) if (s.settings.midiNote === note) press(s.id)
-        },
-        noteOff(note) {
-          if (master.play) return noteOff(note)
-          for (const s of sounds.value) if (s.settings.midiNote === note) release(s.id)
-        },
-      })
+      midi.inputs = await connectMidi(onMidi)
       midi.enabled = true
       toast.value = `MIDI on · ${midi.inputs} input${midi.inputs === 1 ? '' : 's'}`
     } catch (e) {
       toast.value = `MIDI unavailable: ${(e as Error).message}`
     }
+  }
+
+  function onMidi(e: MidiEvent) {
+    switch (e.type) {
+      case 'noteOn':
+        if (midi.learning) {
+          for (const s of sounds.value) if (s.settings.midiNote === e.note) s.settings.midiNote = null
+          const s = byId(midi.learning)
+          if (s) s.settings.midiNote = e.note
+          midi.learning = null
+          return
+        }
+        if (master.play) return noteOn(e.note, e.velocity)
+        for (const s of sounds.value) if (s.settings.midiNote === e.note) press(s.id)
+        return
+      case 'noteOff':
+        if (master.play) return noteOff(e.note)
+        for (const s of sounds.value) if (s.settings.midiNote === e.note) release(s.id)
+        return
+      case 'polyPressure':
+        return engine.setPolyPressure(e.note, e.value)
+      case 'channelPressure':
+        perform.pressure = e.value
+        return
+      case 'pitchBend':
+        perform.bend = e.value
+        return
+      case 'cc':
+        if (e.cc === 1) perform.mod = e.value
+        return
+    }
+  }
+
+  function openMatrix(scope: string) {
+    matrixScope.value = scope
   }
 
   async function learnMidi(id: string) {
@@ -413,6 +542,8 @@ export const useBoard = defineStore('board', () => {
 
   return {
     sounds, master, openPanels, pressed, tagFilter, peaks, loaded, toast, midi, heldNotes,
+    perform, presets, clipboard, matrixScope, canUndo, canRedo,
+    undo, redo, savePreset, loadPreset, deletePreset, copySettings, pasteSettings, openMatrix, onMidi,
     tags, visible, keyFor, soundForKey, byId, selected, selectedNumber,
     addFiles, load, press, release, panic, noteOn, noteOff,
     select, selectStep, togglePanel, cycleMode, cycleFilter, resetSettings, duplicate, remove, move,

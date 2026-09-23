@@ -14,6 +14,63 @@ export type FilterType = 'lowpass' | 'highpass' | 'bandpass'
 export const FILTER_TYPES: FilterType[] = ['lowpass', 'highpass', 'bandpass']
 export const FILTER_LABEL: Record<FilterType, string> = { lowpass: 'LP', highpass: 'HP', bandpass: 'BP' }
 
+// ── modulation ─────────────────────────────────────────────────────────────
+export type ModSource = 'lfo1' | 'lfo2' | 'mod' | 'aftertouch' | 'velocity' | 'bend'
+export type ModDest =
+  | 'pitch' | 'cutoff' | 'resonance' | 'volume' | 'pan' | 'grainPos' | 'grainSize' | 'delayMix' | 'reverbMix'
+export type LfoShape = 'sine' | 'triangle' | 'square' | 'sawtooth'
+
+export const MOD_SOURCES: { id: ModSource; label: string }[] = [
+  { id: 'lfo1', label: 'LFO 1' },
+  { id: 'lfo2', label: 'LFO 2' },
+  { id: 'mod', label: 'MOD WHEEL' },
+  { id: 'aftertouch', label: 'AFTERTOUCH' },
+  { id: 'velocity', label: 'VELOCITY' },
+  { id: 'bend', label: 'PITCH BEND' },
+]
+
+/**
+ * scale: destination units at amount ±1.
+ * audio: wired as an AudioParam connection (otherwise read when each grain starts).
+ */
+export const MOD_DESTS: Record<ModDest, { label: string; scale: number; unit: string; audio: boolean }> = {
+  pitch: { label: 'PITCH', scale: 12, unit: 'st', audio: true },
+  cutoff: { label: 'CUTOFF', scale: 5, unit: 'oct', audio: true },
+  resonance: { label: 'RESONANCE', scale: 10, unit: 'Q', audio: true },
+  volume: { label: 'VOLUME', scale: 1, unit: '', audio: true },
+  pan: { label: 'PAN', scale: 1, unit: '', audio: true },
+  grainPos: { label: 'GRAIN POS', scale: 0.5, unit: '', audio: false },
+  grainSize: { label: 'GRAIN SIZE', scale: 250, unit: 'ms', audio: false },
+  delayMix: { label: 'DELAY MIX', scale: 1, unit: '', audio: true },
+  reverbMix: { label: 'REVERB MIX', scale: 1, unit: '', audio: true },
+}
+export const MOD_DEST_IDS = Object.keys(MOD_DESTS) as ModDest[]
+export const LFO_SHAPES: LfoShape[] = ['sine', 'triangle', 'square', 'sawtooth']
+
+export interface Lfo {
+  shape: LfoShape
+  rate: number // Hz
+}
+export interface ModRoute {
+  source: ModSource
+  dest: ModDest
+  amount: number // -1..1 of the destination's scale
+}
+export interface ModMatrix {
+  lfo1: Lfo
+  lfo2: Lfo
+  routes: ModRoute[]
+}
+export const defaultMatrix = (): ModMatrix => ({
+  lfo1: { shape: 'sine', rate: 5 },
+  lfo2: { shape: 'triangle', rate: 0.5 },
+  routes: [],
+})
+const migrateMatrix = (m?: Partial<ModMatrix>): ModMatrix => {
+  const d = defaultMatrix()
+  return { lfo1: { ...d.lfo1, ...m?.lfo1 }, lfo2: { ...d.lfo2, ...m?.lfo2 }, routes: m?.routes ?? [] }
+}
+
 /** tape: pitch and speed both change playback rate. stretch: granular, speed and pitch independent. */
 export type TimeMode = 'tape' | 'stretch'
 
@@ -69,6 +126,12 @@ export interface SoundSettings {
   eqLow: number
   eqMid: number
   eqHigh: number
+  // keys
+  rootNote: number // MIDI note that plays the sample at its recorded pitch
+  velAmount: number // 0..1 how much velocity changes volume
+  bendRange: number // semitones
+  // modulation
+  mod: ModMatrix
   // midi
   midiNote: number | null
 }
@@ -124,6 +187,10 @@ export function defaultSettings(name = 'SOUND'): SoundSettings {
     eqLow: 0,
     eqMid: 0,
     eqHigh: 0,
+    rootNote: 60,
+    velAmount: 1,
+    bendRange: 2,
+    mod: defaultMatrix(),
     midiNote: null,
   }
 }
@@ -131,7 +198,7 @@ export function defaultSettings(name = 'SOUND'): SoundSettings {
 /** Fill in settings added since a board was saved, and map renamed ones. */
 export function migrateSettings(raw: Partial<SoundSettings> & { fadeIn?: number; fadeOut?: number }): SoundSettings {
   const { fadeIn, fadeOut, ...rest } = raw
-  const s = { ...defaultSettings(raw.name), ...rest }
+  const s = { ...defaultSettings(raw.name), ...rest, mod: migrateMatrix(raw.mod) }
   if (fadeIn !== undefined && raw.attack === undefined) s.attack = Math.max(0.001, fadeIn)
   if (fadeOut !== undefined && raw.release === undefined) s.release = Math.max(0.001, fadeOut)
   return s
@@ -176,6 +243,8 @@ export interface MasterState {
   octave: number
   selectedId: string | null
   fx: GlobalFx
+  /** global modulation matrix: applies to every voice */
+  mod: ModMatrix
 }
 
 export const defaultMaster = (): MasterState => ({
@@ -189,4 +258,25 @@ export const defaultMaster = (): MasterState => ({
   octave: 0,
   selectedId: null,
   fx: defaultGlobalFx(),
+  mod: defaultMatrix(),
 })
+
+export function migrateMaster(raw?: Partial<MasterState>): MasterState {
+  return { ...defaultMaster(), ...raw, fx: { ...defaultGlobalFx(), ...raw?.fx }, mod: migrateMatrix(raw?.mod) }
+}
+
+// ── presets ────────────────────────────────────────────────────────────────
+export interface Preset {
+  id: string
+  name: string
+  settings: Partial<SoundSettings>
+}
+
+/** Sample-specific settings a preset leaves alone when copied to another pad. */
+export const PRESET_EXCLUDE = ['name', 'tag', 'midiNote', 'rootNote', 'clipIn', 'clipOut'] as const
+
+export function presetSettings(s: SoundSettings): Partial<SoundSettings> {
+  const copy: Partial<SoundSettings> = JSON.parse(JSON.stringify(s))
+  for (const k of PRESET_EXCLUDE) delete copy[k]
+  return copy
+}

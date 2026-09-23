@@ -1,4 +1,5 @@
-import type { SoundSettings } from '../types'
+import { MOD_DESTS, type ModDest, type ModMatrix, type ModSource, type SoundSettings } from '../types'
+import { lfoValue, modSum } from '../lib/modulation'
 import { scheduleAttack, scheduleRelease, type Env } from './envelope'
 import { getImpulse } from './impulse'
 import {
@@ -54,6 +55,22 @@ function grainWindow(overlap: number): Float32Array {
   return w
 }
 
+/** Engine-wide modulation sources shared by every voice. */
+export interface ModHub {
+  globalLfos: OscillatorNode[]
+  globalLfoStart: number
+  modWheel: ConstantSourceNode
+  /** channel-wide controller values (non-MPE) */
+  state: { mod: number; bend: number; pressure: number }
+  matrix: () => ModMatrix
+}
+
+type Scope = 'global' | 'pad'
+const LFO_INDEX = { lfo1: 0, lfo2: 1 } as const
+/** matrix units → AudioParam units */
+const PARAM_UNIT: Partial<Record<ModDest, number>> = { pitch: 100, cutoff: 1200 }
+const BIPOLAR = new Set<ModSource>(['lfo1', 'lfo2', 'bend'])
+
 let nextId = 1
 
 /**
@@ -101,6 +118,18 @@ export class Voice {
   private out: GainNode
   private panner: StereoPannerNode
   private kill: GainNode
+  private trem: GainNode
+  /** summed pitch modulation in cents, fanned out to every source's detune */
+  private pitchBus: GainNode
+  private atSrc: ConstantSourceNode
+  private bendSrc: ConstantSourceNode
+  private velSrc: ConstantSourceNode
+  private padLfos: (OscillatorNode | null)[] = [null, null]
+  private padLfoStart = [0, 0]
+  private links: { from: AudioNode; gain: GainNode }[] = []
+  private routeSig = ''
+  private atValue = 0
+  private bendValue = 0
   private src?: AudioBufferSourceNode
   private grains = new Set<AudioBufferSourceNode>()
   private nextGrain = 0
@@ -118,6 +147,7 @@ export class Voice {
     readonly settings: SoundSettings,
     destination: AudioNode,
     opts: VoiceOptions,
+    private hub: ModHub,
     private onEnd: (v: Voice) => void,
     private onDispose: (v: Voice) => void,
   ) {
@@ -144,16 +174,26 @@ export class Voice {
     this.out = c.createGain()
     this.panner = c.createStereoPanner()
     this.kill = c.createGain()
+    this.trem = c.createGain()
+    this.pitchBus = c.createGain()
+    this.atSrc = c.createConstantSource()
+    this.bendSrc = c.createConstantSource()
+    this.velSrc = c.createConstantSource()
 
     this.env.connect(this.filter).connect(this.lo).connect(this.mid).connect(this.hi)
     this.hi.connect(this.dry).connect(this.out)
     this.hi.connect(this.delay).connect(this.delayWet).connect(this.out)
     this.delay.connect(this.feedback).connect(this.delay)
     this.hi.connect(this.convolver).connect(this.reverbWet).connect(this.out)
-    this.out.connect(this.panner).connect(this.kill).connect(destination)
+    this.out.connect(this.trem).connect(this.panner).connect(this.kill).connect(destination)
 
     this.midiNote = opts.midiNote
     this.velocity = opts.velocity ?? 1
+    this.atValue = hub.state.pressure
+    this.bendValue = hub.state.bend
+    this.atSrc.offset.value = this.atValue
+    this.bendSrc.offset.value = this.bendValue
+    this.velSrc.offset.value = this.velocity
     this.kind = s.grainSize > 0 ? 'cloud' : s.timeMode === 'stretch' ? 'stretch' : 'sample'
     this.clip = clipBounds(s, buffer.duration)
     this.kRate = knobRate(s)
@@ -166,6 +206,8 @@ export class Voice {
     this.apply(true)
 
     this.t0 = c.currentTime + 0.005
+    for (const k of [this.atSrc, this.bendSrc, this.velSrc]) k.start(this.t0)
+    this.wireRoutes()
     const note = opts.note ?? 0
     this.glide = { from: opts.glideFrom ?? note, to: note, start: this.t0, dur: opts.glideTime ?? 0 }
     this.endTime = this.t0 + playSeconds(s, this.clip.clipLen, this.kind === 'cloud', note)
@@ -219,6 +261,7 @@ export class Voice {
       p.exponentialRampToValueAtTime(to, this.t0 + this.glide.dur)
     } else p.value = to
     src.connect(this.env)
+    this.pitchBus.connect(src.detune)
     src.start(this.t0, clipIn)
     src.onended = () => this.finish()
     this.src = src
@@ -253,12 +296,12 @@ export class Voice {
   private tick() {
     const s = this.settings
     const cloud = this.kind === 'cloud'
-    const size = cloud ? Math.max(0.005, s.grainSize / 1000) : STRETCH_GRAIN
-    const interval = size / this.overlap
     const horizon = Math.min(this.ctx.currentTime + LOOKAHEAD, this.endTime)
+    let size = STRETCH_GRAIN
     while (this.nextGrain < horizon) {
+      if (cloud) size = Math.max(0.005, (s.grainSize + this.jsMod('grainSize', this.nextGrain)) / 1000)
       this.spawnGrain(this.nextGrain, size)
-      this.nextGrain += interval
+      this.nextGrain += size / this.overlap
     }
     if (this.nextGrain >= this.endTime && this.timer !== undefined) {
       clearInterval(this.timer)
@@ -278,7 +321,8 @@ export class Voice {
 
     let start: number
     if (cloud) {
-      const center = clipIn + s.grainPos * clipLen + (Math.random() - 0.5) * s.grainWidth * clipLen
+      const pos = Math.min(1, Math.max(0, s.grainPos + this.jsMod('grainPos', when)))
+      const center = clipIn + pos * clipLen + (Math.random() - 0.5) * s.grainWidth * clipLen
       start = center - bufLen / 2
     } else {
       start = clipIn + (((when - this.t0) * s.speed) % clipLen)
@@ -302,8 +346,10 @@ export class Voice {
       tail = tail.connect(pan)
     }
     tail.connect(this.env)
+    this.pitchBus.connect(src.detune)
     src.start(when, Math.max(0, bufOffset), bufLen)
     src.onended = () => {
+      this.pitchBus.disconnect(src.detune)
       src.disconnect()
       g.disconnect()
       this.grains.delete(src)
@@ -320,7 +366,7 @@ export class Voice {
     const s = this.settings
     const now = this.ctx.currentTime
     const set = (p: AudioParam, v: number) => (immediate ? (p.value = v) : p.setTargetAtTime(v, now, RAMP))
-    set(this.out.gain, s.volume * this.velocity)
+    set(this.out.gain, s.volume * (1 - s.velAmount + s.velAmount * this.velocity))
     set(this.panner.pan, s.pan)
     this.filter.type = s.filterType
     set(this.filter.frequency, s.cutoff)
@@ -334,6 +380,8 @@ export class Voice {
     set(this.reverbWet.gain, s.reverbMix)
     if (immediate || !this.playing) return
 
+    this.updatePadLfos()
+    this.wireRoutes()
     this.clip = clipBounds(s, this.buffer.duration)
     const kr = knobRate(s)
     const tuned = kr !== this.kRate || s.speed !== this.speed
@@ -354,6 +402,167 @@ export class Voice {
     if (key === this.impulseKey || this.disposed) return
     this.impulseKey = key
     this.convolver.buffer = getImpulse(this.ctx, reverbSize, reverbDecay)
+  }
+
+  // ── modulation ───────────────────────────────────────────────────────────
+  private scopes(): [Scope, ModMatrix][] {
+    return [
+      ['global', this.hub.matrix()],
+      ['pad', this.settings.mod],
+    ]
+  }
+
+  private padLfo(i: 0 | 1): OscillatorNode {
+    let osc = this.padLfos[i]
+    if (!osc) {
+      osc = this.ctx.createOscillator()
+      const lfo = i ? this.settings.mod.lfo2 : this.settings.mod.lfo1
+      osc.type = lfo.shape
+      osc.frequency.value = lfo.rate
+      // pad LFOs restart with every note
+      this.padLfoStart[i] = Math.max(this.t0, this.ctx.currentTime)
+      osc.start(this.padLfoStart[i])
+      this.padLfos[i] = osc
+    }
+    return osc
+  }
+
+  private updatePadLfos() {
+    const now = this.ctx.currentTime
+    this.padLfos.forEach((osc, i) => {
+      if (!osc) return
+      const lfo = i ? this.settings.mod.lfo2 : this.settings.mod.lfo1
+      osc.type = lfo.shape
+      osc.frequency.setTargetAtTime(lfo.rate, now, RAMP)
+    })
+  }
+
+  private sourceNode(scope: Scope, src: ModSource): AudioNode {
+    switch (src) {
+      case 'lfo1':
+      case 'lfo2':
+        return scope === 'global' ? this.hub.globalLfos[LFO_INDEX[src]] : this.padLfo(LFO_INDEX[src])
+      case 'mod':
+        return this.hub.modWheel
+      case 'aftertouch':
+        return this.atSrc
+      case 'velocity':
+        return this.velSrc
+      case 'bend':
+        return this.bendSrc
+    }
+  }
+
+  private destTarget(dest: ModDest): AudioNode | AudioParam | null {
+    switch (dest) {
+      case 'pitch':
+        return this.pitchBus
+      case 'cutoff':
+        return this.filter.detune
+      case 'resonance':
+        return this.filter.Q
+      case 'volume':
+        return this.trem.gain
+      case 'pan':
+        return this.panner.pan
+      case 'delayMix':
+        return this.delayWet.gain
+      case 'reverbMix':
+        return this.reverbWet.gain
+      default:
+        return null // grain destinations are read per grain
+    }
+  }
+
+  /**
+   * Audio-rate routes: source → gain(amount) → AudioParam. Rebuilt when the
+   * set of routes changes; amount changes just retarget the gains.
+   * Pitch bend → pitch is always wired, scaled by the pad's bend range.
+   */
+  private wireRoutes() {
+    const wanted: { from: AudioNode; to: AudioNode | AudioParam; gain: number; key: string }[] = [
+      { from: this.bendSrc, to: this.pitchBus, gain: this.settings.bendRange * 100, key: 'bend' },
+    ]
+    // Volume is a multiplier, so two-sided sources (LFOs, bend) are mapped to 0..1 for it:
+    // gain = 1 + amount·(x+1)/2. Negative amounts give true tremolo and never boost.
+    let tremBase = 1
+    for (const [scope, m] of this.scopes()) {
+      for (const r of m.routes) {
+        const to = this.destTarget(r.dest)
+        if (!to || !r.amount) continue
+        let gain = r.amount * MOD_DESTS[r.dest].scale * (PARAM_UNIT[r.dest] ?? 1)
+        if (r.dest === 'volume' && BIPOLAR.has(r.source)) {
+          gain /= 2
+          tremBase += gain
+        }
+        wanted.push({ from: this.sourceNode(scope, r.source), to, gain, key: `${scope}:${r.source}>${r.dest}` })
+      }
+    }
+    const now = this.ctx.currentTime
+    this.trem.gain.setTargetAtTime(tremBase, now, RAMP)
+    const sig = wanted.map((w) => w.key).join('|')
+    if (sig === this.routeSig) {
+      wanted.forEach((w, i) => this.links[i].gain.gain.setTargetAtTime(w.gain, now, RAMP))
+      return
+    }
+    this.unwire()
+    for (const w of wanted) {
+      const g = this.ctx.createGain()
+      g.gain.value = w.gain
+      w.from.connect(g)
+      g.connect(w.to as AudioParam)
+      this.links.push({ from: w.from, gain: g })
+    }
+    this.routeSig = sig
+  }
+
+  private unwire() {
+    for (const { from, gain } of this.links) {
+      from.disconnect(gain)
+      gain.disconnect()
+    }
+    this.links = []
+    this.routeSig = ''
+  }
+
+  /** Current value of a source, for destinations evaluated in JS (grains). */
+  private sourceValue(scope: Scope, src: ModSource, t: number): number {
+    switch (src) {
+      case 'lfo1':
+      case 'lfo2': {
+        const i = LFO_INDEX[src]
+        const m = scope === 'global' ? this.hub.matrix() : this.settings.mod
+        const lfo = i ? m.lfo2 : m.lfo1
+        const start = scope === 'global' ? this.hub.globalLfoStart : this.padLfoStart[i] || this.t0
+        return lfoValue(lfo.shape, (t - start) * lfo.rate)
+      }
+      case 'mod':
+        return this.hub.state.mod
+      case 'aftertouch':
+        return this.atValue
+      case 'velocity':
+        return this.velocity
+      case 'bend':
+        return this.bendValue
+    }
+  }
+
+  private jsMod(dest: ModDest, t: number): number {
+    let sum = 0
+    for (const [scope, m] of this.scopes()) sum += modSum(m.routes, dest, (src) => this.sourceValue(scope, src, t))
+    return sum
+  }
+
+  /** Aftertouch / pressure, 0..1. */
+  setPressure(v: number) {
+    this.atValue = v
+    this.atSrc.offset.setTargetAtTime(v, this.ctx.currentTime, 0.01)
+  }
+
+  /** Pitch bend, -1..1 (scaled by the pad's bend range). */
+  setBend(v: number) {
+    this.bendValue = v
+    this.bendSrc.offset.setTargetAtTime(v, this.ctx.currentTime, 0.005)
   }
 
   // ── ending ───────────────────────────────────────────────────────────────
@@ -414,6 +623,9 @@ export class Voice {
     clearTimeout(this.impulseTimer)
     clearTimeout(this.disposeTimer)
     if (this.src) this.src.onended = null
+    this.unwire()
+    for (const n of [this.atSrc, this.bendSrc, this.velSrc, ...this.padLfos]) n?.stop()
+    for (const n of [this.pitchBus, this.trem, this.atSrc, this.bendSrc, this.velSrc, ...this.padLfos]) n?.disconnect()
     for (const n of [this.env, this.filter, this.lo, this.mid, this.hi, this.dry, this.delay, this.feedback,
       this.delayWet, this.convolver, this.reverbWet, this.out, this.panner, this.kill]) n.disconnect()
     this.src?.disconnect()

@@ -19,18 +19,35 @@ npm run build    # typecheck + production build
 
 ### Per-pad panel
 
-PLAY (vol, pan, repeat, choke) · TUNE (pitch, fine, speed + TAPE/STRETCH) · CLIP · ADSR · FILTER (LP/HP/BP) ·
+PLAY (vol, pan, repeat, choke) · TUNE (pitch, fine, speed + TAPE/STRETCH) · KEYS (root note, velocity amount,
+bend range) · CLIP · ADSR · FILTER (LP/HP/BP) ·
 FILTER ADSR · EQ · GRAIN (size, pos, width, density, jitter, reverse, spread) · DELAY · REVERB ·
-MODE (STOP / RESTART / STACK / HOLD) · MIDI LEARN · RESET · duplicate · delete.
+MODE (STOP / RESTART / STACK / HOLD) · MIDI LEARN · MATRIX · PRESETS (save / load / copy / paste) · RESET ·
+duplicate · delete.
 
 - **RPT**: `1` = once, `N` = N times, `0` = loop forever.
 - **TAPE**: pitch and speed both change playback rate, like a sampler. **STRETCH**: granular; speed changes length, pitch stays put.
 - STOP re-press, HOLD release and MIDI note-off run the ADSR release and let FX tails ring. PANIC / choke / RESTART cut instantly.
 
+### Modulation matrix
+
+Sources: LFO 1, LFO 2, MOD WHEEL (CC1), AFTERTOUCH (poly + channel pressure), VELOCITY, PITCH BEND.
+Destinations: pitch, cutoff, resonance, volume, pan, grain pos, grain size, delay mix, reverb mix.
+The **GLOBAL** matrix (header MATRIX button) applies to every sound and its LFOs run freely; each pad's matrix
+(panel MATRIX button) applies to that pad and its LFOs restart per note. Pitch bend always bends pitch by the
+pad's BEND range. Negative volume modulation from an LFO is a tremolo that never boosts.
+
+### Undo / presets
+
+**⌘Z / ⇧⌘Z** (or the header buttons) undo pad and sound-shaping edits; a knob drag is one step, and deleted pads
+come back. **PRESETS** in a pad's panel save its settings to a library shared by all pads (skipping name, tag,
+clip, root and MIDI note); COPY / PASTE moves settings between pads directly. Presets are saved with the board and
+included in exports.
+
 ### Header
 
-OUTPUT · NOW PLAYING + VU · PATCH (◀ selected ▶, PLAY, POLY/MONO, octave, GLIDE) · global CHORUS / DELAY / REVERB ·
-VIEW (pad SCALE, scanlines) · TAGS filter · BOARD (add, MIDI, export, import). Wraps into rows on narrow windows.
+OUTPUT + VU · NOW PLAYING · PATCH (◀ selected ▶, PLAY, POLY/MONO, octave, GLIDE) · PERFORM (MOD, spring-loaded BEND, global MATRIX) ·
+global CHORUS / DELAY / REVERB · TAGS filter · BOARD (pad SCALE, scanlines, undo, redo, add, MIDI, export, import). Wraps into rows on narrow windows.
 
 - **Select a patch** with the piano button in a pad's lower-right corner, or ◀ ▶ in the header.
 - **PLAY** turns MIDI and the computer keyboard into a piano for the selected patch (C4 = original pitch).

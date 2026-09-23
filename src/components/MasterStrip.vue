@@ -10,7 +10,7 @@ const board = useBoard()
 const emit = defineEmits<{ add: [] }>()
 const importInput = ref<HTMLInputElement>()
 const fx = computed(() => board.master.fx)
-const K = 30 // header knob size
+const K = 28 // header knob size
 
 /** "AIRHORN ×2 · PAD C4 E4" */
 const nowPlaying = computed(() => {
@@ -70,6 +70,7 @@ function onImport(e: Event) {
           <v-icon size="16" icon="mdi-alert-octagon" />
           PANIC!
         </button>
+        <VuMeter />
       </div>
     </section>
 
@@ -80,7 +81,6 @@ function onImport(e: Event) {
           <span v-if="nowPlaying" :key="nowPlaying" class="scroll">▸ {{ nowPlaying }}</span>
           <span v-else>— READY —</span>
         </div>
-        <VuMeter />
       </div>
     </section>
 
@@ -121,6 +121,23 @@ function onImport(e: Event) {
     </section>
 
     <section class="group">
+      <h5>PERFORM</h5>
+      <div class="controls">
+        <Knob v-model="board.perform.mod" label="MOD" :default="0" :format="fmtPct" :size="K" color="secondary" />
+        <Knob v-model="board.perform.bend" label="BEND" :min="-1" :max="1" :default="0" bipolar spring :format="fmtPct" :size="K" color="secondary" />
+        <button
+          class="hw-btn"
+          :class="{ lit: board.master.mod.routes.length }"
+          title="Global modulation matrix (LFOs, mod wheel, aftertouch, velocity, bend)"
+          @click="board.openMatrix('global')"
+        >
+          <v-icon size="15" icon="mdi-matrix" />
+          MATRIX
+        </button>
+      </div>
+    </section>
+
+    <section class="group">
       <h5>CHORUS</h5>
       <div class="controls">
         <Knob v-model="fx.chorusRate" label="RATE" :min="0.05" :max="8" curve="log" :default="0.6" :format="fmtRate" :size="K" color="accent" />
@@ -147,20 +164,6 @@ function onImport(e: Event) {
       </div>
     </section>
 
-    <section class="group">
-      <h5>VIEW</h5>
-      <div class="controls">
-        <Knob v-model="board.master.scale" label="SCALE" :min="0.5" :max="2" :step="0.05" :default="1" :format="fmtScale" :size="K" color="secondary" />
-        <button
-          class="hw-btn icon"
-          :class="{ lit: board.master.scanlines }"
-          title="CRT scanlines"
-          @click="board.master.scanlines = !board.master.scanlines"
-        >
-          <v-icon size="16" icon="mdi-television-classic" />
-        </button>
-      </div>
-    </section>
 
     <section v-if="board.tags.length" class="group">
       <h5>TAGS</h5>
@@ -183,6 +186,21 @@ function onImport(e: Event) {
     <section class="group">
       <h5>BOARD</h5>
       <div class="controls">
+        <Knob v-model="board.master.scale" label="SCALE" :min="0.5" :max="2" :step="0.05" :default="1" :format="fmtScale" :size="K" color="secondary" />
+        <button
+          class="hw-btn icon"
+          :class="{ lit: board.master.scanlines }"
+          title="CRT scanlines"
+          @click="board.master.scanlines = !board.master.scanlines"
+        >
+          <v-icon size="16" icon="mdi-television-classic" />
+        </button>
+        <button class="hw-btn icon" title="Undo (⌘Z)" :disabled="!board.canUndo" @click="board.undo()">
+          <v-icon size="16" icon="mdi-undo" />
+        </button>
+        <button class="hw-btn icon" title="Redo (⇧⌘Z)" :disabled="!board.canRedo" @click="board.redo()">
+          <v-icon size="16" icon="mdi-redo" />
+        </button>
         <button class="hw-btn icon" title="Add sounds" @click="emit('add')"><v-icon size="16" icon="mdi-plus" /></button>
         <button
           class="hw-btn icon"
@@ -210,8 +228,8 @@ function onImport(e: Event) {
   display: flex;
   flex-wrap: wrap;
   align-items: stretch;
-  gap: 6px 8px;
-  padding: 6px 12px;
+  gap: 6px 6px;
+  padding: 6px 10px;
   background:
     repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.02) 0 1px, transparent 1px 4px),
     linear-gradient(180deg, #4a4850 0%, #2d2c32 50%, #232227 100%);
@@ -248,6 +266,11 @@ function onImport(e: Event) {
   color: transparent;
   filter: drop-shadow(0 1px 0 #000);
 }
+@media (max-width: 2100px) {
+  .model {
+    display: none;
+  }
+}
 .model {
   font-family: 'Orbitron', sans-serif;
   font-size: 7px;
@@ -280,7 +303,11 @@ function onImport(e: Event) {
   gap: 6px;
 }
 .display {
-  flex: 1 1 280px;
+  flex: 1 1 40px;
+  min-width: 0;
+}
+.display .controls {
+  min-width: 0;
 }
 .panic {
   display: inline-flex;
@@ -337,8 +364,8 @@ function onImport(e: Event) {
   pointer-events: none;
 }
 .marquee {
-  flex: 1;
-  min-width: 140px;
+  flex: 1 1 60px;
+  min-width: 0;
 }
 .marquee.idle {
   color: #5a3d00;
@@ -346,7 +373,7 @@ function onImport(e: Event) {
   justify-content: center;
 }
 .lcd {
-  width: 150px;
+  width: 110px;
   color: #27e0ff;
   text-shadow: 0 0 6px rgba(39, 224, 255, 0.8);
   text-overflow: ellipsis;

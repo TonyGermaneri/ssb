@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useBoard } from './stores/board'
 import { keyToMidi } from './lib/piano'
 import DropZone from './components/DropZone.vue'
+import MatrixDialog from './components/MatrixDialog.vue'
 import MasterStrip from './components/MasterStrip.vue'
 import SoundGrid from './components/SoundGrid.vue'
 
@@ -17,7 +18,15 @@ const isTyping = (e: KeyboardEvent) => {
 }
 
 function onKeyDown(e: KeyboardEvent) {
-  if (isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return
+  if (isTyping(e)) return
+  const mod = e.metaKey || e.ctrlKey
+  if (mod && (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')) {
+    e.preventDefault()
+    if (e.key.toLowerCase() === 'y' || e.shiftKey) board.redo()
+    else board.undo()
+    return
+  }
+  if (mod || e.altKey || board.matrixScope) return
   if (e.code === 'Space') {
     e.preventDefault()
     board.panic()
@@ -95,6 +104,7 @@ onBeforeUnmount(() => {
       </footer>
     </div>
     <DropZone />
+    <MatrixDialog />
     <input ref="fileInput" type="file" accept="audio/*,.mp3" multiple hidden @change="onPick" />
     <v-snackbar
       :model-value="!!board.toast"

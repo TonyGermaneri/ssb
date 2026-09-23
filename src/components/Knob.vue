@@ -14,8 +14,13 @@ const props = withDefaults(
     size?: number
     color?: string
     format?: (v: number) => string
+    /** snap back to default on release (pitch bend) */
+    spring?: boolean
   }>(),
-  { min: 0, max: 1, step: 0, curve: 'lin', default: undefined, bipolar: false, size: 34, color: 'primary', format: undefined },
+  {
+    min: 0, max: 1, step: 0, curve: 'lin', default: undefined, bipolar: false, size: 34, color: 'primary',
+    format: undefined, spring: false,
+  },
 )
 const model = defineModel<number>({ required: true })
 
@@ -47,6 +52,7 @@ function onMove(e: PointerEvent) {
 }
 function onUp() {
   dragging.value = false
+  if (props.spring) reset()
 }
 function onWheel(e: WheelEvent) {
   setPct(pct.value + (e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 0.005 : 0.025))

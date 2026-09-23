@@ -182,3 +182,16 @@ knob) and LP/HP/BP; TUNE module with FINE, SPEED and TAPE/STRETCH; selected patc
 
 Voice kinds: `sample` (one looping source, tape rate), `stretch` (grains walking the clip at SPEED, played at
 PITCH), `cloud` (grains around GRAIN POS). Grain gain is normalised by overlap (2 / density).
+
+## 15. Round 3 — modulation, undo, presets
+
+- Mod matrix: 6 sources × 9 destinations, global scope (free-running LFOs on the engine) and pad scope (per-voice
+  LFOs, retriggered). Audio-rate routes are `source → GainNode(amount) → AudioParam`: pitch via a per-voice
+  pitch bus fanned into every source's `detune`, cutoff via `filter.detune` (sums with the filter envelope),
+  volume via a tremolo gain. Grain pos/size are evaluated in JS when each grain is scheduled (`lfoValue` mirrors
+  OscillatorNode's waveforms). Changing an amount retargets gains; changing the route set rewires.
+- Per-voice ConstantSources for aftertouch, bend and velocity (MPE-ready); one engine ConstantSource for the mod wheel.
+- MIDI parsed to events (note, poly/channel pressure, bend, CC). Root note, velocity amount and bend range per pad.
+- Undo: JSON snapshots (pads + fx + global matrix + glide/mono), coalesced 400 ms, restored in place so playing
+  voices follow. Deleted pads keep their audio until the next load's orphan sweep, so undo can restore them.
+- Presets: library stored with the board; COPY / PASTE clipboard.
