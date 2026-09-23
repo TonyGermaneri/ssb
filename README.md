@@ -4,10 +4,14 @@ An 80s-console sampler, synth and sound board: drop audio files (or SFZ instrume
 becomes a pad; layer them into patches with VCO slots, a mod matrix, grains and global effects. (It started life as
 the *Simple* Sound Board — it outgrew the name, kept the acronym.)
 
+**Play it:** <https://tonygermaneri.github.io/ssb/> (GitHub Pages, deployed from `main`).
+**Desktop app / AU / VST3:** tagged releases on GitHub; built from [`native/`](native/README.md), which serves
+this same page as the app's window and feeds it your MIDI.
+
 ```sh
 npm install
 npm run dev      # http://localhost:5173
-npm test         # vitest (knob math, timing, peaks)
+npm test         # vitest (knob math, SFZ, zones, modulation, tags, themes)
 npm run build    # typecheck + production build
 ```
 

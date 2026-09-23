@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into every bundle's Info.plist.
+
+  The online library fetches samples from GitHub; nothing else here needs a permission string.
+  The microphone line is there because WebKit may ask on the page's behalf when an audio device
+  opens, and a generic prompt with no reason is worse than one that says what SSB is.
+-->
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>SSB does not record. macOS may ask when the audio device opens.</string>
+</dict>
+</plist>

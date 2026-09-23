@@ -3,7 +3,8 @@ import { computed, reactive, ref, shallowReactive, toRaw, watch } from 'vue'
 import { del, get, keys, set } from 'idb-keyval'
 import * as engine from '../audio/engine'
 import { computePeaks } from '../audio/peaks'
-import { connectMidi, type MidiEvent } from '../audio/midi'
+import { connectMidi, parseMidi, type MidiEvent } from '../audio/midi'
+import { inNative, nativeInfo, onNativeMidi, saveFile } from '../native/bridge'
 import { History } from '../lib/history'
 import { ClockTracker } from '../lib/midiClock'
 import { THEMES, themeById } from '../theme/themes'
@@ -1117,11 +1118,7 @@ export const useBoard = defineStore('board', () => {
       if (blob) zip.file(`audio/${audioId}`, blob)
     }
     const out = await zip.generateAsync({ type: 'blob' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(out)
-    a.download = `ssb-board-${new Date().toISOString().slice(0, 10)}.zip`
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+    await saveFile(`ssb-board-${new Date().toISOString().slice(0, 10)}.zip`, out)
   }
 
   /** Merge an exported board into this one (new ids, so importing twice duplicates). */
@@ -1190,7 +1187,30 @@ export const useBoard = defineStore('board', () => {
   }
 
   // ── MIDI ───────────────────────────────────────────────────────────────
+  /** In the native app / plugin MIDI comes from the host (or the standalone's MIDI inputs), not Web MIDI. */
+  let nativeMidi = false
+  async function enableNativeMidi() {
+    if (!nativeMidi) {
+      nativeMidi = true
+      onNativeMidi((messages) => {
+        const now = performance.now()
+        for (const m of messages) {
+          const e = parseMidi(m)
+          if (e) onMidi(e, now)
+        }
+      })
+    }
+    midi.enabled = true
+    try {
+      const info = await nativeInfo()
+      toast.value = info.standalone ? 'MIDI on · inputs are chosen in Options' : `MIDI on · from the host (${info.wrapper})`
+    } catch {
+      toast.value = 'MIDI on'
+    }
+  }
+
   async function enableMidi() {
+    if (inNative()) return enableNativeMidi()
     try {
       midi.inputs = await connectMidi(onMidi)
       midi.enabled = true

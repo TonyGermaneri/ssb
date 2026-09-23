@@ -1,0 +1,434 @@
+name: Plugins
+
+# The web app and the plugin share one repository and one page, and nothing else. Each has its own
+# workflow with its own paths filter, so a doc change does not spend twenty minutes building three
+# bundles -- and a change to src/ builds both, because the page is what the plugin serves.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'native/**'
+      - 'src/**'
+      - 'index.html'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'vite.config.ts'
+      - '.github/workflows/native.yml'
+  pull_request:
+    paths:
+      - 'native/**'
+      - 'src/**'
+      - '.github/workflows/native.yml'
+  workflow_dispatch:
+    inputs:
+      notarize:
+        description: 'Sign and notarise (slow; normally only done for tags)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: write   # the release job needs this; every other job only reads
+
+jobs:
+  # --------------------------------------------------------------------------------------------
+  # The cheap gate: the page's own tests and build, about a minute, before any compiler runs.
+  # --------------------------------------------------------------------------------------------
+  page:
+    name: Page
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Tests
+        run: npm test
+
+      # A release labelled v0.2.0 whose plugin reports 0.1.0 to the host is caught by nothing
+      # else here: auval and pluginval are perfectly happy with a version that disagrees with its
+      # tag.
+      - name: The tag agrees with the version
+        if: github.ref_type == 'tag'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./package.json').version")
+          cml=$(grep -oE 'project\(SsbNative VERSION [0-9.]+' native/CMakeLists.txt | grep -oE '[0-9.]+$')
+          echo "tag $tag · package.json $pkg · CMakeLists $cml"
+          fail=false
+          [ "$tag" = "$pkg" ] || { echo "::error::tag $tag but package.json says $pkg"; fail=true; }
+          [ "$tag" = "$cml" ] || { echo "::error::tag $tag but native/CMakeLists.txt says $cml"; fail=true; }
+          [ "$fail" = false ]
+
+      - name: Build the page
+        run: npm run build
+
+      # Built once here and handed to the platform jobs, which copy it into their bundles.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: page
+          path: dist/
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------------------------
+  macos:
+    name: macOS (universal)
+    needs: page
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: page
+          path: dist
+
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: native/build/_deps
+          key: juce-macos-${{ hashFiles('native/CMakeLists.txt') }}
+          restore-keys: juce-macos-
+
+      - name: Configure
+        run: |
+          cmake -B native/build -S native -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build
+        run: cmake --build native/build
+
+      - name: Universal
+        run: |
+          A=native/build/plugin/SsbInstrument_artefacts/RelWithDebInfo
+          for binary in "$A/AU/SSB.component/Contents/MacOS/SSB" \
+                        "$A/VST3/SSB.vst3/Contents/MacOS/SSB" \
+                        "$A/Standalone/SSB.app/Contents/MacOS/SSB"; do
+            archs=$(lipo -archs "$binary")
+            case "$archs" in
+              *arm64*x86_64*|*x86_64*arm64*) echo "  ok  $binary  $archs" ;;
+              # A host launched under Rosetta never lists an arm64-only plugin, silently.
+              *) echo "::error::$binary is not universal ($archs)"; exit 1 ;;
+            esac
+          done
+
+      - name: Tests
+        run: ctest --test-dir native/build --output-on-failure
+
+      # Which credentials this run has. A pull request from a fork has none and must still build
+      # and validate, so signing is a capability the run has or not -- never a step that fails for
+      # lacking a secret.
+      - name: What credentials are available
+        id: creds
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+        run: |
+          sign=false; notary=false
+          [ -n "$CERT" ] && sign=true
+          { [ -n "$NOTARY_KEY_P8" ] || [ -n "$NOTARY_APPLE_ID" ]; } && notary=true
+          echo "sign=$sign" >> "$GITHUB_OUTPUT"
+          echo "notary=$notary" >> "$GITHUB_OUTPUT"
+          echo "signing: $sign · notarisation: $notary"
+
+      # A throwaway keychain, deleted when the job ends, holding nothing but this certificate.
+      - name: Import the signing certificate
+        if: steps.creds.outputs.sign == 'true'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/ssb-signing.keychain-db"
+          password="$(openssl rand -base64 24)"
+          echo "::add-mask::$password"
+
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+
+          cert="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$cert"
+          security import "$cert" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" \
+                   -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productbuild
+          rm -f "$cert"
+
+          # Without this codesign blocks on a keychain-access prompt nothing on a runner can answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+
+          # `-s` replaces the search list, so the old one is saved and restored by the cleanup step.
+          security list-keychain -d user | sed -E 's/^[[:space:]]*"?//; s/"?$//' \
+            > "$RUNNER_TEMP/keychain-search-list"
+          search_list=""
+          while IFS= read -r entry; do
+            [ -n "$entry" ] && search_list="$search_list \"$entry\""
+          done < "$RUNNER_TEMP/keychain-search-list"
+          eval "security list-keychain -d user -s \"$keychain\" $search_list"
+
+          echo "KEYCHAIN_PATH=$keychain" >> "$GITHUB_ENV"
+          security find-identity -v -p codesigning "$keychain" | grep "Developer ID Application"
+
+      # Before validation, so auval and pluginval exercise the bundles that ship. This is the
+      # signing that counts: the build copies the page in after CMake signs, which breaks that seal.
+      - name: Sign
+        if: steps.creds.outputs.sign == 'true'
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: ./native/tools/macos-sign.sh native/build/plugin
+
+      - name: auval
+        run: |
+          A=native/build/plugin/SsbInstrument_artefacts/RelWithDebInfo
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "$A/AU/SSB.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 2
+          plist=~/Library/Audio/Plug-Ins/Components/SSB.component/Contents/Info.plist
+          type=$(/usr/libexec/PlistBuddy -c "Print :AudioComponents:0:type" "$plist")
+          subtype=$(/usr/libexec/PlistBuddy -c "Print :AudioComponents:0:subtype" "$plist")
+          manufacturer=$(/usr/libexec/PlistBuddy -c "Print :AudioComponents:0:manufacturer" "$plist")
+          echo "auval -v $type $subtype $manufacturer"
+          auval -v "$type" "$subtype" "$manufacturer"
+
+      # pluginval names the failing test far above its final FAILURE line, so the failure is
+      # repeated at the end where the tail of the log always shows it.
+      - name: pluginval
+        run: |
+          curl -fsSL -o pluginval.zip \
+            https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_macOS.zip
+          unzip -q pluginval.zip
+          A=native/build/plugin/SsbInstrument_artefacts/RelWithDebInfo
+          set +e
+          ./pluginval.app/Contents/MacOS/pluginval \
+            --strictness-level 10 --validate-in-process --timeout-ms 300000 \
+            --validate "$A/VST3/SSB.vst3" 2>&1 | tee pluginval.log
+          status=${PIPESTATUS[0]}
+          set -e
+          [ "$status" -eq 0 ] && exit 0
+          echo "================ what pluginval objected to ================"
+          grep -nE '!!!|FAILED|failed|Error|error' pluginval.log | head -40 || true
+          echo "last section entered:"
+          grep -E 'Starting tests in' pluginval.log | tail -1
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: pluginval-macos-log
+          path: pluginval.log
+          if-no-files-found: ignore
+
+      - name: Notarise
+        id: notarize
+        if: >-
+          steps.creds.outputs.sign == 'true' && steps.creds.outputs.notary == 'true' &&
+          (startsWith(github.ref, 'refs/tags/v') || inputs.notarize)
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+        run: |
+          ./native/tools/macos-notarize.sh native/build/plugin release-zips
+          echo "done=true" >> "$GITHUB_OUTPUT"
+
+      - name: Collect
+        run: |
+          A=native/build/plugin/SsbInstrument_artefacts/RelWithDebInfo
+          mkdir -p out
+          # ditto, not cp -R: it keeps the extended attributes a stapled bundle depends on.
+          ditto "$A/AU/SSB.component"   out/SSB.component
+          ditto "$A/VST3/SSB.vst3"      out/SSB.vst3
+          ditto "$A/Standalone/SSB.app" out/SSB.app
+          {
+            echo "### macOS"
+            echo ""
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| signed | ${{ steps.creds.outputs.sign }} |"
+            echo "| notarised | ${{ steps.notarize.outputs.done || 'false' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ssb-macos-universal
+          path: out/
+          if-no-files-found: error
+
+      # Only present when notarisation ran; that is what the release job publishes.
+      - uses: actions/upload-artifact@v4
+        if: steps.notarize.outputs.done == 'true'
+        with:
+          name: ssb-macos-release
+          path: release-zips/
+          if-no-files-found: error
+
+      - name: Remove the keychain
+        if: always() && steps.creds.outputs.sign == 'true'
+        run: |
+          if [ -f "$RUNNER_TEMP/keychain-search-list" ]; then
+            search_list=""
+            while IFS= read -r entry; do
+              [ -n "$entry" ] && search_list="$search_list \"$entry\""
+            done < "$RUNNER_TEMP/keychain-search-list"
+            [ -n "$search_list" ] && eval "security list-keychain -d user -s $search_list" || true
+          fi
+          security delete-keychain "$RUNNER_TEMP/ssb-signing.keychain-db" 2>/dev/null || true
+
+  # --------------------------------------------------------------------------------------------
+  # Windows: the VST3 and the Standalone (no AU there). Not a blocker yet -- nothing here has been
+  # through MSVC before -- so a red Windows job must not stop a macOS release. Take
+  # continue-on-error off the moment it goes green.
+  # --------------------------------------------------------------------------------------------
+  windows:
+    name: Windows (x64)
+    needs: page
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: page
+          path: dist
+
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: native/build/_deps
+          key: deps-windows-${{ hashFiles('native/CMakeLists.txt') }}
+          restore-keys: deps-windows-
+
+      # JUCE serves a page on Windows only through WebView2, and its FindWebView2 downloads
+      # nothing: it globs a local NuGet package directory.
+      - name: WebView2 SDK
+        shell: pwsh
+        run: |
+          nuget install Microsoft.Web.WebView2 `
+            -OutputDirectory "$env:RUNNER_TEMP\nuget" -ExcludeVersion
+          "WEBVIEW2_DIR=$env:RUNNER_TEMP\nuget" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -B native/build -S native -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DJUCE_WEBVIEW2_PACKAGE_LOCATION="$WEBVIEW2_DIR"
+
+      - name: Build
+        shell: bash
+        run: cmake --build native/build --config RelWithDebInfo
+
+      - name: Tests
+        shell: bash
+        run: ctest --test-dir native/build -C RelWithDebInfo --output-on-failure
+
+      - name: pluginval
+        shell: bash
+        run: |
+          curl -fsSL -o pluginval.zip \
+            https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_Windows.zip
+          unzip -q pluginval.zip
+          A=native/build/plugin/SsbInstrument_artefacts/RelWithDebInfo
+          ./pluginval.exe --strictness-level 10 --validate-in-process --timeout-ms 300000 \
+            --validate "$A/VST3/SSB.vst3"
+
+      - name: Collect
+        shell: bash
+        run: |
+          A=native/build/plugin/SsbInstrument_artefacts/RelWithDebInfo
+          mkdir -p out
+          cp -R "$A/VST3/SSB.vst3" out/
+          cp -R "$A/Standalone" out/Standalone
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ssb-windows-x64
+          path: out/
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------------------------
+  # Tags only. Everything that reached here passed the page tests, auval and pluginval.
+  # --------------------------------------------------------------------------------------------
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package
+        id: package
+        run: |
+          mkdir -p release
+          # The notarised zips if notarisation ran; otherwise the plain bundles, zipped here, which
+          # install fine and warn on first open.
+          if [ -d artifacts/ssb-macos-release ]; then
+            cp artifacts/ssb-macos-release/*.zip release/
+            echo "notarized=true" >> "$GITHUB_OUTPUT"
+          else
+            (cd artifacts/ssb-macos-universal && ditto -c -k --keepParent --sequesterRsrc . \
+              "$GITHUB_WORKSPACE/release/ssb-macos-${GITHUB_REF_NAME}-unsigned.zip")
+            echo "notarized=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Only if the Windows job produced one (it is continue-on-error for now).
+          if [ -d artifacts/ssb-windows-x64 ]; then
+            (cd artifacts/ssb-windows-x64 && zip -qr \
+              "$GITHUB_WORKSPACE/release/ssb-windows-x64-${GITHUB_REF_NAME}.zip" .)
+            echo "windows=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::no Windows artefact — releasing macOS only"
+            echo "windows=false" >> "$GITHUB_OUTPUT"
+          fi
+          ls -1 release
+
+      # Whether the bundles are signed is a property of what the macOS job could do, not of the
+      # prose -- so the notes say what actually happened.
+      - name: Release notes
+        run: |
+          notes=native/packaging/release-notes.md
+          {
+            echo "## Super Sound Board ${GITHUB_REF_NAME}"
+            echo ""
+            [ -f "$notes" ] && cat "$notes"
+            echo ""
+            if [ "${{ steps.package.outputs.notarized }}" = "true" ]; then
+              echo "The macOS builds are signed and notarised, so they open without a warning."
+            else
+              echo "These macOS builds are **not notarised**: right-click ▸ Open the first time,"
+              echo "or \`xattr -dr com.apple.quarantine\` the bundle."
+            fi
+            if [ "${{ steps.package.outputs.windows }}" = "true" ]; then
+              echo ""
+              echo "The Windows build is not signed, so SmartScreen will warn on first run."
+            fi
+          } > release-notes.txt
+          cat release-notes.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          body_path: release-notes.txt
+          draft: false
+          # A hyphen in the version is a semver prerelease (v0.2.0-rc1); don't make it "Latest".
+          prerelease: ${{ contains(github.ref_name, '-') }}

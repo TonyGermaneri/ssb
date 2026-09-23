@@ -5,6 +5,8 @@ import { applyThemeVars } from './theme/themes'
 import { useBoard } from './stores/board'
 import { keyToMidi } from './lib/piano'
 import { fromInput } from './lib/dropFiles'
+import { forwardConsole, inNative, routeExternalLinks } from './native/bridge'
+import { activeVoices, getCtx } from './audio/engine'
 import DropZone from './components/DropZone.vue'
 import MatrixDialog from './components/MatrixDialog.vue'
 import MasterStrip from './components/MasterStrip.vue'
@@ -109,6 +111,14 @@ function onPick(e: Event) {
 
 onMounted(() => {
   board.load()
+  // in the native app / plugin: MIDI comes from the host, links open in the system browser
+  if (inNative()) {
+    forwardConsole()
+    // for SSB_PROBE scripts: the page's inspector isn't available in a release build
+    ;(window as unknown as { __ssb: unknown }).__ssb = { board, audio: () => getCtx().state, voices: () => activeVoices.value.length }
+    void board.enableMidi()
+    routeExternalLinks()
+  }
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('keyup', onKeyUp)
 })
