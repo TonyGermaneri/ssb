@@ -114,6 +114,14 @@ function onImport(e: Event) {
           >
             {{ board.master.mono ? 'MONO' : 'POLY' }}
           </button>
+          <button
+            class="chip"
+            :class="{ on: board.master.mpe }"
+            title="MPE (lower zone): channel 1 is global; notes on channels 2-16 get their own bend, pressure and timbre"
+            @click="board.master.mpe = !board.master.mpe"
+          >
+            MPE
+          </button>
           <span class="chip dim" title="Computer-keyboard octave (- / = keys)">{{ octaveLabel }}</span>
         </div>
         <Knob v-model="board.master.glide" label="GLIDE" :min="0" :max="2" :step="0.005" :default="0" :format="fmtSec" :size="K" />
@@ -398,7 +406,10 @@ function onImport(e: Event) {
 .stack {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
+}
+.stack .chip {
+  line-height: 12px;
 }
 .chip {
   padding: 0 5px;

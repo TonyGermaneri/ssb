@@ -46,7 +46,7 @@ export const useBoard = defineStore('board', () => {
   /** MIDI notes currently held in keyboard-play mode (for the display). */
   const heldNotes = ref<number[]>([])
   /** live performance controllers (not saved) */
-  const perform = reactive({ mod: 0, bend: 0, pressure: 0 })
+  const perform = reactive({ mod: 0, bend: 0, pressure: 0, timbre: 0 })
   const presets = ref<Preset[]>([])
   /** settings copied with COPY, for PASTE onto another pad */
   const clipboard = ref<Partial<SoundSettings> | null>(null)
@@ -181,6 +181,8 @@ export const useBoard = defineStore('board', () => {
   watch(() => perform.mod, (v) => engine.setModWheel(v))
   watch(() => perform.bend, (v) => engine.setBend(v))
   watch(() => perform.pressure, (v) => engine.setChannelPressure(v))
+  watch(() => perform.timbre, (v) => engine.setTimbre(v))
+  watch(() => master.mpeBendRange, (v) => engine.setMpeBendRange(v), { immediate: true })
 
   // ── undo / redo ────────────────────────────────────────────────────────
   /** What undo covers: pads and the sound-shaping header state (not volume, view or selection). */
@@ -260,11 +262,20 @@ export const useBoard = defineStore('board', () => {
   }
 
   // ── keyboard play (MIDI / computer keys → selected patch) ─────────────
-  const polyVoices = new Map<number, Voice>()
+  const polyVoices = new Map<string, Voice>()
   let monoVoice: Voice | null = null
   let lastSemis: number | null = null
+  /** MPE member-channel controller values, kept so a note starts where its channel already is */
+  const mpeChannels = new Map<number, { bend: number; pressure: number; timbre: number }>()
+  const isMember = (ch?: number): ch is number => master.mpe && ch !== undefined && ch !== 0
+  const mpeState = (ch: number) => {
+    let st = mpeChannels.get(ch)
+    if (!st) mpeChannels.set(ch, (st = { bend: 0, pressure: 0, timbre: perform.timbre }))
+    return st
+  }
+  const voiceKey = (note: number, ch?: number) => (isMember(ch) ? `${ch}:${note}` : `${note}`)
 
-  function noteOn(note: number, velocity = 1) {
+  function noteOn(note: number, velocity = 1, channel?: number) {
     const sound = selected.value
     if (!sound) return
     engine.resume()
@@ -277,9 +288,11 @@ export const useBoard = defineStore('board', () => {
       midiNote: note,
       glideTime: glide,
       glideFrom: glide > 0 && lastSemis !== null ? lastSemis : semis,
+      ...(isMember(channel) ? { channel, noteBend: mpeState(channel).bend, pressure: mpeState(channel).pressure, timbre: mpeState(channel).timbre } : {}),
     }
     lastSemis = semis
-    if (master.mono) {
+    // MPE is inherently polyphonic: every note has its own channel
+    if (master.mono && !isMember(channel)) {
       if (monoVoice?.held && monoVoice.soundId === sound.id) {
         monoVoice.glideTo(semis, glide, note)
         engine.publish()
@@ -288,15 +301,16 @@ export const useBoard = defineStore('board', () => {
       monoVoice?.release()
       monoVoice = engine.startVoice(sound, opts)
     } else {
-      polyVoices.get(note)?.release()
+      const key = voiceKey(note, channel)
+      polyVoices.get(key)?.release()
       const v = engine.startVoice(sound, opts)
-      if (v) polyVoices.set(note, v)
+      if (v) polyVoices.set(key, v)
     }
   }
 
-  function noteOff(note: number) {
+  function noteOff(note: number, channel?: number) {
     heldNotes.value = heldNotes.value.filter((n) => n !== note)
-    if (master.mono) {
+    if (master.mono && !isMember(channel)) {
       if (!monoVoice) return
       const top = heldNotes.value.at(-1)
       if (top === undefined) {
@@ -309,14 +323,16 @@ export const useBoard = defineStore('board', () => {
         engine.publish()
       }
     } else {
-      polyVoices.get(note)?.release()
-      polyVoices.delete(note)
+      const key = voiceKey(note, channel)
+      polyVoices.get(key)?.release()
+      polyVoices.delete(key)
     }
   }
 
   function allNotesOff() {
     heldNotes.value = []
     polyVoices.clear()
+    mpeChannels.clear()
     monoVoice = null
   }
 
@@ -500,23 +516,39 @@ export const useBoard = defineStore('board', () => {
           midi.learning = null
           return
         }
-        if (master.play) return noteOn(e.note, e.velocity)
+        if (master.play) return noteOn(e.note, e.velocity, e.channel)
         for (const s of sounds.value) if (s.settings.midiNote === e.note) press(s.id)
         return
       case 'noteOff':
-        if (master.play) return noteOff(e.note)
+        if (master.play) return noteOff(e.note, e.channel)
         for (const s of sounds.value) if (s.settings.midiNote === e.note) release(s.id)
         return
       case 'polyPressure':
         return engine.setPolyPressure(e.note, e.value)
+      // MPE: on a member channel these are per-note; on the master channel (or without MPE) they're global
       case 'channelPressure':
+        if (isMember(e.channel)) {
+          mpeState(e.channel).pressure = e.value
+          return engine.setNotePressure(e.channel, e.value)
+        }
         perform.pressure = e.value
         return
       case 'pitchBend':
+        if (isMember(e.channel)) {
+          mpeState(e.channel).bend = e.value
+          return engine.setNoteBend(e.channel, e.value)
+        }
         perform.bend = e.value
         return
       case 'cc':
         if (e.cc === 1) perform.mod = e.value
+        else if (e.cc === 74) {
+          if (isMember(e.channel)) {
+            mpeState(e.channel).timbre = e.value
+            return engine.setNoteTimbre(e.channel, e.value)
+          }
+          perform.timbre = e.value
+        }
         return
     }
   }

@@ -118,6 +118,18 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
             <Knob v-model="board.perform.mod" label="MOD" :default="0" :format="fmtPct" color="secondary" />
             <Knob v-model="board.perform.bend" label="BEND" :min="-1" :max="1" :default="0" bipolar spring :format="fmtPct" color="secondary" />
             <Knob v-model="board.perform.pressure" label="PRESS" :default="0" spring :format="fmtPct" color="secondary" />
+            <Knob v-model="board.perform.timbre" label="TIMBRE" :default="0" :format="fmtPct" color="secondary" />
+          </div>
+        </section>
+        <section class="module perform">
+          <h4>
+            MPE
+            <button class="chip" :class="{ on: board.master.mpe }" @click="board.master.mpe = !board.master.mpe">
+              {{ board.master.mpe ? 'ON' : 'OFF' }}
+            </button>
+          </h4>
+          <div class="row">
+            <Knob v-model="board.master.mpeBendRange" label="NOTE BEND" :min="1" :max="96" :step="1" :default="48" :format="(v: number) => `±${v}st`" color="secondary" />
           </div>
         </section>
       </div>
@@ -156,7 +168,7 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
 
       <footer>
         <span class="count">{{ routeCount }} ROUTE{{ routeCount === 1 ? '' : 'S' }}</span>
-        <span class="hint">Double-click a cell to clear it · Pitch bend always bends pitch by the pad's BEND range</span>
+        <span class="hint">Double-click a cell to clear it · Bend always bends pitch (pad BEND range; MPE notes use NOTE BEND)</span>
         <v-spacer />
         <button class="hw-btn" :disabled="!routeCount" @click="clearAll">CLEAR ALL</button>
       </footer>
@@ -276,6 +288,20 @@ h3 {
   background: #111;
   border: 1px solid #000;
 }
+.chip {
+  padding: 0 6px;
+  border-radius: 2px;
+  font-family: 'VT323', monospace;
+  font-size: 13px;
+  line-height: 14px;
+  color: #8a8579;
+  background: #111;
+  border: 1px solid #000;
+}
+.chip.on {
+  color: #27e0ff;
+  text-shadow: 0 0 4px rgba(39, 224, 255, 0.7);
+}
 .shape.on {
   color: #ff3d7f;
   box-shadow: inset 0 0 8px rgba(255, 61, 127, 0.35);
@@ -324,7 +350,13 @@ h3 {
 footer {
   margin-top: 8px;
 }
+footer .hint {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
 .count {
+  white-space: nowrap;
   font-family: 'VT323', monospace;
   font-size: 17px;
   color: #ffb000;

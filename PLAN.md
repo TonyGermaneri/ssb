@@ -195,3 +195,10 @@ PITCH), `cloud` (grains around GRAIN POS). Grain gain is normalised by overlap (
 - Undo: JSON snapshots (pads + fx + global matrix + glide/mono), coalesced 400 ms, restored in place so playing
   voices follow. Deleted pads keep their audio until the next load's orphan sweep, so undo can restore them.
 - Presets: library stored with the board; COPY / PASTE clipboard.
+
+## 16. MPE
+
+Lower zone. Voices carry their MIDI channel; per-voice ConstantSources for note bend (→ pitch bus, scaled by the
+MPE bend range) and timbre (CC74, new matrix source) join the existing pressure source. The store keeps the latest
+bend / pressure / timbre per member channel so a note starts where its channel already is, keys poly voices by
+`channel:note`, and routes master-channel controllers to the global performance values.

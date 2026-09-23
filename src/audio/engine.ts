@@ -17,6 +17,7 @@ let master: GainNode
 let analysers: [AnalyserNode, AnalyserNode]
 let hub: ModHub
 let globalMatrix: ModMatrix = defaultMatrix()
+let mpeBendRange = 48
 const voices = new Set<Voice>() // includes voices whose tails are still ringing
 
 /** Decoded audio by audioId. Not reactive — AudioBuffers are big. */
@@ -53,8 +54,9 @@ export function getCtx(): AudioContext {
     globalLfos,
     globalLfoStart: now,
     modWheel,
-    state: { mod: 0, bend: 0, pressure: 0 },
+    state: { mod: 0, bend: 0, pressure: 0, timbre: 0 },
     matrix: () => globalMatrix,
+    mpeBendRange: () => mpeBendRange,
   }
   applyGlobalLfos()
   startMeterLoop()
@@ -97,6 +99,25 @@ export function setChannelPressure(v: number) {
   hub.state.pressure = v
   for (const voice of voices) voice.setPressure(v)
 }
+
+/** Timbre (CC74): every voice. */
+export function setTimbre(v: number) {
+  getCtx()
+  hub.state.timbre = v
+  for (const voice of voices) voice.setTimbre(v)
+}
+
+// ── MPE: per-note controllers arrive on the note's own channel ─────────────
+export function setMpeBendRange(semis: number) {
+  mpeBendRange = semis
+  for (const v of voices) v.apply()
+}
+const onChannel = (ch: number, fn: (v: Voice) => void) => {
+  for (const v of voices) if (v.channel === ch) fn(v)
+}
+export const setNoteBend = (ch: number, v: number) => onChannel(ch, (voice) => voice.setNoteBend(v))
+export const setNotePressure = (ch: number, v: number) => onChannel(ch, (voice) => voice.setPressure(v))
+export const setNoteTimbre = (ch: number, v: number) => onChannel(ch, (voice) => voice.setTimbre(v))
 
 /** Polyphonic aftertouch: only voices playing that MIDI note. */
 export function setPolyPressure(note: number, v: number) {

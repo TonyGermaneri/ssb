@@ -15,7 +15,7 @@ export const FILTER_TYPES: FilterType[] = ['lowpass', 'highpass', 'bandpass']
 export const FILTER_LABEL: Record<FilterType, string> = { lowpass: 'LP', highpass: 'HP', bandpass: 'BP' }
 
 // ── modulation ─────────────────────────────────────────────────────────────
-export type ModSource = 'lfo1' | 'lfo2' | 'mod' | 'aftertouch' | 'velocity' | 'bend'
+export type ModSource = 'lfo1' | 'lfo2' | 'mod' | 'aftertouch' | 'velocity' | 'bend' | 'timbre'
 export type ModDest =
   | 'pitch' | 'cutoff' | 'resonance' | 'volume' | 'pan' | 'grainPos' | 'grainSize' | 'delayMix' | 'reverbMix'
 export type LfoShape = 'sine' | 'triangle' | 'square' | 'sawtooth'
@@ -27,6 +27,7 @@ export const MOD_SOURCES: { id: ModSource; label: string }[] = [
   { id: 'aftertouch', label: 'AFTERTOUCH' },
   { id: 'velocity', label: 'VELOCITY' },
   { id: 'bend', label: 'PITCH BEND' },
+  { id: 'timbre', label: 'TIMBRE (CC74)' },
 ]
 
 /**
@@ -242,6 +243,10 @@ export interface MasterState {
   /** computer-keyboard piano octave shift */
   octave: number
   selectedId: string | null
+  /** MPE lower zone: channel 1 = master, 2-16 = one note each */
+  mpe: boolean
+  /** per-note pitch bend range in MPE, semitones */
+  mpeBendRange: number
   fx: GlobalFx
   /** global modulation matrix: applies to every voice */
   mod: ModMatrix
@@ -257,6 +262,8 @@ export const defaultMaster = (): MasterState => ({
   glide: 0,
   octave: 0,
   selectedId: null,
+  mpe: false,
+  mpeBendRange: 48,
   fx: defaultGlobalFx(),
   mod: defaultMatrix(),
 })

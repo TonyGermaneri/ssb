@@ -31,11 +31,18 @@ duplicate · delete.
 
 ### Modulation matrix
 
-Sources: LFO 1, LFO 2, MOD WHEEL (CC1), AFTERTOUCH (poly + channel pressure), VELOCITY, PITCH BEND.
+Sources: LFO 1, LFO 2, MOD WHEEL (CC1), AFTERTOUCH (poly + channel pressure), VELOCITY, PITCH BEND, TIMBRE (CC74).
 Destinations: pitch, cutoff, resonance, volume, pan, grain pos, grain size, delay mix, reverb mix.
 The **GLOBAL** matrix (header MATRIX button) applies to every sound and its LFOs run freely; each pad's matrix
 (panel MATRIX button) applies to that pad and its LFOs restart per note. Pitch bend always bends pitch by the
 pad's BEND range. Negative volume modulation from an LFO is a tremolo that never boosts.
+
+### MPE
+
+Turn on **MPE** (header PATCH group, or the matrix modal) for MPE controllers (lower zone). Channel 1 is the master
+channel: its bend, pressure, mod wheel and CC74 apply to every voice. Notes on channels 2–16 each get their own pitch
+bend (range set by NOTE BEND, default ±48), pressure (→ AFTERTOUCH) and CC74 (→ TIMBRE), including values sent just
+before the note starts. MPE is always polyphonic.
 
 ### Undo / presets
 

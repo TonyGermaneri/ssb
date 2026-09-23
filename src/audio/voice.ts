@@ -36,6 +36,12 @@ export interface VoiceOptions {
   glideFrom?: number
   glideTime?: number
   midiNote?: number
+  /** MIDI channel (0-15); MPE per-note controllers target it */
+  channel?: number
+  /** initial per-note values (MPE sends these before note-on) */
+  noteBend?: number
+  pressure?: number
+  timbre?: number
 }
 
 /** A grain, for drawing on the waveform. Positions are forward buffer seconds. */
@@ -61,8 +67,9 @@ export interface ModHub {
   globalLfoStart: number
   modWheel: ConstantSourceNode
   /** channel-wide controller values (non-MPE) */
-  state: { mod: number; bend: number; pressure: number }
+  state: { mod: number; bend: number; pressure: number; timbre: number }
   matrix: () => ModMatrix
+  mpeBendRange: () => number
 }
 
 type Scope = 'global' | 'pad'
@@ -89,6 +96,7 @@ export class Voice {
   readonly t0: number
   readonly kind: VoiceKind
   midiNote?: number
+  readonly channel?: number
   endTime: number
   playing = true
   /** when the release starts (Infinity until note-off / scheduled end) */
@@ -124,6 +132,9 @@ export class Voice {
   private atSrc: ConstantSourceNode
   private bendSrc: ConstantSourceNode
   private velSrc: ConstantSourceNode
+  private noteBendSrc: ConstantSourceNode
+  private timbreSrc: ConstantSourceNode
+  private timbreValue = 0
   private padLfos: (OscillatorNode | null)[] = [null, null]
   private padLfoStart = [0, 0]
   private links: { from: AudioNode; gain: GainNode }[] = []
@@ -179,6 +190,8 @@ export class Voice {
     this.atSrc = c.createConstantSource()
     this.bendSrc = c.createConstantSource()
     this.velSrc = c.createConstantSource()
+    this.noteBendSrc = c.createConstantSource()
+    this.timbreSrc = c.createConstantSource()
 
     this.env.connect(this.filter).connect(this.lo).connect(this.mid).connect(this.hi)
     this.hi.connect(this.dry).connect(this.out)
@@ -189,11 +202,15 @@ export class Voice {
 
     this.midiNote = opts.midiNote
     this.velocity = opts.velocity ?? 1
-    this.atValue = hub.state.pressure
+    this.channel = opts.channel
+    this.atValue = opts.pressure ?? hub.state.pressure
     this.bendValue = hub.state.bend
+    this.timbreValue = opts.timbre ?? hub.state.timbre
     this.atSrc.offset.value = this.atValue
     this.bendSrc.offset.value = this.bendValue
     this.velSrc.offset.value = this.velocity
+    this.noteBendSrc.offset.value = opts.noteBend ?? 0
+    this.timbreSrc.offset.value = this.timbreValue
     this.kind = s.grainSize > 0 ? 'cloud' : s.timeMode === 'stretch' ? 'stretch' : 'sample'
     this.clip = clipBounds(s, buffer.duration)
     this.kRate = knobRate(s)
@@ -206,7 +223,7 @@ export class Voice {
     this.apply(true)
 
     this.t0 = c.currentTime + 0.005
-    for (const k of [this.atSrc, this.bendSrc, this.velSrc]) k.start(this.t0)
+    for (const k of [this.atSrc, this.bendSrc, this.velSrc, this.noteBendSrc, this.timbreSrc]) k.start(this.t0)
     this.wireRoutes()
     const note = opts.note ?? 0
     this.glide = { from: opts.glideFrom ?? note, to: note, start: this.t0, dur: opts.glideTime ?? 0 }
@@ -450,6 +467,8 @@ export class Voice {
         return this.velSrc
       case 'bend':
         return this.bendSrc
+      case 'timbre':
+        return this.timbreSrc
     }
   }
 
@@ -482,6 +501,7 @@ export class Voice {
   private wireRoutes() {
     const wanted: { from: AudioNode; to: AudioNode | AudioParam; gain: number; key: string }[] = [
       { from: this.bendSrc, to: this.pitchBus, gain: this.settings.bendRange * 100, key: 'bend' },
+      { from: this.noteBendSrc, to: this.pitchBus, gain: this.hub.mpeBendRange() * 100, key: 'noteBend' },
     ]
     // Volume is a multiplier, so two-sided sources (LFOs, bend) are mapped to 0..1 for it:
     // gain = 1 + amount·(x+1)/2. Negative amounts give true tremolo and never boost.
@@ -544,6 +564,8 @@ export class Voice {
         return this.velocity
       case 'bend':
         return this.bendValue
+      case 'timbre':
+        return this.timbreValue
     }
   }
 
@@ -563,6 +585,17 @@ export class Voice {
   setBend(v: number) {
     this.bendValue = v
     this.bendSrc.offset.setTargetAtTime(v, this.ctx.currentTime, 0.005)
+  }
+
+  /** MPE per-note pitch bend, -1..1 (scaled by the MPE bend range). */
+  setNoteBend(v: number) {
+    this.noteBendSrc.offset.setTargetAtTime(v, this.ctx.currentTime, 0.005)
+  }
+
+  /** Timbre / CC74 / MPE Y, 0..1. */
+  setTimbre(v: number) {
+    this.timbreValue = v
+    this.timbreSrc.offset.setTargetAtTime(v, this.ctx.currentTime, 0.01)
   }
 
   // ── ending ───────────────────────────────────────────────────────────────
@@ -624,8 +657,9 @@ export class Voice {
     clearTimeout(this.disposeTimer)
     if (this.src) this.src.onended = null
     this.unwire()
-    for (const n of [this.atSrc, this.bendSrc, this.velSrc, ...this.padLfos]) n?.stop()
-    for (const n of [this.pitchBus, this.trem, this.atSrc, this.bendSrc, this.velSrc, ...this.padLfos]) n?.disconnect()
+    const consts = [this.atSrc, this.bendSrc, this.velSrc, this.noteBendSrc, this.timbreSrc]
+    for (const n of [...consts, ...this.padLfos]) n?.stop()
+    for (const n of [this.pitchBus, this.trem, ...consts, ...this.padLfos]) n?.disconnect()
     for (const n of [this.env, this.filter, this.lo, this.mid, this.hi, this.dry, this.delay, this.feedback,
       this.delayWet, this.convolver, this.reverbWet, this.out, this.panner, this.kill]) n.disconnect()
     this.src?.disconnect()
