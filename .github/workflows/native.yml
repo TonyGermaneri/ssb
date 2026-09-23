@@ -228,13 +228,17 @@ jobs:
       # state, editor never opened -- and fail if that is silent. auval and pluginval never open
       # the editor or reload a session, so they cannot see either.
       - name: End to end
+        # The setup waits for the page to finish loading its board (a cold runner can take a while to
+        # install the factory patches), then selects the first patch and turns on keyboard play; the
+        # probe prints what the page had when the note arrived, for when this step fails.
         env:
-          SSB_PROBE_DELAY_MS: '6000'
-          SSB_PROBE_SETUP: "const b = __ssb.board; b.selectPatch(b.patches[0].id); b.master.play = true"
+          SSB_PROBE_DELAY_MS: '10000'
+          SSB_PROBE_SETUP: "(function go () { const b = window.__ssb && __ssb.board; if (!b || !b.loaded || !b.patches.length) return setTimeout(go, 200); b.selectPatch(b.patches[0].id); b.master.play = true })()"
+          SSB_PROBE: "JSON.stringify({ loaded: __ssb.board.loaded, patches: __ssb.board.patches.length, patch: __ssb.board.selectedPatch && __ssb.board.selectedPatch.name, play: __ssb.board.master.play })"
         run: |
           native/build/tools/ssb-host_artefacts/RelWithDebInfo/ssb-host.app/Contents/MacOS/ssb-host \
             native/build/plugin/SsbInstrument_artefacts/RelWithDebInfo/VST3/SSB.vst3 end-to-end.wav \
-            --note 69 --wait 9 --hold 1.5 --reload
+            --note 69 --wait 12 --hold 1.5 --reload
 
       - uses: actions/upload-artifact@v4
         if: failure()
