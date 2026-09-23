@@ -1,0 +1,90 @@
+import { describe, expect, it } from 'vitest'
+import { computePeaks } from './peaks'
+import { clipBounds, cycleSeconds, glideSemis, playSeconds, tailSeconds } from './timing'
+import { envLevel } from './envelope'
+import { keyToMidi } from '../lib/piano'
+import { defaultSettings, migrateSettings } from '../types'
+
+const S = (o: object = {}) => ({ ...defaultSettings(), ...o })
+
+describe('computePeaks', () => {
+  it('finds min/max per bucket across channels', () => {
+    const l = new Float32Array([0.1, -0.5, 0.2, 0.9])
+    const r = new Float32Array([-0.8, 0, 0.3, 0])
+    const p = computePeaks({ numberOfChannels: 2, length: 4, getChannelData: (c) => (c ? r : l) }, 2)
+    expect(Array.from(p)).toEqual([-0.8, 0.1, 0, 0.9].map(Math.fround))
+  })
+})
+
+describe('timing', () => {
+  it('bounds the clip and tolerates crossed points', () => {
+    expect(clipBounds(S({ clipIn: 0.25, clipOut: 0.75 }), 4)).toEqual({ clipIn: 1, clipOut: 3, clipLen: 2 })
+    expect(clipBounds(S({ clipIn: 0.8, clipOut: 0.2 }), 10).clipIn).toBe(2)
+  })
+
+  it('plays N repeats; 0 loops forever', () => {
+    expect(playSeconds(S({ repeat: 3 }), 2, false)).toBe(6)
+    expect(playSeconds(S({ repeat: 0 }), 2, false)).toBe(Infinity)
+  })
+
+  it('tape: pitch, played note and speed all shorten', () => {
+    expect(cycleSeconds(S({ pitch: 12 }), 2, false)).toBe(1)
+    expect(cycleSeconds(S(), 2, false, 12)).toBe(1)
+    expect(cycleSeconds(S({ speed: 2 }), 2, false)).toBe(1)
+  })
+
+  it('stretch and grain cloud: only speed changes length', () => {
+    expect(cycleSeconds(S({ pitch: 12, timeMode: 'stretch' }), 2, false)).toBe(2)
+    expect(cycleSeconds(S({ pitch: 12, speed: 0.5 }), 2, true)).toBe(4)
+  })
+
+  it('glides linearly in semitones', () => {
+    const g = { from: 0, to: 12, start: 1, dur: 2 }
+    expect(glideSemis(g, 0)).toBe(0)
+    expect(glideSemis(g, 2)).toBe(6)
+    expect(glideSemis(g, 5)).toBe(12)
+    expect(glideSemis({ ...g, dur: 0 }, 0)).toBe(12)
+  })
+
+  it('computes FX tails', () => {
+    expect(tailSeconds(S())).toBe(0)
+    expect(tailSeconds(S({ reverbMix: 0.5, reverbSize: 3 }))).toBe(3)
+  })
+})
+
+describe('envLevel', () => {
+  const e = { a: 1, d: 1, s: 0.5, r: 1 }
+  it('ramps up, decays, sustains', () => {
+    expect(envLevel(0, e)).toBe(0)
+    expect(envLevel(0.5, e)).toBe(0.5)
+    expect(envLevel(1.5, e)).toBe(0.75)
+    expect(envLevel(9, e)).toBe(0.5)
+  })
+  it('handles zero attack', () => {
+    expect(envLevel(0, { ...e, a: 0 })).toBe(1)
+  })
+})
+
+describe('keyToMidi', () => {
+  it('maps tracker rows around the root', () => {
+    expect(keyToMidi('q', 0)).toBe(60)
+    expect(keyToMidi('z', 0)).toBe(48)
+    expect(keyToMidi('S', 0)).toBe(49)
+    expect(keyToMidi('q', 1)).toBe(72)
+    expect(keyToMidi('a', 0)).toBeNull()
+  })
+})
+
+describe('migrateSettings', () => {
+  it('maps old fades onto the ADSR and fills new fields', () => {
+    const old = { ...defaultSettings('x'), fadeIn: 0.5, fadeOut: 2 } as Record<string, unknown>
+    delete old.attack
+    delete old.release
+    delete old.grainDensity
+    const s = migrateSettings(old)
+    expect(s.attack).toBe(0.5)
+    expect(s.release).toBe(2)
+    expect(s.grainDensity).toBe(2)
+    expect('fadeIn' in s).toBe(false)
+  })
+})

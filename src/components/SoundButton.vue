@@ -1,0 +1,324 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { activeVoices, buffers, clock } from '../audio/engine'
+import { useBoard } from '../stores/board'
+import { midiNoteName } from '../lib/format'
+import { TRIGGER_MODE_INFO, type Sound } from '../types'
+
+const props = defineProps<{ sound: Sound; hue: number; keyLabel?: string; open: boolean }>()
+const emit = defineEmits<{ toggle: []; dragstart: [e: DragEvent] }>()
+const board = useBoard()
+
+const voices = computed(() => activeVoices.value.filter((v) => v.soundId === props.sound.id))
+const playing = computed(() => voices.value.length > 0)
+const pressed = computed(() => board.pressed.has(props.sound.id))
+const selected = computed(() => board.master.selectedId === props.sound.id)
+
+/** 0..1 through the whole play (finite repeats) or through the current loop cycle. */
+const progress = computed(() => {
+  const v = voices.value.at(-1)?.voice
+  const buf = buffers.get(props.sound.audioId)
+  if (!v || !buf) return 0
+  const elapsed = clock.value - v.t0
+  if (Number.isFinite(v.endTime)) return Math.min(1, elapsed / (v.endTime - v.t0))
+  return (elapsed % v.cycle) / v.cycle
+})
+
+function onDown(e: PointerEvent) {
+  if (e.button !== 0) return
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  board.press(props.sound.id)
+}
+function onUp() {
+  if (board.pressed.has(props.sound.id)) board.release(props.sound.id)
+}
+</script>
+
+<template>
+  <div
+    class="pad"
+    :class="{ playing, pressed, open, selected }"
+    :style="{ '--hue': hue }"
+    role="button"
+    tabindex="0"
+    :aria-label="`Play ${sound.settings.name}`"
+    @pointerdown="onDown"
+    @pointerup="onUp"
+    @pointercancel="onUp"
+    @keydown.enter.prevent.stop="!$event.repeat && board.press(sound.id)"
+    @keyup.enter.stop="onUp"
+    @contextmenu.prevent="emit('toggle')"
+  >
+    <!-- stop the pad from seeing these events, or it would trigger the sound -->
+    <button
+      class="corner burger"
+      :class="{ active: open }"
+      :aria-expanded="open"
+      aria-label="Sound controls"
+      title="Controls"
+      @pointerdown.stop
+      @pointerup.stop
+      @mousedown.stop
+      @keydown.stop
+      @click.stop="emit('toggle')"
+    >
+      <v-icon size="18" icon="mdi-menu" />
+    </button>
+    <div
+      class="corner grip"
+      draggable="true"
+      title="Drag to reorder"
+      @pointerdown.stop
+      @dragstart="emit('dragstart', $event)"
+    >
+      <v-icon size="16" icon="mdi-drag" />
+    </div>
+
+    <div class="led" />
+    <div class="name">{{ sound.settings.name }}</div>
+    <div v-if="sound.settings.tag" class="tag">{{ sound.settings.tag }}</div>
+
+    <div class="badges">
+      <v-icon size="12" :icon="TRIGGER_MODE_INFO[sound.settings.mode].icon" />
+      <span v-if="sound.settings.repeat === 0">∞</span>
+      <span v-else-if="sound.settings.repeat > 1">×{{ sound.settings.repeat }}</span>
+      <span v-if="sound.settings.choke">G{{ sound.settings.choke }}</span>
+      <span v-if="sound.settings.midiNote !== null">{{ midiNoteName(sound.settings.midiNote) }}</span>
+      <kbd v-if="keyLabel" class="key">{{ keyLabel.toUpperCase() }}</kbd>
+    </div>
+    <button
+      class="select"
+      :class="{ on: selected }"
+      :aria-pressed="selected"
+      :title="selected ? 'Selected patch (plays on the keyboard)' : 'Select as the keyboard patch'"
+      @pointerdown.stop
+      @pointerup.stop
+      @mousedown.stop
+      @keydown.stop
+      @click.stop="board.select(sound.id)"
+    >
+      <v-icon size="13" icon="mdi-piano" />
+    </button>
+    <div class="progress"><div :style="{ transform: `scaleX(${progress})` }" /></div>
+  </div>
+</template>
+
+<style scoped>
+.pad {
+  --face: hsl(var(--hue) 85% 52%);
+  --face-hi: hsl(var(--hue) 100% 72%);
+  --face-lo: hsl(var(--hue) 80% 26%);
+  --glow: hsl(var(--hue) 100% 60%);
+  position: relative;
+  zoom: var(--pad-scale, 1);
+  width: 152px;
+  height: 104px;
+  padding: 26px 10px 18px;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+  outline: none;
+  color: #fff;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0.05) 45%, transparent 50%),
+    radial-gradient(ellipse at 50% 120%, var(--face-hi) 0%, transparent 60%),
+    linear-gradient(180deg, var(--face) 0%, var(--face-lo) 100%);
+  border: 1px solid rgba(0, 0, 0, 0.7);
+  box-shadow:
+    0 6px 0 #0b0a0d,
+    0 8px 14px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -3px 6px rgba(0, 0, 0, 0.35);
+  transition:
+    transform 60ms,
+    box-shadow 60ms,
+    filter 120ms;
+}
+.pad:focus-visible {
+  outline: 2px solid #ffb000;
+  outline-offset: 3px;
+}
+.pad.pressed {
+  transform: translateY(5px);
+  box-shadow:
+    0 1px 0 #0b0a0d,
+    0 2px 5px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 3px 8px rgba(0, 0, 0, 0.45);
+}
+.pad.playing {
+  filter: brightness(1.18) saturate(1.15);
+  box-shadow:
+    0 6px 0 #0b0a0d,
+    0 0 22px var(--glow),
+    0 0 4px var(--glow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -3px 6px rgba(0, 0, 0, 0.35);
+}
+.pad.playing.pressed {
+  box-shadow:
+    0 1px 0 #0b0a0d,
+    0 0 22px var(--glow),
+    inset 0 3px 8px rgba(0, 0, 0, 0.45);
+}
+.pad.open {
+  outline: 2px solid rgba(255, 176, 0, 0.7);
+  outline-offset: 3px;
+}
+.name {
+  max-width: 100%;
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 900;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  line-height: 1.15;
+  text-align: center;
+  text-transform: uppercase;
+  text-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.6),
+    0 0 8px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+.tag {
+  font-family: 'VT323', monospace;
+  font-size: 13px;
+  line-height: 1;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.35);
+  color: #ffe9b0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.corner {
+  position: absolute;
+  top: 4px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 22px;
+  padding: 0; /* default button padding pushes the icon off-center */
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(0, 0, 0, 0.3);
+}
+.burger {
+  left: 4px;
+  cursor: pointer;
+}
+.burger:hover,
+.burger.active {
+  background: rgba(0, 0, 0, 0.55);
+  color: #ffb000;
+}
+.grip {
+  right: 4px;
+  cursor: grab;
+  opacity: 0.6;
+}
+.grip:hover {
+  opacity: 1;
+}
+.led {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  border-radius: 50%;
+  background: #2a0a06;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6);
+}
+.playing .led {
+  background: #ff4b2b;
+  box-shadow:
+    0 0 6px #ff4b2b,
+    0 0 12px #ff4b2b;
+}
+.badges {
+  position: absolute;
+  left: 7px;
+  bottom: 7px;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  font-family: 'VT323', monospace;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.85;
+}
+.key {
+  min-width: 16px;
+  padding: 0 3px;
+  font-family: 'VT323', monospace;
+  font-size: 13px;
+  line-height: 14px;
+  text-align: center;
+  color: #1a1a1a;
+  background: linear-gradient(#f1ebdc, #c9c0aa);
+  border-radius: 2px;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+}
+.select {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  border-radius: 3px;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+.select:hover {
+  color: #fff;
+  background: rgba(0, 0, 0, 0.5);
+}
+.select.on {
+  color: #062a30;
+  background: #27e0ff;
+  box-shadow: 0 0 8px #27e0ff;
+}
+.pad.selected::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 2px rgba(39, 224, 255, 0.85), inset 0 0 14px rgba(39, 224, 255, 0.35);
+  pointer-events: none;
+}
+.progress {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+.progress div {
+  height: 100%;
+  background: #fff;
+  box-shadow: 0 0 4px #fff;
+  transform-origin: left;
+}
+</style>
