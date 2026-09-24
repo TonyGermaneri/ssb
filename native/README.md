@@ -45,6 +45,13 @@ starting just plays. **Options** (top left) picks inputs and the audio device. I
 own (`plugin/StandaloneApp.cpp`): every edge resizes it, a double-click on the title bar (or the
 maximise button) zooms it to fill the screen and back, and it reopens at the size it was left.
 
+**In a DAW** the host owns the window, so the editor carries its own resize handles: a thin
+strip along the right and bottom edges and a grip in the corner, beside the page (the web view is
+a native view drawn over anything JUCE paints, so handles on top of it could never be clicked).
+The host's title bar isn't the plugin's to hear, so zooming is the ⤢ button in BOARD, or a
+double-click on the header's empty space: the window grows to the screen's edge from where it
+sits, and back.
+
 **The host's clock**: in a DAW, SSB takes its tempo from the host (the header's tempo chip reads
 HOST): synced LFOs lock to the song position while the transport plays, and synced delays use the
 host tempo, in the engine itself, so they follow even with the window closed.

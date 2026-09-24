@@ -155,6 +155,11 @@ SsbEditor::SsbEditor (SsbProcessor& p)
                       cmd.bytes[i] = (uint8_t) juce::jlimit (0, 255, (int) (*bytes)[i]);
               complete (juce::var (plugin.engine.post (cmd)));
           })
+          .withNativeFunction ("ssbZoom", [this] (const juce::Array<juce::var>&, auto complete)
+          {
+              toggleZoom();
+              complete (juce::var (! unzoomed.isEmpty()));   // zoomed now?
+          })
           .withNativeFunction ("ssbOpenUrl", [] (const juce::Array<juce::var>& args, auto complete)
           {
               // http(s) only: a native function that launches anything launches anything.
@@ -196,10 +201,21 @@ SsbEditor::SsbEditor (SsbProcessor& p)
     // Read the saved size first: setResizeLimits clamps this (still 0 x 0) editor to the minimum,
     // and resized() would otherwise record that as the size to reopen at.
     const auto width = plugin.editorWidth, height = plugin.editorHeight;
-    setResizable (true, true);
+    // The standalone's window edges resize it (StandaloneApp.cpp). In a DAW the host owns the
+    // window, so the editor carries its own handles, beside the page (see PluginEditor.h).
+    setResizable (true, false);
     setResizeLimits (960, 600, 8192, 8192);
     setSize (width, height);
     sized = true;
+    if (plugin.wrapperType != juce::AudioProcessor::wrapperType_Standalone)
+    {
+        rightEdge = std::make_unique<juce::ResizableEdgeComponent> (this, getConstrainer(), juce::ResizableEdgeComponent::rightEdge);
+        bottomEdge = std::make_unique<juce::ResizableEdgeComponent> (this, getConstrainer(), juce::ResizableEdgeComponent::bottomEdge);
+        corner = std::make_unique<juce::ResizableCornerComponent> (this, getConstrainer());
+        for (juce::Component* c : { (juce::Component*) rightEdge.get(), (juce::Component*) bottomEdge.get(), (juce::Component*) corner.get() })
+            addAndMakeVisible (c);
+        resized();
+    }
 
     enableAllMidiInputs (plugin);
 
@@ -245,9 +261,50 @@ SsbEditor::~SsbEditor()
     stopTimer();
 }
 
+void SsbEditor::paint (juce::Graphics& g)
+{
+    // the strips around the page, where the resize handles are: the console's dark, with a grip
+    g.fillAll (juce::Colour (0xff0e0d10));
+    if (corner)
+    {
+        g.setColour (juce::Colour (0xff57534b));
+        const auto c = corner->getBounds().toFloat();
+        for (int i = 1; i <= 3; ++i)
+            g.drawLine (c.getRight() - 4.0f * (float) i, c.getBottom() - 1.0f, c.getRight() - 1.0f, c.getBottom() - 4.0f * (float) i, 1.0f);
+    }
+}
+
+void SsbEditor::toggleZoom()
+{
+    const auto* display = juce::Desktop::getInstance().getDisplays().getDisplayForRect (getScreenBounds());
+    if (display == nullptr)
+        return;
+    if (! unzoomed.isEmpty())
+    {
+        setSize (unzoomed.getWidth(), unzoomed.getHeight());
+        unzoomed = {};
+        return;
+    }
+    // The host owns the window and its position, so grow from where the editor sits to the
+    // screen's usable edge; hosts that allow plugin resizing follow.
+    const auto area = display->userBounds.toNearestInt();
+    const auto at = getScreenBounds();
+    unzoomed = getLocalBounds();
+    setSize (juce::jmax (getWidth(), area.getRight() - at.getX()), juce::jmax (getHeight(), area.getBottom() - at.getY()));
+}
+
 void SsbEditor::resized()
 {
-    browser.setBounds (getLocalBounds());
+    if (corner)
+    {
+        const auto b = getLocalBounds();
+        browser.setBounds (b.withTrimmedRight (grip).withTrimmedBottom (grip));
+        rightEdge->setBounds (b.getRight() - grip, 0, grip, b.getHeight() - 14);
+        bottomEdge->setBounds (0, b.getBottom() - grip, b.getWidth() - 14, grip);
+        corner->setBounds (b.getRight() - 14, b.getBottom() - 14, 14, 14);
+    }
+    else
+        browser.setBounds (getLocalBounds());
     if (sized)
     {
         plugin.editorWidth = getWidth();

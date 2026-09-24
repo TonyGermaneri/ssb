@@ -7,6 +7,7 @@ import { DIVISIONS } from '../types'
 import Knob from './Knob.vue'
 import VuMeter from './VuMeter.vue'
 import ThemePicker from './ThemePicker.vue'
+import { callNative, nativeEngine } from '../native/bridge'
 
 const board = useBoard()
 const emit = defineEmits<{ add: []; addFolder: []; library: [] }>()
@@ -57,6 +58,22 @@ const delayDiv = computed(() => Math.max(0, DIVISIONS.findIndex((d) => d.id === 
 const fmtDiv = (v: number) => DIVISIONS[Math.round(v)]?.id ?? ''
 const fmtNote = (v: number) => midiNoteName(Math.round(v))
 
+/**
+ * In a DAW the host owns the window's title bar, so the plugin can't see a double-click there:
+ * a double-click on the header's empty space zooms the plugin window instead (and back).
+ */
+const inPlugin = nativeEngine()
+const zoomed = ref(false)
+const zoom = async () => {
+  zoomed.value = await callNative<boolean>('ssbZoom')
+}
+function onStripDoubleClick(e: MouseEvent) {
+  if (!inPlugin) return
+  const t = e.target as HTMLElement
+  if (t.closest('button, input, .knob, .lcd, .v-menu, [role="slider"]')) return
+  void zoom()
+}
+
 function onImport(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
   if (file) board.importBoard(file)
@@ -65,7 +82,7 @@ function onImport(e: Event) {
 </script>
 
 <template>
-  <header class="strip">
+  <header class="strip" @dblclick="onStripDoubleClick">
     <v-menu v-model="themeMenu" location="bottom start" :close-on-content-click="false" offset="6">
       <template #activator="{ props: act }">
         <button class="brand" v-bind="act" :title="`SSB — Super Sound Board · theme: ${board.theme.name} — click for themes`">
@@ -293,6 +310,15 @@ function onImport(e: Event) {
     <section class="group">
       <h5>BOARD</h5>
       <div class="controls">
+        <button
+          v-if="inPlugin"
+          class="hw-btn icon"
+          :class="{ lit: zoomed }"
+          :title="zoomed ? 'Back to the size it was (or double-click the header)' : 'Fill the screen (or double-click the header)'"
+          @click="zoom"
+        >
+          <v-icon size="16" :icon="zoomed ? 'mdi-arrow-collapse-all' : 'mdi-arrow-expand-all'" />
+        </button>
         <button
           class="hw-btn icon"
           :class="{ lit: board.master.view === 'grid' }"
