@@ -86,11 +86,13 @@ function onPlay(id: string) {
     :editable="['name', 'tag']"
     :playing="playing"
     :selected-id="board.master.patchId"
+    :noun="['patch', 'patches']"
     :accent="['root', 'vco1']"
-    hint="▷ / double-click = audition · click a row to select the patch (its layers open in the rack) · double-click name or tags to edit · click a column title to sort"
+    hint="▷ / double-click = audition · click a row to select the patch (its layers open in the rack) · ⇧ / ⌘-click to pick several, Delete to remove them · double-click name or tags to edit · click a column title to sort"
     @edit="onEdit"
     @play="onPlay"
     @select="board.selectPatch"
+    @delete="board.removePatches"
     @fav="(id: string) => board.toggleFav('patch', id)"
   />
 </template>

@@ -145,11 +145,13 @@ function onPlay(id: string) {
     :editable="Object.keys(EDIT)"
     :playing="playing"
     :selected-id="board.master.selectedId"
+    :noun="['clip', 'clips']"
     :accent="['key', 'midi']"
-    hint="▷ / double-click = play · select a row to edit it in the rack · double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type · click a column title to sort"
+    hint="▷ / double-click = play · select a row to edit it in the rack · ⇧ / ⌘-click to pick several, Delete to remove them · double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type · click a column title to sort"
     @edit="onEdit"
     @play="onPlay"
     @select="board.select"
+    @delete="board.removeSounds"
     @fav="(id: string) => board.toggleFav('sound', id)"
   >
     <!-- the rack shows the patch; with the list full width the selected sound is edited here -->

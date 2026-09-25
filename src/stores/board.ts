@@ -1049,6 +1049,13 @@ export const useBoard = defineStore('board', () => {
     master.selectedId = id
   }
 
+  /** The item after `id` in `list` (or else the nearest before it) that isn't `gone`. */
+  function survivor(list: { id: string }[], id: string | null, gone: Set<string>) {
+    const i = list.findIndex((x) => x.id === id)
+    if (i < 0) return undefined
+    return (list.slice(i + 1).find((x) => !gone.has(x.id)) ?? list.slice(0, i).reverse().find((x) => !gone.has(x.id)))?.id
+  }
+
   /** Step the selected patch through the grid order, wrapping. */
   function selectStep(dir: 1 | -1) {
     const list = visible.value
@@ -1124,6 +1131,19 @@ export const useBoard = defineStore('board', () => {
     openPanels.delete(id)
     patches.value = patches.value.filter((x) => x.id !== id)
     if (master.patchId === id) selectPatch(patches.value[0]?.id ?? null)
+  }
+
+  /** Delete several patches at once (one undo step); the selection moves to the nearest survivor. */
+  function removePatches(ids: string[]) {
+    const gone = new Set(ids)
+    const next = survivor(visiblePatches.value, master.patchId, gone) ?? patches.value.find((p) => !gone.has(p.id))?.id ?? null
+    for (const p of patches.value) {
+      if (!gone.has(p.id)) continue
+      for (const l of patchLayers(p)) engine.stopSound(l.id)
+      openPanels.delete(p.id)
+    }
+    patches.value = patches.value.filter((p) => !gone.has(p.id))
+    if (master.patchId && gone.has(master.patchId)) selectPatch(next)
   }
 
   /**
@@ -1260,6 +1280,18 @@ export const useBoard = defineStore('board', () => {
     sounds.value = sounds.value.filter((s) => s.id !== id)
     if (master.selectedId === id) master.selectedId = sounds.value[0]?.id ?? null
     // audio stays in memory + IndexedDB so undo can bring the pad back
+  }
+
+  /** Delete several sounds at once (one undo step); the selection moves to the nearest survivor. */
+  function removeSounds(ids: string[]) {
+    const gone = new Set(ids)
+    const next = survivor(visible.value, master.selectedId, gone) ?? sounds.value.find((s) => !gone.has(s.id))?.id ?? null
+    for (const id of gone) {
+      engine.stopSound(id)
+      openPanels.delete(id)
+    }
+    sounds.value = sounds.value.filter((s) => !gone.has(s.id))
+    if (master.selectedId && gone.has(master.selectedId)) master.selectedId = next
   }
 
   /** Drag-reorder: put `fromId` where `toId` is. */
@@ -1515,11 +1547,11 @@ export const useBoard = defineStore('board', () => {
     currentFacets, currentFilter, currentTotal, currentShown, toggleCurrentTag, clearCurrentTags, currentHidden, hideCurrentTag,
     tagHidden, patchTagHidden,
     selectedPatch, patchMain, playable, patchNumber, resolveSound, layerSound, patchLayerIds, vcoLinks,
-    installFactory, selectPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, assignSlot, slotsOf, toggleSlot, toggleFav,
+    installFactory, selectPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, removePatches, assignSlot, slotsOf, toggleSlot, toggleFav,
     pressPatch, releasePatch, patchIdOfLayer,
     tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
     addFiles, load, press, release, panic, noteOn, noteOff,
-    select, selectStep, togglePanel, cycleMode, cycleFilter, resetSettings, duplicate, remove, move,
+    select, selectStep, togglePanel, cycleMode, cycleFilter, resetSettings, duplicate, remove, removeSounds, move,
     exportBoard, importBoard, enableMidi, learnMidi,
   }
 })
