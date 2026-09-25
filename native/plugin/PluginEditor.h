@@ -28,6 +28,7 @@ private:
 
     SsbProcessor& plugin;
     juce::WebBrowserComponent browser;
+    std::vector<ssb::GrainView> grainViews;   // reused by every meter tick
 
     /** Held while a save dialog is open: it is asynchronous and outlives the call that opened it. */
     std::unique_ptr<juce::FileChooser> chooser;

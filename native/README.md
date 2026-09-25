@@ -73,7 +73,7 @@ patch (poly / mono, glide, MPE bend / pressure / timbre, the sustain pedal), pat
 (MIX / MOD, TRACK / FIXED, transpose, fine, level) with VCO 1–3 as audio-rate sources, the mod
 matrix (LFO shapes including random / smooth, mod wheel, aftertouch, velocity, bend, timbre,
 grain position / size), amp and filter envelopes, the filter and 3-band EQ, grain clouds (streams,
-density, jitter, reverse, spread, scatter, drift) and STRETCH, per-sound delay and reverb, master
+rate, spray, window shape, jitter, reverse, spread, scatter, drift; one-sample grains) and STRETCH, per-sound delay and reverb, master
 chorus / delay / reverb / volume, and SFZ zones (key / velocity / round robin / random layers,
 loops, one-shots, release triggers with rt_decay, locc / hicc, the *_onccN modifiers, region
 filters, envelopes and LFOs). The engine reports its voices back to the page ~30 times a second,
@@ -92,7 +92,8 @@ A session reopened in a DAW plays before its window is opened: the engine's soun
 session and its samples in the disk cache (`ssb-host --reload` checks exactly that;
 `--dump-state` prints what an instance saved).
 
-**Not yet:** a grain cloud shows no per-grain marks on the waveform in the plugin.
+The engine reports the grains it starts (`readGrains`), so the waveform draws the plugin's clouds as it does the
+page's.
 
 Per-sound delay and reverb run on buses shared by every voice with the same settings; both
 effects are linear, so that is the same sound as a copy per voice, for a fraction of the work.

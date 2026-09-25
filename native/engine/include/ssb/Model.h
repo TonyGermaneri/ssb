@@ -102,10 +102,12 @@ struct Settings
     FilterType filterType { FilterType::lowpass };
     float cutoff { 20000 }, resonance { 0.7f };
     float fEnvAmount { 0 }, fAttack { 0.001f }, fDecay { 0.3f }, fSustain { 0 }, fRelease { 0.2f };
-    // grains (grain cloud when grainSize > 0; STRETCH walks grains through the clip at SPEED)
-    float grainSize { 0 };      // ms
-    float grainPos { 0.5f }, grainWidth { 0 }, grainDensity { 2 }, grainJitter { 0 }, grainReverse { 0 };
-    float grainSpread { 0 }, grainStreams { 1 }, grainScatter { 0 }, grainDrift { 0 };
+    // grains (a cloud when `grain` is on; STRETCH walks grains through the clip at SPEED). As types.ts's
+    // GRAIN_DEFAULTS: RATE is grains per second per stream, independent of SIZE; SHAPE the window's taper
+    bool grain { false };
+    float grainSize { 80 };     // ms, at least one sample
+    float grainPos { 0.5f }, grainWidth { 0.1f }, grainRate { 30 }, grainShape { 1 }, grainJitter { 0 }, grainReverse { 0 };
+    float grainSpread { 0.3f }, grainStreams { 1 }, grainScatter { 0.5f }, grainDrift { 0 };
     float delayTime { 0.25f }, delayFeedback { 0.35f }, delayMix { 0 };
     float reverbSize { 2 }, reverbDecay { 3 }, reverbMix { 0 };
     float eqLow { 0 }, eqMid { 0 }, eqHigh { 0 };

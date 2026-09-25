@@ -216,6 +216,39 @@ private:
     float prev { 0 }, next { 0 };
 };
 
+// ------------------------------------------------------------------------------------ grains
+// src/audio/grainMath.ts, line for line: the page's grain worklet and this engine make the same cloud.
+
+constexpr double stretchGrain = 0.09;   // seconds: STRETCH's grains
+constexpr int stretchOverlap = 4;
+
+/** Tukey window at sample i of n: taper 0 = square .. 1 = Hann, sampled at sample centres (so a
+    one-sample grain plays). */
+inline float grainWindow (int i, int n, float taper) noexcept
+{
+    if (taper <= 0 || n < 2) return 1.0f;
+    const double x = (i + 0.5) / n;
+    const double edge = taper / 2.0;
+    if (x < edge) return (float) (0.5 - 0.5 * std::cos (pi * x / edge));
+    if (x > 1 - edge) return (float) (0.5 - 0.5 * std::cos (pi * (1 - x) / edge));
+    return 1.0f;
+}
+
+/** Seconds to the next grain at `rate` a second: steady at scatter 0, exponential (Poisson) at 1,
+    the same average. u uniform in [0, 1). */
+inline double grainInterval (float rate, float scatter, float u) noexcept
+{
+    const double mean = 1.0 / std::max (1e-3f, rate);
+    if (scatter <= 0) return mean;
+    return mean * (1.0 - scatter + scatter * -std::log (1.0 - std::min ((double) u, 0.999999)));
+}
+
+/** Each grain's level when `overlap` sound at once on average: full when sparse, 1/sqrt when dense. */
+inline float grainGain (float overlap) noexcept
+{
+    return std::min (1.0f, std::sqrt (2.0f / std::max (1e-6f, overlap)));
+}
+
 // ------------------------------------------------------------------------------------ panning
 
 /** StereoPannerNode: a mono source is panned equal-power; a stereo source keeps both channels

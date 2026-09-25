@@ -24,7 +24,7 @@ npm run build    # typecheck + production build
 - **Click a pad** to play. **☰** (or right-click) opens its control panel above it; ☰ again closes it.
 - **Keys** `1–0`, `Q–P`, `A–L`, `Z–M` trigger pads in grid order. **Space** = PANIC, **Esc** = close panels.
 - **Knobs**: drag up/down, scroll, arrow keys; **Shift** = fine; **double-click** = reset.
-- **Waveform**: drag to move clip in/out. Grains flash on it while they play.
+- **Waveform**: drag to move clip in/out. Every playing voice and grain shows on it, in its own colour.
 
 ### Sounds and patches
 
@@ -83,7 +83,7 @@ rows on screen exist in the DOM; grid mode (canvas-datagrid) handles very large 
 
 PLAY (vol, pan, repeat, choke) · TUNE (pitch, fine, speed + TAPE/STRETCH) · KEYS (root note, velocity amount,
 bend range) · CLIP · ADSR · FILTER (LP/HP/BP) ·
-FILTER ADSR · EQ · GRAIN (size, pos, width, density, jitter, reverse, spread) · DELAY · REVERB ·
+FILTER ADSR · EQ · GRAIN (on/off, size, rate, pos, spray, shape, scatter, jitter, reverse, spread, streams, drift) · DELAY · REVERB ·
 MODE (STOP / RESTART / STACK / HOLD) · MIDI LEARN · MATRIX · PRESETS (save / load / copy / paste) · RESET ·
 duplicate · delete.
 
@@ -151,11 +151,22 @@ A .zip containing `board.json` still imports as a board; any other .zip is unpac
   becomes a pad.
 - **URL** — any .sfz (samples fetched next to it), audio file or .zip; GitHub "blob" page links are rewritten to raw.
 
-### Grain streams
+### Grain clouds
 
-GRAIN → **SIZE**: OFF at the bottom, then 5–500 ms over most of the knob (where POS, DENSITY and WIDTH are heard),
-and the last quarter out to the whole sample. **STREAMS** runs up to 8 independent grain streams per note; **SCATTER** randomises each stream's timing and
-**DRIFT** gives each its own speed and direction through the clip. The waveform shows every playing grain's playhead.
+GRAIN's **ON** switch plays the pad as a cloud of grains, the way asynchronous granular synthesis does it (Truax,
+Roads, Mutable Instruments Clouds): **RATE** is grains per second, independent of **SIZE**, so a cloud can be sparse
+(clicks and gaps) or dense (a smear); **SCATTER** moves their start times from a steady clock (0) to random, Poisson
+times (1) at the same average rate; **SPRAY** scatters where in the sample each grain reads, around **POS**; **SHAPE**
+runs each grain's window from square (harsh) to Hann (smooth). SIZE goes from a single sample (the first 15 % of the
+knob, shown in samples) through 5–500 ms (most of the travel, the middle is ~50 ms) to the whole sample. JITTER
+detunes each grain, REV plays some backwards, SPREAD pans them, **STREAMS** runs up to 8 independent streams per note
+and **DRIFT** sends each wandering through the clip. Grains render sample by sample (an AudioWorklet in the page, the
+same code in the plugin's engine), so hundreds a second are cheap.
+
+The waveform follows what you hear (the output's timestamp, not the scheduler's clock) and shows every playing
+instance in its own colour (hue by note, brightness by velocity) with a label: a playhead for tape / stretch / SFZ
+voices, and for clouds each grain over the part of the sample it plays, at its pan (left up, right down), as tall as
+it is loud, hue-shifted by its pitch, notched when reversed, fading out after it ends.
 
 ### Grid mode
 

@@ -370,6 +370,8 @@ void SsbEditor::timerCallback()
                 o->setProperty ("sound", plugin.library.idFor (v.sound));
                 if (v.group) o->setProperty ("group", plugin.library.idFor (v.group));
                 if (v.midiNote >= 0) o->setProperty ("note", v.midiNote);
+                o->setProperty ("vel", v.velocity);
+                if (v.grains) o->setProperty ("grains", true);
                 o->setProperty ("age", v.age);
                 o->setProperty ("end", v.end);
                 o->setProperty ("pos", v.position);
@@ -382,6 +384,30 @@ void SsbEditor::timerCallback()
             }
             m->setProperty ("list", list);
             m->setProperty ("time", time);
+            m->setProperty ("rate", plugin.engine.sampleRate());
+        }
+
+        // the grains started since the last tick (a dense cloud's latest few hundred), for the waveform
+        plugin.engine.readGrains (grainViews, 400);
+        if (! grainViews.empty())
+        {
+            juce::Array<juce::var> grains;
+            for (const auto& g : grainViews)
+            {
+                auto* o = new juce::DynamicObject();
+                o->setProperty ("voice", (juce::int64) g.voice);
+                o->setProperty ("when", g.when);
+                o->setProperty ("pos", g.pos);
+                o->setProperty ("len", g.len);
+                o->setProperty ("dur", g.dur);
+                o->setProperty ("rate", g.rate);
+                if (g.reverse) o->setProperty ("rev", true);
+                o->setProperty ("pan", g.pan);
+                o->setProperty ("gain", g.gain);
+                if (g.stream) o->setProperty ("stream", (int) g.stream);
+                grains.add (juce::var (o));
+            }
+            m->setProperty ("grains", grains);
         }
         browser.emitEventIfBrowserIsVisible ("ssbMeter", juce::var (m));
     }

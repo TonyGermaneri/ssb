@@ -217,16 +217,37 @@ Settings settingsFromJson (const juce::var& o)
     s.fDecay = num (o, "fDecay", s.fDecay);
     s.fSustain = num (o, "fSustain", s.fSustain);
     s.fRelease = num (o, "fRelease", s.fRelease);
-    s.grainSize = num (o, "grainSize", 0);
-    s.grainPos = num (o, "grainPos", 0.5f);
-    s.grainWidth = num (o, "grainWidth", 0);
-    s.grainDensity = num (o, "grainDensity", 2);
-    s.grainJitter = num (o, "grainJitter", 0);
-    s.grainReverse = num (o, "grainReverse", 0);
-    s.grainSpread = num (o, "grainSpread", 0);
-    s.grainStreams = num (o, "grainStreams", 1);
-    s.grainScatter = num (o, "grainScatter", 0);
-    s.grainDrift = num (o, "grainDrift", 0);
+    if (o.hasProperty ("grain"))
+    {
+        s.grain = flag (o, "grain", false);
+        s.grainSize = num (o, "grainSize", s.grainSize);
+        s.grainPos = num (o, "grainPos", s.grainPos);
+        s.grainWidth = num (o, "grainWidth", s.grainWidth);
+        s.grainRate = num (o, "grainRate", s.grainRate);
+        s.grainShape = num (o, "grainShape", s.grainShape);
+        s.grainJitter = num (o, "grainJitter", s.grainJitter);
+        s.grainReverse = num (o, "grainReverse", s.grainReverse);
+        s.grainSpread = num (o, "grainSpread", s.grainSpread);
+        s.grainStreams = num (o, "grainStreams", s.grainStreams);
+        s.grainScatter = num (o, "grainScatter", s.grainScatter);
+        s.grainDrift = num (o, "grainDrift", s.grainDrift);
+    }
+    else if (const float size = num (o, "grainSize", 0); size > 0)
+    {
+        // saved before 0.2 (types.ts migrateGrains): size > 0 was on, grainDensity counted overlapping grains
+        s.grain = true;
+        s.grainSize = size;
+        s.grainRate = std::clamp (num (o, "grainDensity", 2) / (size / 1000.0f), 0.5f, 1000.0f);
+        s.grainShape = 1;
+        s.grainPos = num (o, "grainPos", 0.5f);
+        s.grainWidth = num (o, "grainWidth", 0);
+        s.grainJitter = num (o, "grainJitter", 0);
+        s.grainReverse = num (o, "grainReverse", 0);
+        s.grainSpread = num (o, "grainSpread", 0);
+        s.grainStreams = num (o, "grainStreams", 1);
+        s.grainScatter = num (o, "grainScatter", 0);
+        s.grainDrift = num (o, "grainDrift", 0);
+    }
     s.delayTime = num (o, "delayTime", s.delayTime);
     s.delayFeedback = num (o, "delayFeedback", s.delayFeedback);
     s.delayMix = num (o, "delayMix", 0);

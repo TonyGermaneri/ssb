@@ -44,6 +44,7 @@ struct VoiceView
     uint64_t sound { 0 };         // idHash of the sound it plays
     uint64_t group { 0 };         // idHash of the patch sound it plays for (VCOs), 0 = none
     int midiNote { -1 };
+    float velocity { 1 };         // 0..1
     float age { 0 };              // seconds since note-on
     float end { -1 };             // seconds after note-on it stops; -1 = until released
     float position { 0 };         // seconds into its sample
@@ -52,6 +53,19 @@ struct VoiceView
     float clipIn { 0 }, clipOut { 0 };
     bool loops { false };
     bool grains { false };        // a grain cloud: no single playhead
+};
+
+/** A grain as it started, for the editor's waveform (types: grainMath.ts GrainEvent). */
+struct GrainView
+{
+    uint32_t voice { 0 };         // VoiceView::id
+    double when { 0 };            // engine time, seconds
+    float pos { 0 }, len { 0 };   // seconds of the sample it plays, forward
+    float dur { 0 };              // seconds it sounds
+    float rate { 1 };             // playback rate (pitch)
+    float pan { 0 }, gain { 1 };
+    bool reverse { false };
+    uint8_t stream { 0 };
 };
 
 /** FNV-1a: how a VoiceView names its sound without the audio thread touching a string. */
@@ -108,6 +122,10 @@ public:
     /** The playing voices as of the last block, and the engine's clock then (seconds). Any thread;
         false if a block was being published at that moment (just ask again next time). */
     bool readVoices (std::vector<VoiceView>& out, double& time) const;
+
+    /** Grains started since the last call, oldest first: the latest `max` of them (the engine holds up to
+        2048 until they are read, dropping later ones meanwhile). One reader thread. */
+    void readGrains (std::vector<GrainView>& out, size_t max);
 
     double sampleRate() const noexcept { return rate; }
 
