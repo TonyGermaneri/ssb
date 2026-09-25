@@ -19,6 +19,9 @@ public:
     void resized() override;
     void paint (juce::Graphics&) override;
 
+    /** Hand the page this instance's saved settings (after a late setStateInformation). */
+    void pushState();
+
 private:
     void timerCallback() override;
     std::optional<juce::WebBrowserComponent::Resource> provide (const juce::String& path);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addTags, hasAllTags, joinTags, splitTags, tagFacets } from './tags'
+import { addTags, hasAllTags, joinTags, splitTags, tagFacets, hasNoTags, passesTags } from './tags'
 
 describe('tags', () => {
   it('splits, trims and de-duplicates comma lists', () => {
@@ -17,7 +17,7 @@ describe('tags', () => {
 
   it('counts facets within the filtered set', () => {
     const pads = ['drums, 808', 'drums, 909', 'drums, 808, loud', 'piano']
-    expect(tagFacets(pads, [])).toEqual([
+    expect(tagFacets(pads, [])).toMatchObject([
       { name: 'drums', count: 3, selected: false },
       { name: '808', count: 2, selected: false },
       { name: '909', count: 1, selected: false },
@@ -25,7 +25,7 @@ describe('tags', () => {
       { name: 'piano', count: 1, selected: false },
     ])
     // selecting 808 narrows the list and the counts; piano and 909 disappear
-    expect(tagFacets(pads, ['808'])).toEqual([
+    expect(tagFacets(pads, ['808'])).toMatchObject([
       { name: '808', count: 2, selected: true },
       { name: 'drums', count: 2, selected: false },
       { name: 'loud', count: 1, selected: false },
@@ -53,5 +53,21 @@ describe('patches', () => {
     expect(p.slots).toHaveLength(3)
     expect(p.slots[0]?.layer.settings.vcos).toEqual([])
     expect(p.slots[1]).toBeNull()
+  })
+})
+
+describe('hidden tags (right-click)', () => {
+  const pads = ['drums, 808', 'drums, acoustic', 'vox', 'drums, 808, loud']
+  it('filters out pads carrying a hidden tag', () => {
+    expect(pads.filter((p) => passesTags(p, [], ['808']))).toEqual(['drums, acoustic', 'vox'])
+    expect(pads.filter((p) => passesTags(p, ['drums'], ['808']))).toEqual(['drums, acoustic'])
+    expect(hasNoTags('Drums, 808', ['808'])).toBe(false)
+  })
+  it('keeps hidden tags listed with the count they hide', () => {
+    const f = tagFacets(pads, [], ['808'])
+    expect(f[0]).toMatchObject({ name: '808', count: 2, excluded: true })
+    expect(f.find((x) => x.name === 'drums')).toMatchObject({ count: 1, excluded: false })
+    expect(f.find((x) => x.name === 'loud')).toBeUndefined()   // only on hidden pads
+    expect(tagFacets(pads, [], ['gone'])[0]).toMatchObject({ name: 'gone', count: 0, excluded: true })
   })
 })

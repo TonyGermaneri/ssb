@@ -452,3 +452,94 @@ TEST ("engine: a synced delay follows the host's tempo, not the page's")
     CHECK (rig.rms (0.49, 0.56) > 0.05);
     CHECK (rig.rms (0.64, 0.72) < 1e-3);
 }
+
+namespace
+{
+/** A 2 s log sweep, 200 Hz -> 2 kHz: where a grain reads from, you can hear (and measure). */
+ssb::SamplePtr sweep()
+{
+    auto s = std::make_shared<ssb::Sample>();
+    s->rate = rate;
+    const auto n = (size_t) (2 * rate);
+    s->channels.assign (1, std::vector<float> (n));
+    double ph = 0;
+    for (size_t i = 0; i < n; ++i)
+    {
+        ph += 2 * ssb::dsp::pi * 200 * std::pow (10.0, (double) i / rate / 2) / rate;
+        s->channels[0][i] = (float) (0.8 * std::sin (ph));
+    }
+    return s;
+}
+
+/** The period (s) of the output's amplitude envelope: how often grains start. */
+double envelopePeriod (const std::vector<float>& x, double from, double to)
+{
+    const auto a = (size_t) (from * rate), b = (size_t) (to * rate);
+    std::vector<double> env;
+    for (size_t i = a; i + 96 < b; i += 96)   // 2 ms windows
+    {
+        double s = 0;
+        for (size_t j = 0; j < 96; ++j) s += std::abs (x[i + j]);
+        env.push_back (s / 96);
+    }
+    double mean = 0;
+    for (auto e : env) mean += e;
+    mean /= (double) env.size();
+    size_t best = 0;
+    double bestScore = -1;
+    for (size_t lag = 8; lag < env.size() / 2; ++lag)   // 16 ms and up
+    {
+        double s = 0;
+        for (size_t i = 0; i + lag < env.size(); ++i) s += (env[i] - mean) * (env[i + lag] - mean);
+        if (s > bestScore) { bestScore = s; best = lag; }
+    }
+    return (double) best * 96 / rate;
+}
+} // namespace
+
+TEST ("engine: GRAIN POS picks where in the sample grains read from")
+{
+    auto play = [] (float pos)
+    {
+        auto rig = std::make_unique<Rig>();
+        rig->add ("a", sweep(), [pos] (auto& s) { s.grainSize = 60; s.grainDensity = 4; s.grainPos = pos; });
+        rig->commit();
+        rig->press ("a");
+        rig->render (0.6);
+        return rig->hz (0.15, 0.55);
+    };
+    // 200 * 10^pos Hz; overlapping grains blur it a little
+    CHECK_NEAR (play (0.1f), 252.0, 30.0);
+    CHECK_NEAR (play (0.5f), 632.0, 60.0);
+    CHECK_NEAR (play (0.9f), 1589.0, 120.0);
+}
+
+TEST ("engine: GRAIN SIZE sets how long each grain is (and so the grain rhythm)")
+{
+    auto period = [] (float ms)
+    {
+        auto rig = std::make_unique<Rig>();
+        rig->add ("a", sine (440, 3), [ms] (auto& s) { s.grainSize = ms; s.grainDensity = 1; });
+        rig->commit();
+        rig->press ("a");
+        rig->render (1.2);
+        return envelopePeriod (rig->left, 0.1, 1.1);
+    };
+    // density 1: grains end to end, one Hann window each
+    CHECK_NEAR (period (40), 0.040, 0.006);
+    CHECK_NEAR (period (150), 0.150, 0.012);
+}
+
+TEST ("engine: turning GRAIN POS while a cloud sounds moves it")
+{
+    Rig rig;
+    rig.add ("a", sweep(), [] (auto& s) { s.grainSize = 60; s.grainDensity = 4; s.grainPos = 0.1f; });
+    rig.commit();
+    rig.press ("a");
+    rig.render (0.5);
+    CHECK_NEAR (rig.hz (0.15, 0.45), 252.0, 30.0);
+    rig.add ("a", sweep(), [] (auto& s) { s.grainSize = 60; s.grainDensity = 4; s.grainPos = 0.9f; });
+    rig.commit();   // the page's knob, as the next performance
+    rig.render (0.5);
+    CHECK_NEAR (rig.hz (0.15, 0.45), 1589.0, 120.0);
+}

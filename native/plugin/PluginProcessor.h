@@ -73,6 +73,9 @@ public:
 private:
     void timerCallback() override { engine.collectGarbage(); }
 
+    /** expires with the processor: guards callbacks queued to the message thread */
+    std::shared_ptr<int> lifetime = std::make_shared<int> (0);
+
     std::vector<ssb::MidiEvent> events;
     std::vector<float> scratch;
 

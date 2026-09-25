@@ -134,6 +134,18 @@ int main (int argc, char** argv)
     window.reset();
     juce::MemoryBlock state;
     plugin->getStateInformation (state);
+    if (args.contains ("--dump-state"))
+        if (const auto tree = [&]
+            {
+                // a hosted VST3's state comes wrapped: XML whose IComponent is the plugin's own, base64
+                juce::MemoryBlock inner (state);
+                if (auto xml = juce::AudioProcessor::getXmlFromBinary (state.getData(), (int) state.getSize()))
+                    if (auto* component = xml->getChildByName ("IComponent"))
+                        inner.fromBase64Encoding (component->getAllSubText());
+                return juce::ValueTree::readFromData (inner.getData(), inner.getSize());
+            }(); tree.isValid())
+            std::printf ("state page: %s\nstate board key: %s\n", tree.getProperty ("page").toString().toRawUTF8(),
+                         tree.getProperty ("board").toString().toRawUTF8());
     plugin->releaseResources();
     plugin.reset();
 

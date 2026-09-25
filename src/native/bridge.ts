@@ -30,6 +30,8 @@ export interface NativeInfo {
   wrapper: string
   standalone: boolean
   version: string
+  /** what this plugin instance saved with the host session (ssbSetState), or '' */
+  state?: string
 }
 
 const backend = (): JuceBackend | undefined => (typeof window === 'undefined' ? undefined : window.__JUCE__?.backend)

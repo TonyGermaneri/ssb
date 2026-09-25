@@ -188,7 +188,7 @@ function doReset() {
           <button class="fold" :title="isFolded('grain') ? 'Show' : 'Fold'" @click="toggleFold('grain')"><i /></button>
         </h4>
         <div class="row">
-          <Knob v-model="s.grainSize" label="SIZE" :max="grainMax()" curve="pow" :step="1" :default="0" :format="fmtMs" color="accent" />
+          <Knob v-model="s.grainSize" label="SIZE" :max="grainMax()" curve="grain" :step="1" :default="0" :format="fmtMs" color="accent" />
           <Knob v-model="s.grainPos" label="POS" :default="0.5" :format="fmtPct" color="accent" />
           <Knob v-model="s.grainWidth" label="WIDTH" :default="0" :format="fmtPct" color="accent" />
           <Knob v-model="s.grainDensity" label="DENS" :min="1" :max="8" :step="1" :default="2" :format="fmtDensity" color="accent" />

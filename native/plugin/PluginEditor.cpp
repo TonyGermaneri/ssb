@@ -134,6 +134,26 @@ SsbEditor::SsbEditor (SsbProcessor& p)
               plugin.library.addSample (args[0].toString().toStdString(), sample);
               complete (juce::var (true));
           })
+          .withNativeFunction ("ssbGetAudio", [] (const juce::Array<juce::var>& args, auto complete)
+          {
+              // A sample from the disk cache, for a page whose own storage lost it:
+              // { rate, channels, data: base64 of planar float32 } or null.
+              if (args.isEmpty())
+                  return complete (juce::var());
+              const auto sample = ssb::SampleStore::instance().get (args[0].toString().toStdString());
+              if (! sample || sample->frames() == 0)
+                  return complete (juce::var());
+              juce::MemoryBlock pcm;
+              for (const auto& ch : sample->channels)
+                  pcm.append (ch.data(), ch.size() * sizeof (float));
+              juce::MemoryOutputStream encoded;
+              juce::Base64::convertToBase64 (encoded, pcm.getData(), pcm.getSize());
+              auto* o = new juce::DynamicObject();
+              o->setProperty ("rate", sample->rate);
+              o->setProperty ("channels", (int) sample->channels.size());
+              o->setProperty ("data", encoded.toString());
+              complete (juce::var (o));
+          })
           .withNativeFunction ("ssbCommand", [this] (const juce::Array<juce::var>& args, auto complete)
           {
               // A pad click or a computer-keyboard note from the page, for the engine to play.
@@ -272,6 +292,12 @@ void SsbEditor::paint (juce::Graphics& g)
         for (int i = 1; i <= 3; ++i)
             g.drawLine (c.getRight() - 4.0f * (float) i, c.getBottom() - 1.0f, c.getRight() - 1.0f, c.getBottom() - 4.0f * (float) i, 1.0f);
     }
+}
+
+void SsbEditor::pushState()
+{
+    // the host restored a session while the window was open: the page takes the instance's settings
+    browser.emitEventIfBrowserIsVisible ("ssbState", juce::var (plugin.pageState));
 }
 
 void SsbEditor::toggleZoom()

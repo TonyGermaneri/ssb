@@ -27,8 +27,8 @@ function onWheel(e: WheelEvent) {
       <h5>TAGS</h5>
       <button
         class="chip all"
-        :class="{ on: !board.currentFilter.length }"
-        title="Show everything"
+        :class="{ on: !board.currentFilter.length && !board.currentHidden.length }"
+        title="Show everything (clears hidden tags too)"
         @click="board.clearCurrentTags()"
       >
         ALL <b>{{ board.currentTotal }}</b>
@@ -41,22 +41,30 @@ function onWheel(e: WheelEvent) {
       >
         ♥ FAV
       </button>
-      <span v-if="board.currentFilter.length || favOnly" class="shown">{{ board.currentShown }} SHOWN</span>
+      <span v-if="board.currentFilter.length || board.currentHidden.length || favOnly" class="shown">{{ board.currentShown }} SHOWN</span>
     </div>
     <div class="chips" @wheel="onWheel">
       <button
         v-for="f in board.currentFacets"
         :key="f.name"
         class="chip"
-        :class="{ on: f.selected }"
+        :class="{ on: f.selected, hidden: f.excluded }"
         :style="{ '--hue': padHue(f.name, f.name, board.theme.padHues) }"
-        :title="f.selected ? `Remove ${f.name} from the filter` : `Show pads tagged ${f.name}`"
+        :title="
+          f.excluded
+            ? `Hiding ${f.count} tagged ${f.name} — click (or right-click) to show them again`
+            : f.selected
+              ? `Remove ${f.name} from the filter · right-click to hide these instead`
+              : `Show pads tagged ${f.name} · right-click to hide them`
+        "
         @click="board.toggleCurrentTag(f.name)"
+        @contextmenu.prevent="board.hideCurrentTag(f.name)"
       >
         <i class="dot" />
-        {{ f.name }}
+        <span class="nm">{{ f.name }}</span>
         <b>{{ f.count }}</b>
         <span v-if="f.selected" class="x">✕</span>
+        <v-icon v-else-if="f.excluded" size="12" icon="mdi-eye-off" />
       </button>
       <span v-if="!board.currentFacets.length" class="empty">NO TAGS YET (COMMA-SEPARATED, IN EACH ITEM'S PANEL)</span>
     </div>
@@ -149,6 +157,18 @@ h5 {
   color: #fff;
   background: #d8245a;
   box-shadow: 0 0 8px #ff3d6e;
+}
+/* hidden (right-click): struck through and dimmed, the count is how many it hides */
+.chip.hidden {
+  color: var(--c-danger);
+  border-color: color-mix(in srgb, var(--c-danger) 45%, #000);
+  background: color-mix(in srgb, var(--c-danger) 12%, #141317);
+}
+.chip.hidden .nm {
+  text-decoration: line-through;
+}
+.chip.hidden .dot {
+  opacity: 0.35;
 }
 .dot {
   width: 7px;

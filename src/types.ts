@@ -429,7 +429,7 @@ export const defaultMaster = (): MasterState => ({
   selectedId: null,
   mpe: false,
   mpeBendRange: 48,
-  midiAuto: false,
+  midiAuto: true,
   midiBase: 36,
   bpm: 120,
   clockSource: 'internal',

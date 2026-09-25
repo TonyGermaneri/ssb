@@ -21,6 +21,19 @@ describe('knob math', () => {
     expect(valueToPct(480, 0, 60000, 'pow')).toBeCloseTo(0.2)
   })
 
+  it('grain curve: OFF, then 5-500 ms over most of the travel, then out to the sample length', () => {
+    expect(pctToValue(0, 0, 30000, 'grain')).toBe(0)
+    expect(pctToValue(0.02, 0, 30000, 'grain')).toBe(0)
+    expect(pctToValue(0.03, 0, 30000, 'grain', 1)).toBe(5)
+    const at = (p: number) => pctToValue(p, 0, 30000, 'grain', 1)
+    expect(at(0.5)).toBeGreaterThan(40)
+    expect(at(0.5)).toBeLessThan(120)            // the middle of the knob is a grain, not a phrase
+    expect(at(0.03 + 0.97 * 0.75)).toBe(500)
+    expect(at(1)).toBe(30000)
+    for (const v of [5, 60, 500, 4000, 30000]) expect(pctToValue(valueToPct(v, 0, 30000, 'grain'), 0, 30000, 'grain', 1)).toBeCloseTo(v, -1)
+    expect(pctToValue(1, 0, 500, 'grain', 1)).toBe(500)  // short samples: 5 ms .. their length
+  })
+
   it('clamps', () => {
     expect(valueToPct(99, 0, 10)).toBe(1)
     expect(pctToValue(-1, 0, 10)).toBe(0)

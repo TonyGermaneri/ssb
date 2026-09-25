@@ -1,16 +1,17 @@
 import { defineStore } from 'pinia'
-import { computed, reactive, ref, shallowReactive, toRaw, watch } from 'vue'
+import { computed, nextTick, reactive, ref, shallowReactive, toRaw, watch, type Ref } from 'vue'
 import { del, get, keys, set } from 'idb-keyval'
 import * as engine from '../audio/engine'
 import { computePeaks } from '../audio/peaks'
 import { connectMidi, parseMidi, type MidiEvent } from '../audio/midi'
-import { callNative, inNative, nativeBoardKey, nativeInfo, onNativeMidi, saveFile } from '../native/bridge'
+import { callNative, inNative, nativeBoardKey, nativeInfo, onNative, onNativeMidi, saveFile } from '../native/bridge'
+import { encodeWav, planarFromBase64 } from '../lib/wav'
 import { History } from '../lib/history'
 import { ClockTracker } from '../lib/midiClock'
 import { THEMES, themeById } from '../theme/themes'
 import type { Voice, VoiceOptions, ZonePlay } from '../audio/voice'
 import { basename, dirname, type PathFile } from '../lib/dropFiles'
-import { addTags, hasAllTags, tagFacets } from '../lib/tags'
+import { addTags, passesTags, tagFacets } from '../lib/tags'
 import { normalisePath, parseSfz } from '../lib/sfz'
 import { sniffSampleRate } from '../lib/sampleRate'
 import { filterPlayable, nearestZone, pickZones, regionToZone, zoneSemis } from '../lib/zones'
@@ -23,8 +24,22 @@ import {
   type PatchLayer, type PatchSlot, type Preset, type Sound, type SoundSettings, type VcoSlot, type Zone,
 } from '../types'
 
-/** one board per plugin instance (see nativeBoardKey); samples are shared by content id */
-const BOARD_KEY = nativeBoardKey() ? `ssb:board:${nativeBoardKey()}` : 'ssb:board'
+/**
+ * The library: sounds, patches, presets. One board, shared by every SSB in the same place (browser
+ * tabs; plugin instances in one DAW). What a plugin instance plays -- its patch, keyboard mode,
+ * volume, FX -- is its own and lives in the host session (INSTANCE_FIELDS).
+ */
+const BOARD_KEY = 'ssb:board'
+/** plugin instances once kept a board each, under 'ssb:board:<instance>': merged into the library */
+const LEGACY_BOARD = 'ssb:board:'
+/** a plugin instance's own settings, saved with the host session */
+const INSTANCE_FIELDS = [
+  'play', 'mono', 'glide', 'octave', 'volume', 'muted', 'selectedId', 'patchId', 'mpe', 'mpeBendRange',
+  'midiAuto', 'midiBase', 'bpm', 'clockSource', 'fx', 'mod',
+] as const
+/** tells the other tabs / instances the library was saved, so they reload it */
+const libraryChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('ssb-library') : null
+const pageId = crypto.randomUUID()
 const audioKey = (audioId: string) => `ssb:audio:${audioId}`
 
 /** Keyboard triggers, assigned to visible pads in grid order. */
@@ -53,6 +68,8 @@ export const useBoard = defineStore('board', () => {
   const openPanels = reactive(new Set<string>())
   const pressed = reactive(new Set<string>())
   const tagFilter = ref<string[]>([])
+  /** tags hidden with a right-click: pads carrying any of them are filtered out */
+  const tagHidden = ref<string[]>([])
   const peaks = shallowReactive(new Map<string, Float32Array>())
   const loaded = ref(false)
   const toast = ref('')
@@ -77,41 +94,49 @@ export const useBoard = defineStore('board', () => {
   /** patch catalog: sets of layered sound settings + header settings */
   const patches = ref<Patch[]>([])
   const patchTagFilter = ref<string[]>([])
+  const patchTagHidden = ref<string[]>([])
 
   // ── derived ────────────────────────────────────────────────────────────
   /** every tag in the catalog (comma-separated per pad), for tag pickers */
   const tags = computed(() => tagFacets(sounds.value.map((s) => s.settings.tag), []).map((f) => f.name))
   /** pads carrying every selected tag */
   const visible = computed(() =>
-    sounds.value.filter((s) => (!master.favSounds || s.fav) && hasAllTags(s.settings.tag, tagFilter.value)),
+    sounds.value.filter((s) => (!master.favSounds || s.fav) && passesTags(s.settings.tag, tagFilter.value, tagHidden.value)),
   )
   /** tags among the visible pads, with counts — narrows as tags are selected */
-  const facets = computed(() => tagFacets(sounds.value.map((s) => s.settings.tag), tagFilter.value))
-  function toggleTag(tag: string) {
-    const on = tagFilter.value.some((t) => t.toLowerCase() === tag.toLowerCase())
-    tagFilter.value = on ? tagFilter.value.filter((t) => t.toLowerCase() !== tag.toLowerCase()) : [...tagFilter.value, tag]
+  const facets = computed(() => tagFacets(sounds.value.map((s) => s.settings.tag), tagFilter.value, tagHidden.value))
+  const same = (a: string) => (b: string) => a.toLowerCase() === b.toLowerCase()
+  /** click: a hidden tag is shown again; otherwise the tag toggles in the AND filter */
+  function toggleIn(tag: string, filter: Ref<string[]>, hidden: Ref<string[]>) {
+    if (hidden.value.some(same(tag))) return void (hidden.value = hidden.value.filter((t) => !same(tag)(t)))
+    const on = filter.value.some(same(tag))
+    filter.value = on ? filter.value.filter((t) => !same(tag)(t)) : [...filter.value, tag]
   }
+  /** right-click: hide the pads carrying the tag (or show them again) */
+  function toggleOut(tag: string, filter: Ref<string[]>, hidden: Ref<string[]>) {
+    filter.value = filter.value.filter((t) => !same(tag)(t))
+    hidden.value = hidden.value.some(same(tag)) ? hidden.value.filter((t) => !same(tag)(t)) : [...hidden.value, tag]
+  }
+  const toggleTag = (tag: string) => toggleIn(tag, tagFilter, tagHidden)
   // ── patches catalog ─────────────────────────────────────────────────────
   const patchTags = computed(() => tagFacets(patches.value.map((p) => p.tag), []).map((f) => f.name))
   const visiblePatches = computed(() =>
-    patches.value.filter((p) => (!master.favPatches || p.fav) && hasAllTags(p.tag, patchTagFilter.value)),
+    patches.value.filter((p) => (!master.favPatches || p.fav) && passesTags(p.tag, patchTagFilter.value, patchTagHidden.value)),
   )
-  const patchFacets = computed(() => tagFacets(patches.value.map((p) => p.tag), patchTagFilter.value))
-  function togglePatchTag(tag: string) {
-    const on = patchTagFilter.value.some((t) => t.toLowerCase() === tag.toLowerCase())
-    patchTagFilter.value = on
-      ? patchTagFilter.value.filter((t) => t.toLowerCase() !== tag.toLowerCase())
-      : [...patchTagFilter.value, tag]
-  }
+  const patchFacets = computed(() => tagFacets(patches.value.map((p) => p.tag), patchTagFilter.value, patchTagHidden.value))
+  const togglePatchTag = (tag: string) => toggleIn(tag, patchTagFilter, patchTagHidden)
   /** the tag strip follows the tab */
   const currentFacets = computed(() => (master.tab === 'patches' ? patchFacets.value : facets.value))
   const currentFilter = computed(() => (master.tab === 'patches' ? patchTagFilter.value : tagFilter.value))
   const currentTotal = computed(() => (master.tab === 'patches' ? patches.value.length : sounds.value.length))
   const currentShown = computed(() => (master.tab === 'patches' ? visiblePatches.value.length : visible.value.length))
+  const currentHidden = computed(() => (master.tab === 'patches' ? patchTagHidden.value : tagHidden.value))
   const toggleCurrentTag = (tag: string) => (master.tab === 'patches' ? togglePatchTag(tag) : toggleTag(tag))
+  const hideCurrentTag = (tag: string) =>
+    master.tab === 'patches' ? toggleOut(tag, patchTagFilter, patchTagHidden) : toggleOut(tag, tagFilter, tagHidden)
   function clearCurrentTags() {
-    if (master.tab === 'patches') patchTagFilter.value = []
-    else tagFilter.value = []
+    if (master.tab === 'patches') patchTagFilter.value = patchTagHidden.value = []
+    else tagFilter.value = tagHidden.value = []
   }
 
   const keyFor = computed(() => {
@@ -357,44 +382,24 @@ export const useBoard = defineStore('board', () => {
   // ── persistence ────────────────────────────────────────────────────────
   async function load() {
     try {
-      const saved = await get<SavedBoard>(BOARD_KEY)
+      let saved = await get<SavedBoard>(BOARD_KEY)
+      if (!saved && inNative()) saved = (await mergeLegacyBoards()) ?? undefined
       if (saved) {
         Object.assign(master, migrateMaster(saved.master))
         // every launch starts as a soundboard: the pads as cards, the VCO rack put away
         Object.assign(master, { rack: false, view: 'pads', list: true, tab: 'sounds' })
         presets.value = saved.presets ?? []
         patches.value = (saved.patches ?? []).map(migratePatch)
-        const ok: Sound[] = []
-        for (const s of saved.sounds) {
-          try {
-            let missing = false
-            for (const audioId of new Set(soundAudioIds(s))) {
-              if (engine.buffers.has(audioId)) continue
-              if (isSynthAudioId(audioId)) {
-                peaks.set(audioId, computePeaks(engine.getBuffer(audioId)!))
-                continue
-              }
-              const blob = await get<Blob>(audioKey(audioId))
-              if (!blob) {
-                missing = true
-                break
-              }
-              await loadAudio(audioId, blob)
-            }
-            if (missing) continue
-            ok.push({ ...s, settings: migrateSettings(s.settings) })
-          } catch (e) {
-            console.error(`Dropping ${s.fileName}`, e)
-          }
-        }
+        const ok = await readSounds(saved.sounds)
         sounds.value = ok
         if (!selected.value) master.selectedId = ok[0]?.id ?? null
         for (const s of ok) applyCcDefaults(s)
         applyCcDefaults(selected.value)
       }
-      void collectOrphanAudio()
       // first run: built-in synth sounds + factory patches
       if (!master.factory) installFactory()
+      if (nativeBoardKey()) await restoreInstance()
+      void collectOrphanAudio()
     } finally {
       loaded.value = true
       scheduleSave()
@@ -402,21 +407,177 @@ export const useBoard = defineStore('board', () => {
     }
   }
 
+  /** Saved sounds whose audio can be found (in the page's storage, else the plugin's sample cache). */
+  async function readSounds(list: Sound[]): Promise<Sound[]> {
+    const ok: Sound[] = []
+    for (const s of list) {
+      try {
+        let missing = false
+        for (const audioId of new Set(soundAudioIds(s))) {
+          if (engine.buffers.has(audioId)) continue
+          if (isSynthAudioId(audioId)) {
+            peaks.set(audioId, computePeaks(engine.getBuffer(audioId)!))
+            continue
+          }
+          const blob = (await get<Blob>(audioKey(audioId))) ?? (await audioFromPlugin(audioId))
+          if (!blob) {
+            missing = true
+            break
+          }
+          await loadAudio(audioId, blob)
+        }
+        if (missing) continue
+        ok.push({ ...s, settings: migrateSettings(s.settings) })
+      } catch (e) {
+        console.error(`Dropping ${s.fileName}`, e)
+      }
+    }
+    return ok
+  }
+
+  /**
+   * The plugin keeps every sample it was ever sent in a disk cache of its own. When the page's
+   * storage has lost one (browsers and hosts do clear it), the cached copy comes back as a WAV and
+   * is stored again.
+   */
+  async function audioFromPlugin(audioId: string): Promise<Blob | null> {
+    if (!inNative()) return null
+    const pcm = await callNative<{ rate: number; channels: number; data: string } | null>('ssbGetAudio', audioId).catch(() => null)
+    if (!pcm?.data) return null
+    const blob = encodeWav(planarFromBase64(pcm.data, pcm.channels), pcm.rate)
+    await set(audioKey(audioId), blob)
+    return blob
+  }
+
+  /**
+   * Before the library was shared, each plugin instance kept a board of its own, so every new
+   * instance started blank. The first load since merges them all: every sound and patch once (the
+   * built-in waves and factory patches each board installed, once by name), presets by id.
+   */
+  async function mergeLegacyBoards(): Promise<SavedBoard | null> {
+    const boards: SavedBoard[] = []
+    for (const k of await keys()) {
+      if (typeof k !== 'string' || !k.startsWith(LEGACY_BOARD)) continue
+      const b = await get<SavedBoard>(k)
+      if (b?.sounds) boards.push(b)
+    }
+    if (!boards.length) return null
+    const size = (b: SavedBoard) => b.sounds.length + (b.patches?.length ?? 0)
+    boards.sort((a, b) => size(b) - size(a))
+    const out: SavedBoard = { version: 1, master: boards[0].master, sounds: [], presets: [], patches: [] }
+    const soundIds = new Set<string>()
+    const builtIn = new Map<string, string>() // name -> kept id
+    const remap = new Map<string, string>() // dropped duplicate id -> kept id
+    for (const b of boards)
+      for (const s of b.sounds) {
+        if (soundIds.has(s.id)) continue
+        if (isSynthAudioId(s.audioId)) {
+          const kept = builtIn.get(s.settings.name)
+          if (kept) {
+            remap.set(s.id, kept)
+            continue
+          }
+          builtIn.set(s.settings.name, s.id)
+        }
+        soundIds.add(s.id)
+        out.sounds.push(s)
+      }
+    const patchIds = new Set<string>()
+    const factory = new Set<string>()
+    for (const b of boards)
+      for (const p of b.patches ?? []) {
+        if (patchIds.has(p.id)) continue
+        const isFactory = /\bfactory\b/.test(p.tag)
+        if (isFactory && factory.has(p.name)) continue
+        if (isFactory) factory.add(p.name)
+        patchIds.add(p.id)
+        for (const x of p.slots ?? []) if (x && remap.has(x.layer.soundId)) x.layer.soundId = remap.get(x.layer.soundId)!
+        out.patches!.push(p)
+      }
+    const presetIds = new Set<string>()
+    for (const b of boards) for (const p of b.presets ?? []) if (!presetIds.has(p.id)) (presetIds.add(p.id), out.presets!.push(p))
+    out.master = { ...out.master, factory: true }
+    toast.value = `Library restored: ${out.sounds.length} sounds, ${out.patches!.length} patches`
+    return out
+  }
+
+  // ── a plugin instance's own settings (saved with the host session) ─────
+  const pickInstance = (m: MasterState) => Object.fromEntries(INSTANCE_FIELDS.map((k) => [k, clone(m[k])]))
+  function applyInstance(json: string | undefined | null) {
+    if (!json) return false
+    try {
+      const st = JSON.parse(json) as { master?: Partial<MasterState> }
+      const m = st.master ?? {}
+      for (const k of INSTANCE_FIELDS) if (k in m) (master as Record<string, unknown>)[k] = clone(m[k])
+      return true
+    } catch {
+      return false
+    }
+  }
+  let instanceTimer: ReturnType<typeof setTimeout> | undefined
+  async function restoreInstance() {
+    const info = await nativeInfo().catch(() => null)
+    if (!applyInstance(info?.state)) {
+      // an instance from before the shared library had a board of its own: keep its settings;
+      // a new instance starts in keyboard play, with pads mapped to notes automatically
+      const own = await get<SavedBoard>(LEGACY_BOARD + nativeBoardKey())
+      if (own?.master) applyInstance(JSON.stringify({ master: pickInstance(migrateMaster(own.master)) }))
+      else Object.assign(master, { play: true, midiAuto: true })
+    }
+    watch(
+      () => INSTANCE_FIELDS.map((k) => master[k]),
+      () => {
+        clearTimeout(instanceTimer)
+        instanceTimer = setTimeout(() => void callNative('ssbSetState', JSON.stringify({ v: 1, master: pickInstance(master) })).catch(() => {}), 300)
+      },
+      { deep: true, immediate: true },
+    )
+    // a host that restores the session after the window opened
+    onNative<string>('ssbState', (json) => applyInstance(json))
+  }
+
+  // ── several SSBs, one library: the others reload after one saves ──────
+  let applyingRemote = false
+  libraryChannel?.addEventListener('message', (e: MessageEvent<{ type: string; from: string }>) => {
+    if (e.data?.type === 'saved' && e.data.from !== pageId && loaded.value) void reloadLibrary()
+  })
+  async function reloadLibrary() {
+    const saved = await get<SavedBoard>(BOARD_KEY)
+    if (!saved) return
+    const list = await readSounds(saved.sounds)
+    applyingRemote = true
+    try {
+      presets.value = saved.presets ?? []
+      patches.value = (saved.patches ?? []).map(migratePatch)
+      sounds.value = list
+      await nextTick()
+    } finally {
+      applyingRemote = false
+    }
+  }
+
   /** Deleted pads keep their audio for undo; blobs nothing references are dropped on the next load. */
   async function collectOrphanAudio() {
     const used = new Set(sounds.value.flatMap((s) => soundAudioIds(s).map(audioKey)))
-    for (const k of await keys()) {
+    // audio any stored board still needs (other tabs; boards from before the shared library)
+    const all = await keys()
+    for (const k of all) {
+      if (typeof k !== 'string' || !k.startsWith('ssb:board')) continue
+      const b = await get<SavedBoard>(k)
+      for (const s of b?.sounds ?? []) for (const id of soundAudioIds(s)) used.add(audioKey(id))
+    }
+    for (const k of all) {
       if (typeof k === 'string' && k.startsWith('ssb:audio:') && !used.has(k)) await del(k)
     }
   }
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined
   function scheduleSave() {
-    if (!loaded.value) return
+    if (!loaded.value || applyingRemote) return
     clearTimeout(saveTimer)
     saveTimer = setTimeout(() => {
       const board: SavedBoard = { version: 1, sounds: clone(sounds.value), master: clone(master), presets: clone(presets.value), patches: clone(patches.value) }
-      set(BOARD_KEY, board).catch((e) => {
+      set(BOARD_KEY, board).then(() => libraryChannel?.postMessage({ type: 'saved', from: pageId })).catch((e) => {
         console.error(e)
         toast.value = 'Saving the board failed'
       })
@@ -513,7 +674,7 @@ export const useBoard = defineStore('board', () => {
   }
   /** Coalesce a burst of edits (e.g. a knob drag) into one undo step. */
   function scheduleHistory() {
-    if (!loaded.value) return
+    if (!loaded.value || applyingRemote) return
     clearTimeout(historyTimer)
     historyTimer = setTimeout(commitHistory, 400)
   }
@@ -1351,7 +1512,8 @@ export const useBoard = defineStore('board', () => {
     perform, presets, clipboard, matrixScope, canUndo, canRedo, tempo, bpm, noteFor, theme, cycleTheme,
     undo, redo, savePreset, loadPreset, deletePreset, copySettings, pasteSettings, openMatrix, onMidi,
     patches, patchTagFilter, patchTags, visiblePatches, patchFacets, togglePatchTag,
-    currentFacets, currentFilter, currentTotal, currentShown, toggleCurrentTag, clearCurrentTags,
+    currentFacets, currentFilter, currentTotal, currentShown, toggleCurrentTag, clearCurrentTags, currentHidden, hideCurrentTag,
+    tagHidden, patchTagHidden,
     selectedPatch, patchMain, playable, patchNumber, resolveSound, layerSound, patchLayerIds, vcoLinks,
     installFactory, selectPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, assignSlot, slotsOf, toggleSlot, toggleFav,
     pressPatch, releasePatch, patchIdOfLayer,

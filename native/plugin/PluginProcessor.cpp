@@ -105,6 +105,14 @@ void SsbProcessor::setStateInformation (const void* data, int size)
     editorWidth = state.getProperty ("width", editorWidth);
     editorHeight = state.getProperty ("height", editorHeight);
     pageState = state.getProperty ("page", pageState).toString();
+    // an editor already open (a host that restores after creating it) hears about it
+    juce::MessageManager::callAsync ([this, life = std::weak_ptr<int> (lifetime)]
+    {
+        if (life.expired())
+            return;   // the processor went first
+        if (auto* editor = dynamic_cast<SsbEditor*> (getActiveEditor()))
+            editor->pushState();
+    });
     if (const auto key = state.getProperty ("board").toString(); key.isNotEmpty())
         boardKey = key;
     if (usesEngine && state.hasProperty ("engine"))

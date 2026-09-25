@@ -79,12 +79,20 @@ loops, one-shots, release triggers with rt_decay, locc / hicc, the *_onccN modif
 filters, envelopes and LFOs). The engine reports its voices back to the page ~30 times a second,
 so pads light, progress rings turn and waveform playheads move for notes it plays.
 
-Each plugin instance has its own board (its key is saved with the session; samples are shared by
-content). A session reopened in a DAW plays before its window is opened: the engine's sounds are
-in the session and its samples in the disk cache (`ssb-host --reload` checks exactly that).
+**The library is shared, the performance is the instance's.** Every SSB in a DAW sees one library
+(sounds, patches, presets), kept in the web view's storage; when one instance saves, the others
+reload it (a BroadcastChannel), so two open windows never overwrite each other's additions. What an
+instance plays -- its patch or sound, keyboard mode, volume, FX, mod matrix, MIDI mapping -- is its
+own and is saved with the host session (`ssbSetState`). A new instance starts in keyboard play
+with pads mapped to notes automatically. If the page's storage has lost a sample, it is restored
+from the plugin's disk cache (`ssbGetAudio`). (Before 0.2 each instance kept a board of its own;
+the first load merges those into the library.)
 
-**Not yet:** a grain cloud shows no per-grain marks on the waveform in the plugin, and a deleted
-instance's board stays in the web view's storage (it is small; the samples are shared).
+A session reopened in a DAW plays before its window is opened: the engine's sounds are in the
+session and its samples in the disk cache (`ssb-host --reload` checks exactly that;
+`--dump-state` prints what an instance saved).
+
+**Not yet:** a grain cloud shows no per-grain marks on the waveform in the plugin.
 
 Per-sound delay and reverb run on buses shared by every voice with the same settings; both
 effects are linear, so that is the same sound as a copy per voice, for a fraction of the work.

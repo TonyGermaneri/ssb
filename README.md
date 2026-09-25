@@ -69,7 +69,8 @@ layout button brings it back).
 
 A pad's TAGS field holds comma-separated tags (chips in the panel). The **tag strip** under the header lists every tag
 with how many pads carry it; click tags to filter (AND) — the strip then shows only tags that co-occur with the
-selection, with counts for the remaining pads. **ALL** clears the filter. Imports are tagged automatically with where
+selection, with counts for the remaining pads. **Right-click** a tag to hide everything carrying it instead (the
+chip turns red and struck through, counting what it hides; click it again to bring them back). **ALL** clears both. Imports are tagged automatically with where
 they came from: `dropped, <folder>`, `sfzinstruments, <repo>`, `gm, <set>, <family>`, `dirt-samples, <bank>`,
 `url, <host>`, or `imported, <board>` — plus `sfz` or `sample`.
 
@@ -152,8 +153,8 @@ A .zip containing `board.json` still imports as a board; any other .zip is unpac
 
 ### Grain streams
 
-GRAIN → **SIZE** goes from OFF up to the whole sample (the knob's range follows the sample's length, finest at the
-low end). **STREAMS** runs up to 8 independent grain streams per note; **SCATTER** randomises each stream's timing and
+GRAIN → **SIZE**: OFF at the bottom, then 5–500 ms over most of the knob (where POS, DENSITY and WIDTH are heard),
+and the last quarter out to the whole sample. **STREAMS** runs up to 8 independent grain streams per note; **SCATTER** randomises each stream's timing and
 **DRIFT** gives each its own speed and direction through the clip. The waveform shows every playing grain's playhead.
 
 ### Grid mode

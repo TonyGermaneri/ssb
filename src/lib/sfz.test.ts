@@ -221,3 +221,23 @@ describe('normalisePath', () => {
     expect(normalisePath('./x/../../y.wav')).toBe('../y.wav')
   })
 })
+
+import { encodeWav, planarFromBase64 } from './wav'
+
+describe('wav', () => {
+  it('writes a float32 WAV and reads planar base64 back', async () => {
+    const l = new Float32Array([0, 0.5, -0.5, 1])
+    const r = new Float32Array([1, -1, 0.25, 0])
+    const wav = new Uint8Array(await encodeWav([l, r], 48000).arrayBuffer())
+    const v = new DataView(wav.buffer)
+    expect(String.fromCharCode(...wav.slice(0, 4))).toBe('RIFF')
+    expect(v.getUint16(20, true)).toBe(3)
+    expect(v.getUint32(24, true)).toBe(48000)
+    expect(v.getFloat32(44 + 4, true)).toBe(1) // frame 0, right
+    const planar = new Uint8Array(new Float32Array([...l, ...r]).buffer)
+    const b64 = btoa(String.fromCharCode(...planar))
+    const [a, b] = planarFromBase64(b64, 2)
+    expect([...a]).toEqual([...l])
+    expect([...b]).toEqual([...r])
+  })
+})
