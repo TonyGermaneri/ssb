@@ -1,8 +1,22 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
-import { activeVoices, clock } from '../audio/engine'
+import { activeVoices, clock, type VoiceInfo } from '../audio/engine'
 import { useBoard } from '../stores/board'
+import { midiNoteName } from '../lib/format'
 import type { Sound } from '../types'
+
+/** seconds a grain stays visible after it ends (a one-sample grain would otherwise never be seen) */
+const GRAIN_FADE = 0.35
+const hsl = (h: number, s: number, l: number) => `hsl(${((h % 360) + 360) % 360} ${s}% ${Math.min(95, l)}%)`
+
+/**
+ * Each playing instance's colour: the pad's hue turned by its note's pitch class (a chord's notes differ,
+ * the same note always looks the same), or by the order it started in; brighter the harder it was struck.
+ */
+function voiceColor(info: VoiceInfo, i: number): { hue: number; vel: number } {
+  const turn = info.midiNote !== undefined ? (info.midiNote % 12) * 30 : i * 137.5
+  return { hue: props.hue + turn, vel: Math.min(1, Math.max(0, info.voice.velocity ?? 1)) }
+}
 
 const props = defineProps<{ sound: Sound; hue: number; height?: number }>()
 const board = useBoard()
@@ -60,15 +74,15 @@ function draw() {
     g.fillRect(x, y1, Math.max(1, W / n - 0.3), Math.max(1, y2 - y1))
   }
 
-  // grain window
-  if (s.grainSize > 0) {
+  // grain cloud: where POS sends grains, and how far SPRAY scatters them
+  if (s.grain) {
     const clipW = b - a
     const cx = a + s.grainPos * clipW
     const half = (s.grainWidth * clipW) / 2
-    g.fillStyle = th.secondary + '2e'
+    g.fillStyle = th.secondary + '24'
     g.fillRect(cx - half, 0, half * 2, H)
-    g.fillStyle = th.secondary
-    g.fillRect(cx - 1, 0, 2, H)
+    g.fillStyle = th.secondary + 'aa'
+    g.fillRect(cx - 0.5, 0, 1, H)
   }
 
   // clip markers
@@ -84,51 +98,99 @@ function draw() {
   g.lineTo(b, 6)
   g.fill()
 
-  if (!voices.value.length) return
+  const list = voices.value
+  if (!list.length) return
   const now = clock.value
 
-  // every grain gets its own playhead, sweeping through its slice (backwards when reversed).
-  // Positions are relative to each voice's own buffer, so SFZ zones land proportionally.
-  g.save()
-  g.shadowColor = th.secondary
-  g.shadowBlur = 6
-  for (const { voice } of voices.value) {
+  list.forEach((info, i) => {
+    const { voice } = info
+    const { hue, vel } = voiceColor(info, i)
     const toX = (sec: number) => (sec / voice.bufferDuration) * W
-    for (const m of voice.marks) {
-      if (now < m.when || now > m.when + m.dur) continue
-      const phase = (now - m.when) / m.dur
-      const a = Math.sin(Math.PI * phase)
-      const x0 = toX(m.pos)
-      const x1 = toX(m.pos + m.len)
-      g.globalAlpha = 0.1 * a
-      g.fillStyle = th.secondary
-      g.fillRect(x0, 0, Math.max(1, x1 - x0), H)
-      const head = m.reverse ? x1 - (x1 - x0) * phase : x0 + (x1 - x0) * phase
-      g.globalAlpha = 0.35 + 0.65 * a
-      g.fillStyle = '#ffffff'
-      g.fillRect(head - 0.75, 0, 1.5, H)
-    }
-  }
-  g.restore()
-  g.globalAlpha = 1
+    const marks = voice.marks
+    let labelX: number | null = null
 
-  // transport marker for every playing voice (tape / stretch / SFZ zones)
-  g.save()
-  g.shadowColor = th.primary
-  g.shadowBlur = 8
-  g.fillStyle = '#ffffff'
-  for (const { voice } of voices.value) {
+    // grains: each over the stretch of sample it plays, at its pan (left up, right down), as tall as it is
+    // loud (window level × velocity), its hue turned by its pitch (JITTER), lit while it sounds and fading
+    // for a moment after, so even one-sample grains show
+    if (marks.length) {
+      // light adds up: where grains pile on, the cloud glows; the waveform stays readable under a thin one
+      g.globalCompositeOperation = 'lighter'
+      let logSum = 0
+      for (const m of marks) logSum += Math.log2(m.rate)
+      const base = logSum / marks.length
+      const seen = marks.filter((m) => now >= m.when && now <= m.when + m.dur + GRAIN_FADE)
+      const sounding = seen.filter((m) => now <= m.when + m.dur).length
+      // a dense cloud draws each grain fainter, so it glows rather than whiting out
+      const dim = Math.min(1, 2.5 / Math.sqrt(Math.max(1, seen.length)))
+      let xs = 0
+      for (const m of seen) {
+        const end = m.when + m.dur
+        const live = now <= end
+        const fade = live ? 1 : 1 - (now - end) / GRAIN_FADE
+        const x0 = toX(m.pos)
+        const w = Math.max(2, toX(m.pos + m.len) - x0)
+        const yc = H / 2 + m.pan * (H / 2 - 5)
+        const h = Math.max(3, (H - 6) * m.gain * (0.3 + 0.7 * vel))
+        const gh = hue + (Math.log2(m.rate) - base) * 12 * 18
+        g.globalAlpha = fade * dim * (live ? 0.75 : 0.3)
+        g.fillStyle = hsl(gh, 95, m.reverse ? 42 : 45 + 20 * vel)
+        g.fillRect(x0, yc - h / 2, w, h)
+        if (m.reverse) {
+          // reversed: a notch pointing back at the grain's start
+          g.fillStyle = hsl(gh, 95, 80)
+          g.beginPath()
+          g.moveTo(x0 + w, yc - 3)
+          g.lineTo(x0 + w - 4, yc)
+          g.lineTo(x0 + w, yc + 3)
+          g.fill()
+        }
+        if (live && sounding <= 12 && m.dur > 0.012) {
+          // a few long grains: each one's own playhead, sweeping through it
+          const phase = (now - m.when) / m.dur
+          const head = m.reverse ? x0 + w - w * phase : x0 + w * phase
+          g.globalAlpha = 0.8
+          g.fillStyle = '#ffffff'
+          g.fillRect(head - 0.5, yc - h / 2, 1, h)
+        }
+        xs += x0 + w / 2
+      }
+      const shown = seen.length
+      g.globalAlpha = 1
+      g.globalCompositeOperation = 'source-over'
+      if (shown) labelX = xs / shown
+    }
+
+    // the transport: tape, stretch and SFZ voices each have one
     const pos = voice.positionAt(now)
-    if (pos === null) continue
-    const x = (pos / voice.bufferDuration) * W
-    g.fillRect(x - 1, 0, 2, H)
-    g.beginPath()
-    g.moveTo(x - 4, 0)
-    g.lineTo(x + 4, 0)
-    g.lineTo(x, 5)
-    g.fill()
-  }
-  g.restore()
+    if (pos !== null) {
+      const x = toX(pos)
+      labelX = x
+      g.save()
+      g.shadowColor = hsl(hue, 100, 60)
+      g.shadowBlur = 8
+      g.fillStyle = hsl(hue, 100, 55 + 35 * vel)
+      g.fillRect(x - 1, 0, 2, H)
+      g.beginPath()
+      g.moveTo(x - 4, 0)
+      g.lineTo(x + 4, 0)
+      g.lineTo(x, 5)
+      g.fill()
+      g.restore()
+    }
+
+    // which instance is which: its note (or number) in its colour, staggered so chords don't collide
+    if (labelX !== null && (list.length > 1 || info.midiNote !== undefined)) {
+      const text = info.midiNote !== undefined ? midiNoteName(info.midiNote) : `${i + 1}`
+      g.font = '10px VT323, monospace'
+      const tw = g.measureText(text).width + 4
+      const lx = Math.min(W - tw, Math.max(0, labelX + 3))
+      const ly = 6 + (i % 3) * 10
+      g.fillStyle = 'rgba(0,0,0,0.65)'
+      g.fillRect(lx, ly, tw, 10)
+      g.fillStyle = hsl(hue, 100, 60 + 25 * vel)
+      g.fillText(text, lx + 2, ly + 8)
+    }
+  })
 }
 
 let ro: ResizeObserver | undefined

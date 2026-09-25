@@ -19,7 +19,8 @@ import { isSynthAudioId, synthAudioId, synthWave } from '../audio/synthWaves'
 import { FACTORY_PATCHES, FACTORY_WAVES, waveSettings } from '../lib/factory'
 import { stripExt } from '../lib/format'
 import {
-  divisionBeats, defaultMaster, defaultSettings, FILTER_TYPES, migrateMaster, migrateSettings, presetSettings, TRIGGER_MODES,
+  divisionBeats, defaultMaster, defaultSettings, FILTER_TYPES, migrateMaster, migratePresetSettings, migrateSettings, presetSettings,
+  TRIGGER_MODES,
   carrierSlot, headerOf, migratePatch, newSlot, PATCH_SLOTS, patchLayers, soundAudioIds, type MasterState, type Patch,
   type PatchLayer, type PatchSlot, type Preset, type Sound, type SoundSettings, type VcoSlot, type Zone,
 } from '../types'
@@ -388,7 +389,7 @@ export const useBoard = defineStore('board', () => {
         Object.assign(master, migrateMaster(saved.master))
         // every launch starts as a soundboard: the pads as cards, the VCO rack put away
         Object.assign(master, { rack: false, view: 'pads', list: true, tab: 'sounds' })
-        presets.value = saved.presets ?? []
+        presets.value = (saved.presets ?? []).map((p) => ({ ...p, settings: migratePresetSettings(p.settings) }))
         patches.value = (saved.patches ?? []).map(migratePatch)
         const ok = await readSounds(saved.sounds)
         sounds.value = ok
@@ -547,7 +548,7 @@ export const useBoard = defineStore('board', () => {
     const list = await readSounds(saved.sounds)
     applyingRemote = true
     try {
-      presets.value = saved.presets ?? []
+      presets.value = (saved.presets ?? []).map((p) => ({ ...p, settings: migratePresetSettings(p.settings) }))
       patches.value = (saved.patches ?? []).map(migratePatch)
       sounds.value = list
       await nextTick()

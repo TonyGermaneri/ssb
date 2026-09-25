@@ -1,29 +1,19 @@
 import {
   lfoHz, MOD_DESTS, type ModDest, type ModMatrix, type ModSource, type SoundSettings, type ZoneCcMod, type ZoneLfo,
 } from '../types'
-import { modSum } from '../lib/modulation'
 import { LfoSource } from './lfo'
 import { scheduleAttack, scheduleRelease, type Env } from './envelope'
 import { getImpulse } from './impulse'
+import { grainNode, grainsLoaded, loadGrains, type GrainNode } from './grains'
+import type { GrainConfig, GrainEvent } from './grainMath'
 import {
   clipBounds, cycleSeconds, glideSemis, knobRate, playSeconds, semisToRate, tailSeconds,
   type ClipBounds, type Glide,
 } from './timing'
 
 const RAMP = 0.015 // smoothing time constant for live knob changes
-const LOOKAHEAD = 0.1 // seconds of grains scheduled ahead
-const TICK_MS = 25
-const STRETCH_GRAIN = 0.09 // seconds
-const STRETCH_OVERLAP = 4
-const MAX_MARKS = 64
-
-/** Hann window: overlapping copies sum to (roughly) constant gain. */
-const HANN = (() => {
-  const n = 128
-  const w = new Float32Array(n)
-  for (let i = 0; i < n; i++) w[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (n - 1))
-  return w
-})()
+/** grains kept for drawing (the worklet reports a sample of them) */
+const MAX_MARKS = 240
 
 /**
  * sample:  one looping AudioBufferSourceNode (tape-style pitch/speed)
@@ -76,30 +66,7 @@ export interface ZonePlay {
 }
 
 /** A grain, for drawing on the waveform. Positions are forward buffer seconds. */
-export interface GrainMark {
-  pos: number
-  len: number
-  when: number
-  dur: number
-  rate: number
-  reverse: boolean
-}
-
-/** One stream of a grain cloud (poly grains): its own timing, start offset and drift speed. */
-interface GrainStream {
-  next: number
-  offset: number // fraction of the clip
-  speed: number // buffer seconds per second (drift)
-}
-
-/** Hann windows overlapping N times sum to N/2; scale grains so density doesn't change loudness. */
-const hannCache = new Map<number, Float32Array>()
-function grainWindow(overlap: number): Float32Array {
-  const gain = Math.min(1, 2 / overlap)
-  let w = hannCache.get(gain)
-  if (!w) hannCache.set(gain, (w = HANN.map((x) => x * gain)))
-  return w
-}
+export type GrainMark = GrainEvent
 
 /** Engine-wide modulation sources shared by every voice. */
 export interface ModHub {
@@ -162,7 +129,8 @@ export class Voice {
   private kRate: number
   private speed: number
   private glide: Glide
-  private velocity: number
+  /** 0..1, as the note was struck */
+  readonly velocity: number
   private ampEnv: Env
   private filtEnv: Env
   private filtPeak: number // cents
@@ -197,16 +165,14 @@ export class Voice {
   private ccGain = 1
   private ccPan = 0
   private ccRes = 0
-  private streams: GrainStream[] = []
   private padLfos: (LfoSource | null)[] = [null, null]
   private links: { from: AudioNode; gain: GainNode }[] = []
   private routeSig = ''
   private atValue = 0
   private bendValue = 0
   private src?: AudioBufferSourceNode
-  private grains = new Set<AudioBufferSourceNode>()
-  private nextGrain = 0
-  private timer?: ReturnType<typeof setInterval>
+  /** the grain processor (cloud / stretch), once the worklet has loaded */
+  private grainVoice?: GrainNode
   private impulseKey = ''
   private impulseTimer?: ReturnType<typeof setTimeout>
   private disposeTimer?: ReturnType<typeof setTimeout>
@@ -215,7 +181,7 @@ export class Voice {
   constructor(
     private ctx: AudioContext,
     private buffer: AudioBuffer,
-    private reversed: () => AudioBuffer,
+    private audioId: string,
     readonly soundId: string,
     readonly settings: SoundSettings,
     destination: AudioNode,
@@ -276,7 +242,7 @@ export class Voice {
     this.velSrc.offset.value = this.velocity
     this.noteBendSrc.offset.value = opts.noteBend ?? 0
     this.timbreSrc.offset.value = this.timbreValue
-    this.kind = s.grainSize > 0 ? 'cloud' : s.timeMode === 'stretch' ? 'stretch' : 'sample'
+    this.kind = s.grain ? 'cloud' : s.timeMode === 'stretch' ? 'stretch' : 'sample'
     this.zone = opts.zone
     this.clip = this.zone ? zoneBounds(this.zone, buffer.duration) : clipBounds(s, buffer.duration)
     this.kRate = knobRate(s)
@@ -400,102 +366,63 @@ export class Voice {
       if (dur > 0) p.exponentialRampToValueAtTime(this.tapeRate(semis), now + dur)
       else p.setValueAtTime(this.tapeRate(semis), now)
     }
+    this.regrain()
   }
 
   // ── grains ───────────────────────────────────────────────────────────────
+  /** What the grain processor plays: the knobs as they are now (sent again whenever one moves). */
+  private grainConfig(): GrainConfig {
+    const s = this.settings
+    return {
+      kind: this.kind === 'cloud' ? 'cloud' : 'stretch',
+      clipIn: this.clip.clipIn,
+      clipOut: this.clip.clipOut,
+      size: s.grainSize,
+      pos: s.grainPos,
+      width: s.grainWidth,
+      rate: Math.max(0.1, s.grainRate),
+      shape: s.grainShape,
+      jitter: s.grainJitter,
+      reverse: s.grainReverse,
+      spread: s.grainSpread,
+      streams: s.grainStreams,
+      scatter: s.grainScatter,
+      drift: s.grainDrift,
+      speed: s.speed,
+      kRate: this.kRate,
+      glide: { ...this.glide },
+      t0: this.t0,
+      end: this.endTime,
+    }
+  }
+
+  /** The grain processor starts as soon as the worklet module is there (at once, after the first notes). */
   private startGrains() {
-    const s = this.settings
-    const cloud = this.kind === 'cloud'
-    const n = cloud ? Math.min(8, Math.max(1, Math.round(s.grainStreams))) : 1
-    const size = cloud ? Math.max(0.005, s.grainSize / 1000) : STRETCH_GRAIN
-    // poly grains: each stream starts at a random time and offset, and drifts at its own speed
-    this.streams = Array.from({ length: n }, (_, i) => ({
-      next: this.t0 + (i ? Math.random() * size : 0),
-      offset: n > 1 ? (Math.random() - 0.5) * Math.max(s.grainWidth, 0.2) : 0,
-      speed: cloud ? (Math.random() * 2 - 1) * s.grainDrift : 0,
-    }))
-    this.tick()
-    this.timer = setInterval(() => this.tick(), TICK_MS)
+    if (this.disposed || !this.playing) return
+    if (!grainsLoaded()) {
+      void loadGrains(this.ctx).then(() => this.startGrains())
+      return
+    }
+    const g = grainNode(
+      this.ctx,
+      this.audioId,
+      this.buffer,
+      this.grainConfig(),
+      (list) => {
+        this.marks.push(...list)
+        if (this.marks.length > MAX_MARKS) this.marks.splice(0, this.marks.length - MAX_MARKS)
+      },
+      () => this.finish(),
+    )
+    g.node.connect(this.env)
+    this.pitchBus.connect(g.node.parameters.get('detune')!)
+    this.grainVoice = g
+    this.wireRoutes() // GRAIN POS / SIZE routes land on the processor's parameters
   }
 
-  /** Grains sounding at once: density × streams (sets each grain's gain). */
-  private get overlap() {
-    return this.kind === 'cloud' ? Math.max(1, this.settings.grainDensity) * Math.max(1, this.streams.length) : STRETCH_OVERLAP
-  }
-
-  private tick() {
-    const s = this.settings
-    const cloud = this.kind === 'cloud'
-    const horizon = Math.min(this.ctx.currentTime + LOOKAHEAD, this.endTime)
-    let size = STRETCH_GRAIN
-    for (const st of this.streams) {
-      while (st.next < horizon) {
-        if (cloud) size = Math.max(0.005, (s.grainSize + this.jsMod('grainSize', st.next)) / 1000)
-        size = this.spawnGrain(st.next, size, st)
-        let step = size / (cloud ? Math.max(1, s.grainDensity) : STRETCH_OVERLAP)
-        if (cloud && s.grainScatter > 0) step *= Math.max(0.1, 1 + (Math.random() * 2 - 1) * s.grainScatter)
-        st.next += step
-      }
-    }
-    this.nextGrain = Math.min(...this.streams.map((st) => st.next))
-    if (this.nextGrain >= this.endTime && this.timer !== undefined) {
-      clearInterval(this.timer)
-      this.timer = undefined
-      const wait = (this.endTime - this.ctx.currentTime + size) * 1000
-      setTimeout(() => this.finish(), Math.max(0, wait))
-    }
-  }
-
-  /** Returns the grain's real length in seconds (capped by the clip). */
-  private spawnGrain(when: number, size: number, st: GrainStream): number {
-    const s = this.settings
-    const cloud = this.kind === 'cloud'
-    const { clipIn, clipOut, clipLen } = this.clip
-    let rate = this.kRate * semisToRate(this.semisAt(when))
-    if (cloud && s.grainJitter > 0) rate *= semisToRate((Math.random() * 2 - 1) * s.grainJitter)
-    const bufLen = Math.min(size * rate, clipLen)
-
-    let start: number
-    if (cloud) {
-      let pos = s.grainPos + this.jsMod('grainPos', when) + st.offset + (st.speed * (when - this.t0)) / clipLen
-      // a single fixed stream clamps at the clip edges; drifting streams wrap around the clip
-      pos = st.speed || st.offset ? ((pos % 1) + 1) % 1 : Math.min(1, Math.max(0, pos))
-      const center = clipIn + pos * clipLen + (Math.random() - 0.5) * s.grainWidth * clipLen
-      start = center - bufLen / 2
-    } else {
-      start = clipIn + (((when - this.t0) * s.speed) % clipLen)
-    }
-    const offset = Math.min(Math.max(start, clipIn), clipOut - bufLen)
-    const reverse = cloud && s.grainReverse > 0 && Math.random() < s.grainReverse
-    const buf = reverse ? this.reversed() : this.buffer
-    const bufOffset = reverse ? this.buffer.duration - offset - bufLen : offset
-    const dur = bufLen / rate
-
-    const src = this.ctx.createBufferSource()
-    src.buffer = buf
-    src.playbackRate.value = rate
-    const g = this.ctx.createGain()
-    g.gain.value = 0
-    g.gain.setValueCurveAtTime(grainWindow(this.overlap), when, dur)
-    let tail: AudioNode = src.connect(g)
-    if (cloud && s.grainSpread > 0) {
-      const pan = this.ctx.createStereoPanner()
-      pan.pan.value = (Math.random() * 2 - 1) * s.grainSpread
-      tail = tail.connect(pan)
-    }
-    tail.connect(this.env)
-    this.pitchBus.connect(src.detune)
-    src.start(when, Math.max(0, bufOffset), bufLen)
-    src.onended = () => {
-      this.pitchBus.disconnect(src.detune)
-      src.disconnect()
-      g.disconnect()
-      this.grains.delete(src)
-    }
-    this.grains.add(src)
-    this.marks.push({ pos: offset, len: bufLen, when, dur, rate, reverse })
-    if (this.marks.length > MAX_MARKS) this.marks.shift()
-    return dur
+  /** Tell the grain processor about new knob values, end time or glide. */
+  private regrain() {
+    this.grainVoice?.configure(this.grainConfig())
   }
 
   // ── live knobs ───────────────────────────────────────────────────────────
@@ -541,6 +468,7 @@ export class Voice {
       }
       if (tuned) set(this.src.playbackRate, this.tapeRate(this.glide.to))
     }
+    this.regrain()
     clearTimeout(this.impulseTimer)
     this.impulseTimer = setTimeout(() => this.setImpulse(), 150)
   }
@@ -617,8 +545,10 @@ export class Voice {
         return this.delayWet.gain
       case 'reverbMix':
         return this.reverbWet.gain
-      default:
-        return null // grain destinations are read per grain
+      case 'grainPos':
+        return this.grainVoice?.node.parameters.get('posMod') ?? null
+      case 'grainSize':
+        return this.grainVoice?.node.parameters.get('sizeMod') ?? null
     }
   }
 
@@ -676,35 +606,6 @@ export class Voice {
     }
     this.links = []
     this.routeSig = ''
-  }
-
-  /** Current value of a source, for destinations evaluated in JS (grains). */
-  private sourceValue(scope: Scope, src: ModSource, t: number): number {
-    switch (src) {
-      case 'lfo1':
-      case 'lfo2': {
-        const i = LFO_INDEX[src]
-        return (scope === 'global' ? this.hub.globalLfos[i] : this.padLfo(i)).valueAt(t)
-      }
-      case 'mod':
-        return this.hub.state.mod
-      case 'aftertouch':
-        return this.atValue
-      case 'velocity':
-        return this.velocity
-      case 'bend':
-        return this.bendValue
-      case 'timbre':
-        return this.timbreValue
-      default:
-        return 0 // VCO signals are audio-rate: no per-grain reading
-    }
-  }
-
-  private jsMod(dest: ModDest, t: number): number {
-    let sum = 0
-    for (const [scope, m] of this.scopes()) sum += modSum(m.routes, dest, (src) => this.sourceValue(scope, src, t))
-    return sum
   }
 
   /** Aftertouch / pressure, 0..1. */
@@ -813,6 +714,7 @@ export class Voice {
     if (this.filtPeak) scheduleRelease(this.filter.detune, this.t0, tr, this.filtEnv, this.filtPeak)
     this.endTime = Math.min(this.endTime, end)
     this.src?.stop(this.endTime)
+    this.regrain()
   }
 
   /** Note-off: run the release, then let FX tails ring out. */
@@ -840,16 +742,13 @@ export class Voice {
     g.cancelScheduledValues(now)
     g.setValueAtTime(g.value, now)
     g.linearRampToValueAtTime(0, now + fade)
-    clearInterval(this.timer)
-    this.timer = undefined
     this.releaseTime = Math.min(this.releaseTime, now)
-    for (const src of [this.src, ...this.grains]) {
-      try {
-        src?.stop(now + fade)
-      } catch {
-        /* already stopped */
-      }
+    try {
+      this.src?.stop(now + fade)
+    } catch {
+      /* already stopped */
     }
+    this.grainVoice?.stop()
     if (this.playing) {
       this.playing = false
       this.onEnd(this)
@@ -861,7 +760,6 @@ export class Voice {
   private dispose() {
     if (this.disposed) return
     this.disposed = true
-    clearInterval(this.timer)
     clearTimeout(this.impulseTimer)
     clearTimeout(this.disposeTimer)
     if (this.src) this.src.onended = null
@@ -878,6 +776,7 @@ export class Voice {
     for (const n of [this.env, this.filter, this.lo, this.mid, this.hi, this.dry, this.delay, this.feedback,
       this.delayWet, this.convolver, this.reverbWet, this.out, this.panner, this.kill]) n.disconnect()
     this.src?.disconnect()
+    this.grainVoice?.node.disconnect()
     this.onDispose(this)
   }
 }

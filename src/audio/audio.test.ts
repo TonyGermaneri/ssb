@@ -3,7 +3,7 @@ import { computePeaks } from './peaks'
 import { clipBounds, cycleSeconds, glideSemis, playSeconds, tailSeconds } from './timing'
 import { envLevel } from './envelope'
 import { keyToMidi } from '../lib/piano'
-import { defaultSettings, migrateSettings } from '../types'
+import { defaultSettings, GRAIN_DEFAULTS, migratePresetSettings, migrateSettings } from '../types'
 
 const S = (o: object = {}) => ({ ...defaultSettings(), ...o })
 
@@ -80,11 +80,32 @@ describe('migrateSettings', () => {
     const old = { ...defaultSettings('x'), fadeIn: 0.5, fadeOut: 2 } as Record<string, unknown>
     delete old.attack
     delete old.release
-    delete old.grainDensity
+    delete old.grainRate
     const s = migrateSettings(old)
     expect(s.attack).toBe(0.5)
     expect(s.release).toBe(2)
-    expect(s.grainDensity).toBe(2)
+    expect(s.grainRate).toBe(GRAIN_DEFAULTS.grainRate)
     expect('fadeIn' in s).toBe(false)
+  })
+
+  it('keeps an old grain cloud (size > 0 was on; density was an overlap) and gives unused ones the new defaults', () => {
+    const legacy = (extra: Record<string, unknown>) => {
+      const o = { ...defaultSettings('x'), ...extra } as Record<string, unknown>
+      for (const k of ['grain', 'grainRate', 'grainShape']) delete o[k]
+      return o
+    }
+    const cloud = migrateSettings(legacy({ grainSize: 100, grainDensity: 4, grainWidth: 0, grainScatter: 0 }))
+    expect(cloud.grain).toBe(true)
+    expect(cloud.grainRate).toBeCloseTo(40) // 4 overlapping 100 ms grains = 40 a second
+    expect(cloud.grainWidth).toBe(0) // the user's own settings stay
+    expect('grainDensity' in cloud).toBe(false)
+    const unused = migrateSettings(legacy({ grainSize: 0, grainDensity: 2, grainWidth: 0 }))
+    expect(unused.grain).toBe(false)
+    expect(unused.grainSize).toBe(GRAIN_DEFAULTS.grainSize)
+    expect(unused.grainWidth).toBe(GRAIN_DEFAULTS.grainWidth)
+    // presets from before get the same treatment
+    expect(migratePresetSettings({ grainSize: 50, grainDensity: 1 } as never).grainRate).toBeCloseTo(20)
+    // already migrated: untouched
+    expect(migrateSettings({ ...defaultSettings('y'), grain: true, grainSize: 0.5 }).grainSize).toBe(0.5)
   })
 })

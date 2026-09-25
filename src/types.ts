@@ -161,16 +161,18 @@ export interface SoundSettings {
   fDecay: number
   fSustain: number
   fRelease: number
-  // grain
-  grainSize: number // ms, 0 = off
+  // grain cloud (audio/grains.ts)
+  grain: boolean // on: the pad plays as a cloud of grains
+  grainSize: number // ms, down to one sample (GRAIN_MIN_MS)
   grainPos: number // 0..1 within clip
-  grainWidth: number // 0..1 of clip, random spread
-  grainDensity: number // overlapping grains, 1..8
+  grainWidth: number // 0..1 of clip, random spread (spray)
+  grainRate: number // grains per second per stream, independent of size (gaps when rate × size < 1)
+  grainShape: number // window: 0 = square .. 1 = Hann (a Tukey window's taper)
   grainJitter: number // random ± semitones per grain
   grainReverse: number // 0..1 chance a grain plays backwards
   grainSpread: number // 0..1 random stereo pan per grain
   grainStreams: number // 1..8 independent grain streams per note
-  grainScatter: number // 0..1 random timing between a stream's grains
+  grainScatter: number // 0 = a steady rate .. 1 = random (Poisson) times, same average rate
   grainDrift: number // 0..1 each stream wanders through the clip at its own random speed (±1 = real time)
   // delay
   delayTime: number // seconds
@@ -276,6 +278,27 @@ export interface Sound {
 /** Every audio blob a pad needs (its own plus its zones'). */
 export const soundAudioIds = (s: Sound) => [s.audioId, ...(s.zones ?? []).map((z) => z.audioId)]
 
+/** One sample at 48 kHz, the shortest grain (the engines make every grain a whole number of samples, at least one). */
+export const GRAIN_MIN_MS = 1000 / 48000
+export const GRAIN_RATE_MIN = 0.5
+export const GRAIN_RATE_MAX = 1000
+
+/** A cloud that sounds like one: grains sprayed around POS at loosely random times, spread in stereo. */
+export const GRAIN_DEFAULTS = {
+  grain: false,
+  grainSize: 80,
+  grainPos: 0.5,
+  grainWidth: 0.1,
+  grainRate: 30,
+  grainShape: 1,
+  grainJitter: 0,
+  grainReverse: 0,
+  grainSpread: 0.3,
+  grainStreams: 1,
+  grainScatter: 0.5,
+  grainDrift: 0,
+}
+
 export function defaultSettings(name = 'SOUND'): SoundSettings {
   return {
     name,
@@ -303,16 +326,7 @@ export function defaultSettings(name = 'SOUND'): SoundSettings {
     fDecay: 0.3,
     fSustain: 0,
     fRelease: 0.2,
-    grainSize: 0,
-    grainPos: 0.5,
-    grainWidth: 0,
-    grainDensity: 2,
-    grainJitter: 0,
-    grainReverse: 0,
-    grainSpread: 0,
-    grainStreams: 1,
-    grainScatter: 0,
-    grainDrift: 0,
+    ...GRAIN_DEFAULTS,
     delayTime: 0.25,
     delayFeedback: 0.35,
     delayMix: 0,
@@ -331,9 +345,25 @@ export function defaultSettings(name = 'SOUND'): SoundSettings {
   }
 }
 
+/**
+ * Before 0.2 grainSize 0 meant off and grainDensity counted overlapping grains. A pad that had grains keeps
+ * them (the same overlap, as a rate); one that never used them gets the new defaults for when it's switched on.
+ */
+function migrateGrains(raw: Record<string, unknown>) {
+  if (raw.grain === undefined) {
+    const size = Number(raw.grainSize) || 0
+    if (size > 0) {
+      raw.grain = true
+      raw.grainRate = Math.min(GRAIN_RATE_MAX, Math.max(GRAIN_RATE_MIN, (Number(raw.grainDensity) || 2) / (size / 1000)))
+    } else Object.assign(raw, GRAIN_DEFAULTS)
+  }
+  delete raw.grainDensity
+}
+
 /** Fill in settings added since a board was saved, and map renamed ones. */
 export function migrateSettings(raw: Partial<SoundSettings> & { fadeIn?: number; fadeOut?: number }): SoundSettings {
   const { fadeIn, fadeOut, ...rest } = raw
+  migrateGrains(rest as Record<string, unknown>)
   const s = { ...defaultSettings(raw.name), ...rest, mod: migrateMatrix(raw.mod), vcos: raw.vcos ?? [] }
   if (fadeIn !== undefined && raw.attack === undefined) s.attack = Math.max(0.001, fadeIn)
   if (fadeOut !== undefined && raw.release === undefined) s.release = Math.max(0.001, fadeOut)
@@ -566,4 +596,11 @@ export function migratePatch(p: Patch & { layers?: PatchLayer[] }): Patch {
       mod: migrateMatrix(h.mod),
     },
   }
+}
+
+/** A saved preset's settings, with grain fields from before 0.2 mapped (see migrateGrains). */
+export function migratePresetSettings(p: Partial<SoundSettings>): Partial<SoundSettings> {
+  const copy = { ...p } as Record<string, unknown>
+  migrateGrains(copy)
+  return copy as Partial<SoundSettings>
 }

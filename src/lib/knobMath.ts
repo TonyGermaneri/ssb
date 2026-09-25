@@ -1,36 +1,35 @@
 /**
  * lin; log (min > 0); pow = cubic taper from min (fine at the bottom, reaches 0, spans huge ranges);
- * grain = GRAIN SIZE: OFF, then the grain range on most of the travel, then out to max (see grainCurve)
+ * grain = GRAIN SIZE: one sample up to the whole sample, with most of the travel where grains sound like grains
  */
 export type Curve = 'lin' | 'log' | 'pow' | 'grain'
 
 /**
- * GRAIN SIZE (ms). The first 3 % of travel is OFF (0); the next three quarters cover 5-500 ms on a
- * log scale -- where grains sound like grains, so POS / DENSITY / WIDTH are heard; the last quarter
- * goes on (log) to `max`, the length of the sample. A knob that spent its travel on multi-second
- * "grains" of a long sample made every other grain control inaudible.
+ * GRAIN SIZE (ms), from `min` (one sample) to `max` (the sample's length), in three log stretches: the first
+ * 15 % of travel goes from one sample to 5 ms (clicks, buzz, pulsar trains), the next 70 % from 5 to 500 ms --
+ * where grains sound like grains, so the middle of the knob is ~50 ms -- and the rest out to `max`. Below 5 ms
+ * values snap to whole samples (of `min`).
  */
-const GRAIN_OFF = 0.03
 const GRAIN_LO = 5
 const GRAIN_KNEE = 500
-const GRAIN_SPLIT = 0.75
-function grainValue(p: number, max: number): number {
-  if (p < GRAIN_OFF) return 0
-  const q = (p - GRAIN_OFF) / (1 - GRAIN_OFF)
-  if (max <= GRAIN_KNEE) return GRAIN_LO * Math.pow(max / GRAIN_LO, q)
-  if (q <= GRAIN_SPLIT) return GRAIN_LO * Math.pow(GRAIN_KNEE / GRAIN_LO, q / GRAIN_SPLIT)
-  return GRAIN_KNEE * Math.pow(max / GRAIN_KNEE, (q - GRAIN_SPLIT) / (1 - GRAIN_SPLIT))
+const GRAIN_A = 0.15
+const GRAIN_B = 0.85
+const logLerp = (a: number, b: number, q: number) => a * Math.pow(b / a, clamp(q, 0, 1))
+const logPos = (a: number, b: number, v: number) => (b > a ? Math.log(v / a) / Math.log(b / a) : 0)
+function grainValue(p: number, min: number, max: number): number {
+  let v: number
+  if (p <= GRAIN_A) v = logLerp(min, Math.min(GRAIN_LO, max), p / GRAIN_A)
+  else if (max <= GRAIN_KNEE) v = logLerp(GRAIN_LO, Math.max(GRAIN_LO, max), (p - GRAIN_A) / (1 - GRAIN_A))
+  else if (p <= GRAIN_B) v = logLerp(GRAIN_LO, GRAIN_KNEE, (p - GRAIN_A) / (GRAIN_B - GRAIN_A))
+  else v = logLerp(GRAIN_KNEE, max, (p - GRAIN_B) / (1 - GRAIN_B))
+  return v < GRAIN_LO ? Math.max(1, Math.round(v / min)) * min : v
 }
-function grainPct(v: number, max: number): number {
-  if (v <= 0) return 0
-  const x = Math.max(v, GRAIN_LO)
-  const q =
-    max <= GRAIN_KNEE
-      ? Math.log(x / GRAIN_LO) / Math.log(max / GRAIN_LO)
-      : x <= GRAIN_KNEE
-        ? (Math.log(x / GRAIN_LO) / Math.log(GRAIN_KNEE / GRAIN_LO)) * GRAIN_SPLIT
-        : GRAIN_SPLIT + (Math.log(x / GRAIN_KNEE) / Math.log(max / GRAIN_KNEE)) * (1 - GRAIN_SPLIT)
-  return GRAIN_OFF + clamp(q, 0, 1) * (1 - GRAIN_OFF)
+function grainPct(v: number, min: number, max: number): number {
+  const x = clamp(v, min, max)
+  if (x <= GRAIN_LO) return logPos(min, Math.min(GRAIN_LO, max), x) * GRAIN_A
+  if (max <= GRAIN_KNEE) return GRAIN_A + logPos(GRAIN_LO, max, x) * (1 - GRAIN_A)
+  if (x <= GRAIN_KNEE) return GRAIN_A + logPos(GRAIN_LO, GRAIN_KNEE, x) * (GRAIN_B - GRAIN_A)
+  return GRAIN_B + logPos(GRAIN_KNEE, max, x) * (1 - GRAIN_B)
 }
 
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
@@ -41,7 +40,7 @@ export function valueToPct(value: number, min: number, max: number, curve: Curve
   const v = clamp(value, min, max)
   if (curve === 'log') return Math.log(v / min) / Math.log(max / min)
   if (curve === 'pow') return Math.cbrt((v - min) / (max - min))
-  if (curve === 'grain') return grainPct(v, max)
+  if (curve === 'grain') return grainPct(v, min, max)
   return (v - min) / (max - min)
 }
 
@@ -51,7 +50,7 @@ export function pctToValue(pct: number, min: number, max: number, curve: Curve =
   let v =
     curve === 'log' ? min * Math.pow(max / min, p)
     : curve === 'pow' ? min + p ** 3 * (max - min)
-    : curve === 'grain' ? grainValue(p, max)
+    : curve === 'grain' ? grainValue(p, min, max)
     : min + p * (max - min)
   if (step > 0) v = Math.round((v - min) / step) * step + min
   // avoid float noise like 0.30000000000000004

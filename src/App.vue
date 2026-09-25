@@ -7,7 +7,7 @@ import { keyToMidi } from './lib/piano'
 import { fromInput } from './lib/dropFiles'
 import { forwardConsole, inNative, nativeEngine, routeExternalLinks } from './native/bridge'
 import { startEngineSync } from './native/engineSync'
-import { activeVoices, getCtx } from './audio/engine'
+import { activeVoices, getCtx, levels } from './audio/engine'
 import DropZone from './components/DropZone.vue'
 import MatrixDialog from './components/MatrixDialog.vue'
 import MasterStrip from './components/MasterStrip.vue'
@@ -112,11 +112,14 @@ function onPick(e: Event) {
 
 onMounted(() => {
   board.load()
+  // for SSB_PROBE scripts (the native page has no inspector in a release build) and for poking at a dev server
+  if (inNative() || import.meta.env.DEV) {
+    const w = window as unknown as { __ssb: unknown }
+    w.__ssb = { board, audio: () => getCtx().state, voices: () => activeVoices.value.length, activeVoices, levels }
+  }
   // in the native app / plugin: MIDI comes from the host, links open in the system browser
   if (inNative()) {
     forwardConsole()
-    // for SSB_PROBE scripts: the page's inspector isn't available in a release build
-    ;(window as unknown as { __ssb: unknown }).__ssb = { board, audio: () => getCtx().state, voices: () => activeVoices.value.length }
     void board.enableMidi()
     routeExternalLinks()
     // in a DAW the native engine plays: keep it in step with the board

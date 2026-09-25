@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useBoard } from '../stores/board'
-import { buffers } from '../audio/engine'
+import { buffers, outputRate } from '../audio/engine'
 import {
-  fmtCents, fmtChoke, fmtDb, fmtDensity, fmtHz, fmtMs, fmtNum, fmtOct, fmtPan, fmtPct, fmtQ, fmtRatio,
-  fmtRepeat, fmtSec, fmtSemis, fmtSemisJitter, midiNoteName,
+  fmtCents, fmtChoke, fmtDb, fmtGrainRate, fmtGrainShape, fmtGrainSize, fmtHz, fmtNum, fmtOct, fmtPan, fmtPct, fmtQ,
+  fmtRatio, fmtRepeat, fmtSec, fmtSemis, fmtSemisJitter, midiNoteName,
 } from '../lib/format'
 import { joinTags, splitTags } from '../lib/tags'
-import { FILTER_LABEL, type Patch, soundAudioIds, TRIGGER_MODE_INFO, TRIGGER_MODES, type Sound } from '../types'
+import {
+  FILTER_LABEL, GRAIN_DEFAULTS, GRAIN_MIN_MS, GRAIN_RATE_MAX, GRAIN_RATE_MIN, type Patch, soundAudioIds, TRIGGER_MODE_INFO,
+  TRIGGER_MODES, type Sound,
+} from '../types'
 import Knob from './Knob.vue'
 import Waveform from './Waveform.vue'
 import KeyMap from './KeyMap.vue'
@@ -183,20 +186,29 @@ function doReset() {
         </div>
       </section>
 
-      <section class="module wide" :class="{ folded: isFolded('grain') }">
+      <section class="module wide" :class="{ folded: isFolded('grain'), off: !s.grain }">
         <h4>GRAIN
+          <button
+            class="chip"
+            :class="{ on: s.grain }"
+            :title="s.grain ? 'Grain cloud on: the sound plays as grains — click for the plain sample' : 'Play the sound as a cloud of grains'"
+            @click="s.grain = !s.grain"
+          >
+            {{ s.grain ? 'ON' : 'OFF' }}
+          </button>
           <button class="fold" :title="isFolded('grain') ? 'Show' : 'Fold'" @click="toggleFold('grain')"><i /></button>
         </h4>
         <div class="row">
-          <Knob v-model="s.grainSize" label="SIZE" :max="grainMax()" curve="grain" :step="1" :default="0" :format="fmtMs" color="accent" />
+          <Knob v-model="s.grainSize" label="SIZE" :min="GRAIN_MIN_MS" :max="grainMax()" curve="grain" :default="GRAIN_DEFAULTS.grainSize" :format="(v: number) => fmtGrainSize(v, outputRate())" color="accent" />
+          <Knob v-model="s.grainRate" label="RATE" :min="GRAIN_RATE_MIN" :max="GRAIN_RATE_MAX" curve="log" :default="GRAIN_DEFAULTS.grainRate" :format="fmtGrainRate" color="accent" />
           <Knob v-model="s.grainPos" label="POS" :default="0.5" :format="fmtPct" color="accent" />
-          <Knob v-model="s.grainWidth" label="WIDTH" :default="0" :format="fmtPct" color="accent" />
-          <Knob v-model="s.grainDensity" label="DENS" :min="1" :max="8" :step="1" :default="2" :format="fmtDensity" color="accent" />
+          <Knob v-model="s.grainWidth" label="SPRAY" :default="GRAIN_DEFAULTS.grainWidth" :format="fmtPct" color="accent" />
+          <Knob v-model="s.grainShape" label="SHAPE" :default="1" :format="fmtGrainShape" color="accent" />
+          <Knob v-model="s.grainScatter" label="SCATTR" :default="GRAIN_DEFAULTS.grainScatter" :format="fmtPct" color="accent" />
           <Knob v-model="s.grainJitter" label="JITTER" :max="12" :step="0.1" :default="0" :format="fmtSemisJitter" color="accent" />
           <Knob v-model="s.grainReverse" label="REV" :default="0" :format="fmtPct" color="accent" />
-          <Knob v-model="s.grainSpread" label="SPREAD" :default="0" :format="fmtPct" color="accent" />
+          <Knob v-model="s.grainSpread" label="SPREAD" :default="GRAIN_DEFAULTS.grainSpread" :format="fmtPct" color="accent" />
           <Knob v-model="s.grainStreams" label="STRMS" :min="1" :max="8" :step="1" :default="1" :format="(v: number) => `${Math.round(v)}`" color="accent" />
-          <Knob v-model="s.grainScatter" label="SCATTR" :default="0" :format="fmtPct" color="accent" />
           <Knob v-model="s.grainDrift" label="DRIFT" :default="0" :format="fmtPct" color="accent" />
         </div>
       </section>
@@ -481,6 +493,10 @@ function doReset() {
 .chip.on {
   color: var(--c-secondary);
   text-shadow: 0 0 4px color-mix(in srgb, var(--c-secondary) 70%, transparent);
+}
+/* a section switched off (GRAIN): its knobs still work, dimmed */
+.module.off > .row {
+  opacity: 0.45;
 }
 .row {
   display: flex;

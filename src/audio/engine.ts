@@ -3,7 +3,8 @@ import { defaultMatrix, lfoHz, type GlobalFx, type ModMatrix, type Sound } from 
 import { LfoSource } from './lfo'
 import { isSynthAudioId, makeSynthBuffer, type SynthWave } from './synthWaves'
 import { MasterFx } from './masterFx'
-import { Voice, type ModHub, type VoiceOptions } from './voice'
+import { Voice, type GrainMark, type ModHub, type VoiceOptions } from './voice'
+import { forgetGrainSample, loadGrains } from './grains'
 import { nativeEngine } from '../native/bridge'
 
 /**
@@ -34,7 +35,6 @@ const voices = new Set<Voice>() // includes voices whose tails are still ringing
 
 /** Decoded audio by audioId. Not reactive — AudioBuffers are big. */
 export const buffers = new Map<string, AudioBuffer>()
-const reversedBuffers = new Map<string, AudioBuffer>()
 /** Voices whose source is still playing (drives LEDs, marquee, progress). */
 export const activeVoices = shallowRef<VoiceInfo[]>([])
 /** AudioContext time, updated every animation frame. */
@@ -84,6 +84,7 @@ export function getCtx(): AudioContext {
   applyGlobalLfos()
   startMeterLoop()
   if (external) void ctx.suspend()
+  else void loadGrains(ctx)
   return ctx
 }
 
@@ -196,18 +197,7 @@ export function setCC(cc: number, v: number) {
 
 export function forget(audioId: string) {
   buffers.delete(audioId)
-  reversedBuffers.delete(audioId)
-}
-
-/** Reversed copy of a buffer, built on first use (for reverse grains). */
-function reversed(audioId: string): AudioBuffer {
-  let r = reversedBuffers.get(audioId)
-  if (r) return r
-  const src = getBuffer(audioId)!
-  r = getCtx().createBuffer(src.numberOfChannels, src.length, src.sampleRate)
-  for (let ch = 0; ch < src.numberOfChannels; ch++) r.getChannelData(ch).set(src.getChannelData(ch).slice().reverse())
-  reversedBuffers.set(audioId, r)
-  return r
+  forgetGrainSample(audioId)
 }
 
 export function setMaster(volume: number, muted: boolean) {
@@ -235,7 +225,7 @@ export function startVoice(sound: Sound, opts: VoiceOptions & { silent?: boolean
   const v = new Voice(
     c,
     buffer,
-    () => reversed(audioId),
+    audioId,
     sound.id,
     sound.settings,
     opts.silent ? silentBus : fx.input,
@@ -290,13 +280,25 @@ export function readLevels(): [number, number] {
   }) as [number, number]
 }
 
+/**
+ * The context time of the sound leaving the speakers now. currentTime runs ahead of it by the output latency
+ * (the audio already rendered and queued: tens of ms, far more on Bluetooth), so playheads drawn at
+ * currentTime lead what you hear.
+ */
+function heardTime(c: AudioContext): number {
+  const ts = c.getOutputTimestamp?.()
+  if (ts?.contextTime !== undefined && ts.performanceTime !== undefined && ts.performanceTime > 0)
+    return Math.min(c.currentTime, ts.contextTime + (performance.now() - ts.performanceTime) / 1000)
+  return Math.max(0, c.currentTime - (c.outputLatency || c.baseLatency || 0))
+}
+
 function startMeterLoop() {
   const frame = () => {
     if (external) {
       // the plugin engine's clock, extrapolated between its ~30 Hz reports
       if (extClock.at) clock.value = extClock.time + (performance.now() - extClock.at) / 1000
     } else if (ctx) {
-      clock.value = ctx.currentTime
+      clock.value = heardTime(ctx)
       const [l, r] = levels.value
       const [pl, pr] = readLevels()
       const next: [number, number] = [Math.max(pl, l * 0.92), Math.max(pr, r * 0.92)]
@@ -318,6 +320,7 @@ export interface ExternalVoice {
   sound: string
   group?: string
   note?: number
+  vel?: number // 0..1
   age: number // seconds since note-on
   end: number // seconds after note-on it stops, -1 = until released
   pos: number // seconds into its sample
@@ -326,29 +329,62 @@ export interface ExternalVoice {
   in: number
   out: number
   loops: boolean
+  grains?: boolean // a grain cloud: no single playhead
+}
+
+/** A grain the plugin's engine started (a sample of them), in engine time. */
+export interface ExternalGrain {
+  voice: number
+  when: number
+  pos: number
+  len: number
+  dur: number
+  rate: number
+  rev?: boolean
+  pan: number
+  gain: number
+  stream?: number
 }
 
 const extClock = { time: 0, at: 0 }
+let extRate = 0
+/** grain marks of the plugin's voices, by voice id, kept across reports */
+const extMarks = new Map<number, GrainMark[]>()
+
+/** The output sample rate (grain sizes are whole samples of it): the plugin's in a DAW. */
+export const outputRate = () => (external && extRate ? extRate : (ctx?.sampleRate ?? 48000))
 
 /**
  * The plugin engine's voices, shown as this engine's own: pad LEDs, progress rings and waveform
  * playheads read activeVoices, so each reported voice gets a stand-in with the fields they use.
  */
-export function setExternalVoices(list: ExternalVoice[], time: number) {
+export function setExternalVoices(list: ExternalVoice[], time: number, grains: ExternalGrain[] = [], rate = 0) {
   extClock.time = time
   extClock.at = performance.now()
+  if (rate > 0) extRate = rate
   if (!ctx) getCtx() // the meter loop drives the clock
+  for (const g of grains) {
+    let marks = extMarks.get(g.voice)
+    if (!marks) extMarks.set(g.voice, (marks = []))
+    marks.push({ when: g.when, pos: g.pos, len: g.len, dur: g.dur, rate: g.rate, reverse: !!g.rev, pan: g.pan, gain: g.gain, stream: g.stream ?? 0 })
+    if (marks.length > 240) marks.splice(0, marks.length - 240)
+  }
+  const live = new Set(list.map((v) => v.id))
+  for (const id of extMarks.keys()) if (!live.has(id)) extMarks.delete(id)
   activeVoices.value = list.map((v) => {
     const t0 = time - v.age
     const clipLen = Math.max(1e-6, v.out - v.in)
     const voice = {
       t0,
+      kind: v.grains ? 'cloud' : 'sample',
+      velocity: v.vel ?? 1,
       endTime: v.end >= 0 ? t0 + v.end : Infinity,
       cycle: clipLen / Math.max(1e-6, v.rate),
       groupId: v.group,
       bufferDuration: v.dur,
-      marks: [],
+      marks: extMarks.get(v.id) ?? [],
       positionAt(t: number) {
+        if (v.grains) return null
         const x = v.pos + (t - time) * v.rate
         return v.loops && x > v.out ? v.in + ((x - v.in) % clipLen) : Math.min(x, v.out)
       },

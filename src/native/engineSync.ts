@@ -164,13 +164,21 @@ export function startEngineSync(board: Board) {
   watch(() => board.loaded, (loaded) => loaded && schedule(), { immediate: true })
 
   // the engine's levels drive the VU meter; its voices light the pads and move the playheads
-  type Meter = { l: number; r: number; list?: engine.ExternalVoice[]; time?: number; host?: { bpm: number; ppq: number; playing: boolean } }
-  onNative<Meter>('ssbMeter', ({ l, r, list, time, host }) => {
+  type Meter = {
+    l: number
+    r: number
+    list?: engine.ExternalVoice[]
+    grains?: engine.ExternalGrain[]
+    time?: number
+    rate?: number
+    host?: { bpm: number; ppq: number; playing: boolean }
+  }
+  onNative<Meter>('ssbMeter', ({ l, r, list, grains, time, rate, host }) => {
     engine.setExternalLevels(l, r)
     // the DAW's clock: tempo (drives synced LFOs / delays and the display), position, transport
     board.tempo.host = host && host.bpm > 0 ? Math.round(host.bpm * 100) / 100 : 0
     board.tempo.hostPpq = host?.ppq ?? -1
     board.tempo.hostPlaying = !!host?.playing
-    if (list && time !== undefined) engine.setExternalVoices(list, time)
+    if (list && time !== undefined) engine.setExternalVoices(list, time, grains, rate)
   })
 }
