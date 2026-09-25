@@ -171,13 +171,16 @@ struct Engine::Voice
     // grains (voice.ts: 'stretch' walks grains through the clip, 'cloud' scatters them)
     enum class Kind : uint8_t { sample, stretch, cloud };
     Kind kind { Kind::sample };
-    struct Stream { double next { 0 }; float offset { 0 }; float speed { 0 }; };
+    // the next grain is due `gap` after `last` (voice time): for a cloud `gap` is a random multiple of the
+    // period, divided by RATE when read, so turning RATE acts at once (grains.worklet.ts Stream)
+    struct Stream { double last { 0 }; double gap { 0 }; float offset { 0 }; float speed { 0 }; };
     std::array<Stream, 8> streams {};
     int streamCount { 0 };
     struct Grain
     {
         double pos { 0 };        // read position, frames (moves backwards when reversed)
         double step { 1 };       // frames per output sample at the voice's base pitch
+        float k { 1 };           // the voice's kRate when it started: sounding grains follow PITCH / FINE
         int length { 0 }, index { 0 };
         float gain { 1 };
         bool panned { false };
@@ -564,11 +567,11 @@ struct Engine::Impl
         {
             const bool cloud = v.kind == Voice::Kind::cloud;
             v.streamCount = cloud ? std::clamp ((int) std::lround (s.grainStreams), 1, 8) : 1;
-            const double first = cloud ? 1.0 / std::max (0.5f, s.grainRate) : dsp::stretchGrain;
             for (int i = 0; i < v.streamCount; ++i)
             {
                 auto& st = v.streams[(size_t) i];
-                st.next = i ? random01() * first : 0.0;
+                st.last = 0;
+                st.gap = i ? random01() * (cloud ? 1.0 : dsp::stretchGrain) : 0.0;
                 st.offset = v.streamCount > 1 ? (random01() - 0.5f) * std::max (s.grainWidth, 0.2f) : 0.0f;
                 st.speed = cloud ? (random01() * 2 - 1) * s.grainDrift : 0.0f;
             }
@@ -1349,26 +1352,30 @@ struct Engine::Impl
         const double sr = smp.rate;
         const double clipIn = v.clipIn / sr, clipOut = v.clipOut / sr, clipLen = std::max (1e-4, clipOut - clipIn);
         const double oneSample = 1.0 / engine.rate;
+        const double perSecond = std::max (0.1f, s.grainRate);
         for (int si = 0; si < v.streamCount; ++si)
         {
             auto& st = v.streams[(size_t) si];
-            int guard = 0;
-            while (st.next <= v.t && guard++ < 16)
+            for (int guard = 0; guard < 16; ++guard)
             {
+                const double due = st.last + std::max (oneSample, cloud ? st.gap / perSecond : st.gap);
+                if (due > v.t) break;
+                // RATE turned up past a grain's time: it starts now, not in the past
+                const double when = due >= v.t - oneSample ? due : v.t;
                 const double size = cloud ? std::max (oneSample, (s.grainSize + v.cGrainSize) / 1000.0) : dsp::stretchGrain;
-                double rate = v.kRate * dsp::semisToRate (v.semisAt (st.next));
+                double rate = v.kRate * dsp::semisToRate (v.semisAt (when));
                 if (cloud && s.grainJitter > 0)
                     rate *= dsp::semisToRate ((random01() * 2 - 1) * s.grainJitter);
                 const double bufLen = std::min (size * rate, clipLen);
                 double start;
                 if (cloud)
                 {
-                    double pos = s.grainPos + v.cGrainPos + st.offset + st.speed * st.next / clipLen;
+                    double pos = s.grainPos + v.cGrainPos + st.offset + st.speed * when / clipLen;
                     pos = (st.speed != 0 || st.offset != 0) ? pos - std::floor (pos) : std::clamp (pos, 0.0, 1.0);
                     start = clipIn + pos * clipLen + (random01() - 0.5) * s.grainWidth * clipLen - bufLen / 2;
                 }
                 else
-                    start = clipIn + std::fmod (st.next * s.speed, clipLen);
+                    start = clipIn + std::fmod (when * s.speed, clipLen);
                 const double offset = std::min (std::max (start, clipIn), clipOut - bufLen);
                 const bool reverse = cloud && s.grainReverse > 0 && random01() < s.grainReverse;
                 const double dur = bufLen / rate;
@@ -1385,13 +1392,14 @@ struct Engine::Impl
                     g.gain = gain;
                     const double stepFrames = rate * sr / engine.rate;
                     g.step = reverse ? -stepFrames : stepFrames;
+                    g.k = v.kRate;
                     g.pos = reverse ? (offset + bufLen) * sr : offset * sr;
                     g.panned = panned;
                     g.pan = pan;
                 }
                 GrainView gv;
                 gv.voice = v.order;
-                gv.when = at - (v.t - st.next);
+                gv.when = at - (v.t - when);
                 gv.pos = (float) offset;
                 gv.len = (float) bufLen;
                 gv.dur = (float) dur;
@@ -1402,8 +1410,8 @@ struct Engine::Impl
                 gv.stream = (uint8_t) si;
                 grainViews.push (std::move (gv));   // full (no one reading): dropped
 
-                st.next += cloud ? std::max (oneSample, dsp::grainInterval (s.grainRate, s.grainScatter, random01()))
-                                 : std::max (dur, oneSample) / dsp::stretchOverlap;
+                st.last = when;
+                st.gap = cloud ? dsp::grainInterval (1.0f, s.grainScatter, random01()) : std::max (dur, oneSample) / dsp::stretchOverlap;
             }
         }
     }
@@ -1504,7 +1512,7 @@ struct Engine::Impl
                             xr += b;
                         }
                     }
-                    g.pos += g.step * bend;
+                    g.pos += g.step * bend * (v.kRate / g.k);
                     if (++g.index >= g.length)
                         g = v.grainPool[(size_t) --v.grainCount];   // done: the last one takes its place
                     else

@@ -28,6 +28,8 @@ const samples = new Map<string, Sample>()
 interface Grain {
   pos: number // frames into the sample (moves backwards when reversed)
   step: number // frames per output sample, before pitch modulation
+  /** PITCH / FINE (as a rate) when it started: a sounding grain follows those knobs as they turn */
+  k: number
   length: number // output samples
   index: number
   gain: number
@@ -35,8 +37,14 @@ interface Grain {
   /** the block sample it starts at (grains that start mid-block) */
   from: number
 }
+/**
+ * One grain stream. Its next grain is due `gap` after the `last`: for a cloud `gap` is a random multiple of the
+ * period (1 on average), divided by RATE when it is read -- so turning RATE takes effect at once, not after the
+ * interval that was drawn at the old rate; for STRETCH it is seconds.
+ */
 interface Stream {
-  next: number
+  last: number
+  gap: number
   offset: number
   speed: number
 }
@@ -91,9 +99,10 @@ class GrainProcessor extends AudioWorkletProcessor {
     const c = this.cfg
     const cloud = c.kind === 'cloud'
     const n = cloud ? Math.min(8, Math.max(1, Math.round(c.streams))) : 1
-    const first = cloud ? 1 / Math.max(0.5, c.rate) : STRETCH_GRAIN
+    // the first grain at the note, the other streams' somewhere in their first period
     this.streams = Array.from({ length: n }, (_, i) => ({
-      next: c.t0 + (i ? Math.random() * first : 0),
+      last: c.t0,
+      gap: i ? Math.random() * (cloud ? 1 : STRETCH_GRAIN) : 0,
       offset: n > 1 ? (Math.random() - 0.5) * Math.max(c.width, 0.2) : 0,
       speed: cloud ? (Math.random() * 2 - 1) * c.drift : 0,
     }))
@@ -128,6 +137,7 @@ class GrainProcessor extends AudioWorkletProcessor {
       this.grains.push({
         pos: (reverse ? offset + bufLen : offset) * smp.rate,
         step: reverse ? -step : step,
+        k: c.kRate,
         length,
         index: 0,
         gain,
@@ -160,20 +170,22 @@ class GrainProcessor extends AudioWorkletProcessor {
     const until = Math.min(blockEnd, c.end)
     const posMod = params.posMod
     const sizeMod = params.sizeMod
+    const rate = Math.max(0.1, c.rate)
     for (let si = 0; si < this.streams.length; si++) {
       const st = this.streams[si]
       let guard = 0
-      while (st.next < until && guard++ < 512) {
-        const from = Math.max(0, Math.min(n - 1, Math.ceil((st.next - currentTime) * sampleRate)))
+      for (;;) {
+        const due = st.last + Math.max(1 / sampleRate, cloud ? st.gap / rate : st.gap)
+        if (due >= until || guard++ >= 512) break
+        // RATE turned up past a grain's time: it starts now, not in the past (no burst of catch-up grains)
+        const when = Math.max(due, currentTime)
+        const from = Math.max(0, Math.min(n - 1, Math.ceil((when - currentTime) * sampleRate)))
         const pm = posMod.length > 1 ? posMod[from] : posMod[0]
         const sm = sizeMod.length > 1 ? sizeMod[from] : sizeMod[0]
-        const dur = this.spawn(st, si, st.next, from, pm, sm, smp)
-        st.next += cloud
-          ? Math.max(1 / sampleRate, grainInterval(c.rate, c.scatter, Math.random()))
-          : Math.max(dur, 1 / sampleRate) / STRETCH_OVERLAP
+        const dur = this.spawn(st, si, when, from, pm, sm, smp)
+        st.last = when
+        st.gap = cloud ? grainInterval(1, c.scatter, Math.random()) : Math.max(dur, 1 / sampleRate) / STRETCH_OVERLAP
       }
-      // fell behind (a long pause): catch up without a burst
-      if (st.next < currentTime - 0.1) st.next = currentTime
     }
 
     // render
@@ -186,7 +198,7 @@ class GrainProcessor extends AudioWorkletProcessor {
     for (let gi = 0; gi < this.grains.length; gi++) {
       const g = this.grains[gi]
       const [ll, lr, rl, rr] = g.pan
-      const step = g.step * bend
+      const step = g.step * bend * (c.kRate / g.k)
       let i = g.from
       g.from = 0
       for (; i < n && g.index < g.length; i++, g.index++) {

@@ -13,13 +13,16 @@
  * The engine plays host MIDI on its own (with or without this page open); clicks and the
  * computer keyboard reach it as commands from the board (`ssbCommand`).
  */
-import { watch } from 'vue'
+import { computed, effectScope, watch, type ComputedRef, type EffectScope } from 'vue'
 import type { useBoard } from '../stores/board'
 import * as engine from '../audio/engine'
 import { divisionBeats, type ModMatrix, type Sound } from '../types'
 import { callNative, onNative } from './bridge'
 
 type Board = ReturnType<typeof useBoard>
+
+/** the longest a change waits before it is sent (about a frame) */
+const SYNC_EVERY_MS = 16
 
 const matrix = (m: ModMatrix) => ({
   lfo1: { ...m.lfo1, divisionBeats: divisionBeats(m.lfo1.division) },
@@ -127,31 +130,73 @@ export function startEngineSync(board: Board) {
     }
   }
 
+  /**
+   * Each sound's JSON, cached by Vue until something it reads changes: a knob turned while syncing at frame
+   * rate re-serialises the one sound it belongs to, not the whole library (~6 ms for 160 sounds).
+   */
+  const texts = new Map<Sound, { text: ComputedRef<string>; scope: EffectScope }>()
+  function textOf(s: Sound): string {
+    let hit = texts.get(s)
+    if (!hit) {
+      const scope = effectScope(true)
+      const text = scope.run(() => computed(() => JSON.stringify(soundJson(board, s))))!
+      texts.set(s, (hit = { text, scope }))
+    }
+    return hit.text.value
+  }
+
   async function sync() {
     const sounds = allSounds(board)
-    const changed: unknown[] = []
+    const changed: string[] = []
     const ids: string[] = []
     for (const s of sounds) {
       ids.push(s.id)
-      const json = soundJson(board, s)
-      const text = JSON.stringify(json)
+      const text = textOf(s)
       if (sent.get(s.id) !== text) {
         sent.set(s.id, text)
-        changed.push(json)
+        changed.push(text)
       }
     }
-    for (const id of [...sent.keys()]) if (!ids.includes(id)) sent.delete(id)
-    const meta = metaJson(board, ids)
-    const metaText = JSON.stringify(meta)
+    const live = new Set(ids)
+    for (const id of [...sent.keys()]) if (!live.has(id)) sent.delete(id)
+    const present = new Set(sounds)
+    for (const [s, hit] of texts)
+      if (!present.has(s)) {
+        hit.scope.stop()
+        texts.delete(s)
+      }
+    const metaText = JSON.stringify(metaJson(board, ids))
     if (!changed.length && metaText === sentMeta) return
     sentMeta = metaText
-    const missing = await callNative<string[]>('ssbSync', JSON.stringify({ sounds: changed, meta }))
+    const missing = await callNative<string[]>('ssbSync', `{"sounds":[${changed.join(',')}],"meta":${metaText}}`)
     if (missing?.length) void upload(missing)
   }
 
+  /**
+   * Throttled, not debounced: the first change goes out on the next frame and a knob being turned keeps
+   * streaming (one sync per ~frame, never two at once), so the engine follows the knob as it moves. A
+   * debounce here held every change back until the knob had been still for a moment.
+   */
+  let inFlight = false
+  let dirty = false
+  const run = async () => {
+    timer = undefined
+    if (inFlight) return void (dirty = true)
+    inFlight = true
+    try {
+      await sync()
+    } catch (e) {
+      console.warn('engine sync failed', e)
+    } finally {
+      inFlight = false
+      if (dirty) {
+        dirty = false
+        schedule()
+      }
+    }
+  }
   const schedule = () => {
-    clearTimeout(timer)
-    timer = setTimeout(() => void sync().catch((e) => console.warn('engine sync failed', e)), 40)
+    timer ??= setTimeout(() => void run(), SYNC_EVERY_MS)
   }
 
   // anything that changes what a note sounds like, or which note plays what

@@ -685,6 +685,36 @@ TEST ("engine: a session saved before 0.2 keeps its grain cloud (density was an 
     CHECK_NEAR (plain.grainRate, ssb::Settings {}.grainRate, 1e-6);
 }
 
+TEST ("engine: turning RATE up takes effect at once, not after the grain the old rate had drawn")
+{
+    Rig rig;
+    rig.add ("a", dc (0.5f, 5), [] (auto& s) { steadyCloud (s, 2, 1); });   // one grain a second
+    rig.commit();
+    rig.press ("a");
+    rig.render (0.3);
+    CHECK (onsets (rig.left, 0, 0.3).size() == 1);   // the note's first grain; the next is due at 1 s
+    rig.add ("a", dc (0.5f, 5), [] (auto& s) { steadyCloud (s, 2, 50); });
+    rig.commit();                                     // the knob turned to 50 a second
+    rig.render (0.3);
+    const auto starts = onsets (rig.left, 0, 0.3);
+    CHECK_NEAR ((double) starts.size(), 15.0, 1.0);
+    CHECK (starts.at (0) < 0.005);                    // the first right away
+}
+
+TEST ("engine: turning PITCH retunes grains that are already sounding")
+{
+    Rig rig;
+    rig.add ("a", sine (440, 4), [] (auto& s) { steadyCloud (s, 1500, 0.5f); s.grainShape = 0; });   // one long grain
+    rig.commit();
+    rig.press ("a");
+    rig.render (0.4);
+    CHECK_NEAR (rig.hz (0.1, 0.4), 440.0, 3.0);
+    rig.add ("a", sine (440, 4), [] (auto& s) { steadyCloud (s, 1500, 0.5f); s.grainShape = 0; s.pitch = 12; });
+    rig.commit();
+    rig.render (0.4);
+    CHECK_NEAR (rig.hz (0.02, 0.4), 880.0, 6.0);     // the same grain, an octave up, straight away
+}
+
 TEST ("engine: turning GRAIN POS while a cloud sounds moves it")
 {
     Rig rig;
