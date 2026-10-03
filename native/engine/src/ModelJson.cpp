@@ -217,13 +217,20 @@ Settings settingsFromJson (const juce::var& o)
     s.fDecay = num (o, "fDecay", s.fDecay);
     s.fSustain = num (o, "fSustain", s.fSustain);
     s.fRelease = num (o, "fRelease", s.fRelease);
+    // the knob's range (types.ts GRAIN_DENSITY_MIN / MAX), for clouds saved in other units
+    const auto density = [] (float d) { return std::clamp (d, 0.125f, 32.0f); };
     if (o.hasProperty ("grain"))
     {
         s.grain = flag (o, "grain", false);
         s.grainSize = num (o, "grainSize", s.grainSize);
         s.grainPos = num (o, "grainPos", s.grainPos);
         s.grainWidth = num (o, "grainWidth", s.grainWidth);
-        s.grainRate = num (o, "grainRate", s.grainRate);
+        if (o.hasProperty ("grainDensity"))
+            s.grainDensity = num (o, "grainDensity", s.grainDensity);
+        else if (o.hasProperty ("grainRate"))   // 0.2 (types.ts migrateGrains): grains per second whatever their size
+            s.grainDensity = density (num (o, "grainRate", 30) * s.grainSize / 1000.0f);
+        s.grainKey = flag (o, "grainKey", false);
+        s.grainScan = num (o, "grainScan", 0);
         s.grainShape = num (o, "grainShape", s.grainShape);
         s.grainJitter = num (o, "grainJitter", s.grainJitter);
         s.grainReverse = num (o, "grainReverse", s.grainReverse);
@@ -234,10 +241,13 @@ Settings settingsFromJson (const juce::var& o)
     }
     else if (const float size = num (o, "grainSize", 0); size > 0)
     {
-        // saved before 0.2 (types.ts migrateGrains): size > 0 was on, grainDensity counted overlapping grains
+        // saved before 0.2 (types.ts migrateGrains): size > 0 was on, grainDensity counted overlapping
+        // grains -- what DENSITY means again
         s.grain = true;
         s.grainSize = size;
-        s.grainRate = std::clamp (num (o, "grainDensity", 2) / (size / 1000.0f), 0.5f, 1000.0f);
+        s.grainDensity = density (num (o, "grainDensity", 2));
+        s.grainKey = false;
+        s.grainScan = 0;
         s.grainShape = 1;
         s.grainPos = num (o, "grainPos", 0.5f);
         s.grainWidth = num (o, "grainWidth", 0);

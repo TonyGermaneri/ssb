@@ -3,12 +3,12 @@ import { computed, ref } from 'vue'
 import { useBoard } from '../stores/board'
 import { buffers, outputRate } from '../audio/engine'
 import {
-  fmtCents, fmtChoke, fmtDb, fmtGrainRate, fmtGrainShape, fmtGrainSize, fmtHz, fmtNum, fmtOct, fmtPan, fmtPct, fmtQ,
+  fmtCents, fmtChoke, fmtDb, fmtGrainDensity, fmtGrainScan, fmtGrainShape, fmtGrainSize, fmtHz, fmtNum, fmtOct, fmtPan, fmtPct, fmtQ,
   fmtRatio, fmtRepeat, fmtSec, fmtSemis, fmtSemisJitter, midiNoteName,
 } from '../lib/format'
 import { joinTags, splitTags } from '../lib/tags'
 import {
-  FILTER_LABEL, GRAIN_DEFAULTS, GRAIN_MIN_MS, GRAIN_RATE_MAX, GRAIN_RATE_MIN, type Patch, soundAudioIds, TRIGGER_MODE_INFO,
+  FILTER_LABEL, GRAIN_DEFAULTS, GRAIN_DENSITY_MAX, GRAIN_DENSITY_MIN, GRAIN_MIN_MS, GRAIN_SCAN_MAX, type Patch, soundAudioIds, TRIGGER_MODE_INFO,
   TRIGGER_MODES, type Sound,
 } from '../types'
 import Knob from './Knob.vue'
@@ -40,6 +40,18 @@ function toggleFold(key: string) {
   board.master.folded = isFolded(key) ? f.filter((k) => k !== key) : [...f, key]
 }
 const fmtBend = (v: number) => `±${Math.round(v)}st`
+/**
+ * KEY on: the grains line up at the note's period and read one place, which is what makes them a steady pitch --
+ * random start times (SCATTER) or places (SPRAY) would turn it to noise, so both go to 0 (turn them up for breath).
+ */
+function toggleKey() {
+  const st = s.value
+  st.grainKey = !st.grainKey
+  if (st.grainKey) {
+    st.grainScatter = 0
+    st.grainWidth = 0
+  }
+}
 
 function savePreset() {
   board.savePreset(props.sound.id, presetName.value || s.value.name)
@@ -196,12 +208,23 @@ function doReset() {
           >
             {{ s.grain ? 'ON' : 'OFF' }}
           </button>
+          <button
+            class="chip"
+            :class="{ on: s.grainKey }"
+            :title="s.grainKey
+              ? 'KEY on: grains start at the note\'s frequency, so the cloud plays in tune with the keyboard whatever the sample; SIZE shapes its formants and PITCH / FINE shift them — click for DENSITY timing'
+              : 'Start grains at the played note\'s frequency: the cloud plays in tune (pulsar / PSOLA synthesis) and SIZE becomes its formant. Sets SCATTER and SPRAY to 0, which a steady pitch needs'"
+            @click="toggleKey"
+          >
+            KEY
+          </button>
           <button class="fold" :title="isFolded('grain') ? 'Show' : 'Fold'" @click="toggleFold('grain')"><i /></button>
         </h4>
         <div class="row">
           <Knob v-model="s.grainSize" label="SIZE" :min="GRAIN_MIN_MS" :max="grainMax()" curve="grain" :default="GRAIN_DEFAULTS.grainSize" :format="(v: number) => fmtGrainSize(v, outputRate())" color="accent" />
-          <Knob v-model="s.grainRate" label="RATE" :min="GRAIN_RATE_MIN" :max="GRAIN_RATE_MAX" curve="log" :default="GRAIN_DEFAULTS.grainRate" :format="fmtGrainRate" color="accent" />
+          <Knob v-model="s.grainDensity" label="DENSITY" :min="GRAIN_DENSITY_MIN" :max="GRAIN_DENSITY_MAX" curve="log" :default="GRAIN_DEFAULTS.grainDensity" :format="fmtGrainDensity" color="accent" />
           <Knob v-model="s.grainPos" label="POS" :default="0.5" :format="fmtPct" color="accent" />
+          <Knob v-model="s.grainScan" label="SCAN" :min="-GRAIN_SCAN_MAX" :max="GRAIN_SCAN_MAX" :step="0.01" :default="0" bipolar :format="fmtGrainScan" color="accent" />
           <Knob v-model="s.grainWidth" label="SPRAY" :default="GRAIN_DEFAULTS.grainWidth" :format="fmtPct" color="accent" />
           <Knob v-model="s.grainShape" label="SHAPE" :default="1" :format="fmtGrainShape" color="accent" />
           <Knob v-model="s.grainScatter" label="SCATTR" :default="GRAIN_DEFAULTS.grainScatter" :format="fmtPct" color="accent" />

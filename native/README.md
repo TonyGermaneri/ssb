@@ -72,8 +72,9 @@ cloud's level matches to 0.1 %.
 patch (poly / mono, glide, MPE bend / pressure / timbre, the sustain pedal), patches' VCO slots
 (MIX / MOD, TRACK / FIXED, transpose, fine, level) with VCO 1–3 as audio-rate sources, the mod
 matrix (LFO shapes including random / smooth, mod wheel, aftertouch, velocity, bend, timbre,
-grain position / size), amp and filter envelopes, the filter and 3-band EQ, grain clouds (streams,
-rate, spray, window shape, jitter, reverse, spread, scatter, drift; one-sample grains) and STRETCH, per-sound delay and reverb, master
+grain position / size), amp and filter envelopes, the filter and 3-band EQ, grain clouds (density,
+KEY tracking, scan, streams, spray, window shape, jitter, reverse, spread, scatter, drift; one-sample
+grains, sub-sample start times, Hermite reads) and STRETCH, per-sound delay and reverb, master
 chorus / delay / reverb / volume, and SFZ zones (key / velocity / round robin / random layers,
 loops, one-shots, release triggers with rt_decay, locc / hicc, the *_onccN modifiers, region
 filters, envelopes and LFOs). The engine reports its voices back to the page ~30 times a second,

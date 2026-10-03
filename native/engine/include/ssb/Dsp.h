@@ -6,6 +6,7 @@
 #include "Model.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -221,17 +222,64 @@ private:
 
 constexpr double stretchGrain = 0.09;   // seconds: STRETCH's grains
 constexpr int stretchOverlap = 4;
+/** KEY grains longer than this many periods are shortened to it (grainMath.ts KEY_MAX_OVERLAP: coherent
+    grains on the harmonics would jump in level). */
+constexpr double keyMaxOverlap = 8;
+/** At most this many grains start per output sample per stream (grainMath.ts MAX_STARTS_PER_SAMPLE). */
+constexpr int maxStartsPerSample = 4;
+
+/** Grains per second per stream for DENSITY of them sounding at once, each `size` seconds long. */
+inline double grainsPerSecond (double density, double size) noexcept
+{
+    return std::max (1e-3, density) / std::max (1e-6, size);
+}
+
+/** Frequency of a MIDI note (69 = A4 = 440 Hz). */
+inline double noteHz (double midi) noexcept { return 440.0 * std::pow (2.0, (midi - 69.0) / 12.0); }
+
+/** The rising half of a Hann window, 0.5 - 0.5 cos(pi u) for u in 0..1, from a table (every sounding
+    grain reads it once per sample). Built on first use: Engine::prepare touches it. */
+constexpr int riseN = 1024;
+inline const std::array<float, riseN + 1>& riseTable() noexcept
+{
+    static const std::array<float, riseN + 1> table = []
+    {
+        std::array<float, riseN + 1> t {};
+        for (int i = 0; i <= riseN; ++i)
+            t[(size_t) i] = (float) (0.5 - 0.5 * std::cos (pi * i / riseN));
+        return t;
+    }();
+    return table;
+}
+inline float rise (double u) noexcept
+{
+    if (u <= 0) return 0.0f;
+    if (u >= 1) return 1.0f;
+    const double x = u * riseN;
+    const auto i = (size_t) x;
+    const auto& t = riseTable();
+    return t[i] + (t[i + 1] - t[i]) * (float) (x - (double) i);
+}
 
 /** Tukey window at sample i of n: taper 0 = square .. 1 = Hann, sampled at sample centres (so a
-    one-sample grain plays). */
-inline float grainWindow (int i, int n, float taper) noexcept
+    one-sample grain plays). i may be fractional: a grain due between two samples starts part-way in. */
+inline float grainWindow (double i, int n, float taper) noexcept
 {
     if (taper <= 0 || n < 2) return 1.0f;
     const double x = (i + 0.5) / n;
     const double edge = taper / 2.0;
-    if (x < edge) return (float) (0.5 - 0.5 * std::cos (pi * x / edge));
-    if (x > 1 - edge) return (float) (0.5 - 0.5 * std::cos (pi * (1 - x) / edge));
+    if (x < edge) return rise (x / edge);
+    if (x > 1 - edge) return rise ((1 - x) / edge);
     return 1.0f;
+}
+
+/** 4-point, 3rd-order Hermite interpolation: `f` (0..1) of the way from y0 to y1. */
+inline float hermite (float ym1, float y0, float y1, float y2, float f) noexcept
+{
+    const float c1 = 0.5f * (y1 - ym1);
+    const float c2 = ym1 - 2.5f * y0 + 2.0f * y1 - 0.5f * y2;
+    const float c3 = 0.5f * (y2 - ym1) + 1.5f * (y0 - y1);
+    return ((c3 * f + c2) * f + c1) * f + y0;
 }
 
 /** Seconds to the next grain at `rate` a second: steady at scatter 0, exponential (Poisson) at 1,

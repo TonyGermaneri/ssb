@@ -166,7 +166,9 @@ export interface SoundSettings {
   grainSize: number // ms, down to one sample (GRAIN_MIN_MS)
   grainPos: number // 0..1 within clip
   grainWidth: number // 0..1 of clip, random spread (spray)
-  grainRate: number // grains per second per stream, independent of size (gaps when rate × size < 1)
+  grainDensity: number // grains sounding at once per stream: they start density / size times a second (gaps below 1)
+  grainKey: boolean // grains start at the note's frequency (the cloud plays in tune); PITCH / FINE shift the formants
+  grainScan: number // POS moves through the clip at this many times real time (0 = frozen, negative = backwards)
   grainShape: number // window: 0 = square .. 1 = Hann (a Tukey window's taper)
   grainJitter: number // random ± semitones per grain
   grainReverse: number // 0..1 chance a grain plays backwards
@@ -280,22 +282,31 @@ export const soundAudioIds = (s: Sound) => [s.audioId, ...(s.zones ?? []).map((z
 
 /** One sample at 48 kHz, the shortest grain (the engines make every grain a whole number of samples, at least one). */
 export const GRAIN_MIN_MS = 1000 / 48000
-export const GRAIN_RATE_MIN = 0.5
-export const GRAIN_RATE_MAX = 1000
+/** DENSITY: from one grain every eight grain lengths (sparse) to 32 sounding at once (a smear) */
+export const GRAIN_DENSITY_MIN = 0.125
+export const GRAIN_DENSITY_MAX = 32
+/** SCAN: ± twice real time */
+export const GRAIN_SCAN_MAX = 2
 
-/** A cloud that sounds like one: grains sprayed around POS at loosely random times, spread in stereo. */
+/**
+ * Where granulators start: grains on a steady clock, all reading POS, two at a time (a smooth freeze of the sound
+ * there, spread a little in stereo). Steady and in one place is what makes short grains a pitched tone; SPRAY and
+ * SCATTER add texture (and turn short grains to noise), SCAN plays through.
+ */
 export const GRAIN_DEFAULTS = {
   grain: false,
   grainSize: 80,
   grainPos: 0.5,
-  grainWidth: 0.1,
-  grainRate: 30,
+  grainWidth: 0,
+  grainDensity: 2,
+  grainKey: false,
+  grainScan: 0,
   grainShape: 1,
   grainJitter: 0,
   grainReverse: 0,
   grainSpread: 0.3,
   grainStreams: 1,
-  grainScatter: 0.5,
+  grainScatter: 0,
   grainDrift: 0,
 }
 
@@ -345,19 +356,25 @@ export function defaultSettings(name = 'SOUND'): SoundSettings {
   }
 }
 
+const clampDensity = (d: number) => Math.min(GRAIN_DENSITY_MAX, Math.max(GRAIN_DENSITY_MIN, d))
+
 /**
- * Before 0.2 grainSize 0 meant off and grainDensity counted overlapping grains. A pad that had grains keeps
- * them (the same overlap, as a rate); one that never used them gets the new defaults for when it's switched on.
+ * Before 0.2 grainSize 0 meant off and grainDensity counted overlapping grains (what DENSITY is again). 0.2
+ * saved grainRate, grains per second whatever their size; that becomes the density it made at the saved size,
+ * so the cloud sounds the same. A pad that never used grains gets the new defaults for when it's switched on.
  */
 function migrateGrains(raw: Record<string, unknown>) {
   if (raw.grain === undefined) {
     const size = Number(raw.grainSize) || 0
     if (size > 0) {
       raw.grain = true
-      raw.grainRate = Math.min(GRAIN_RATE_MAX, Math.max(GRAIN_RATE_MIN, (Number(raw.grainDensity) || 2) / (size / 1000)))
+      raw.grainDensity = clampDensity(Number(raw.grainDensity) || 2)
     } else Object.assign(raw, GRAIN_DEFAULTS)
+  } else if (raw.grainDensity === undefined && raw.grainRate !== undefined) {
+    const size = Number(raw.grainSize) || GRAIN_DEFAULTS.grainSize
+    raw.grainDensity = clampDensity((Number(raw.grainRate) * size) / 1000)
   }
-  delete raw.grainDensity
+  delete raw.grainRate
 }
 
 /** Fill in settings added since a board was saved, and map renamed ones. */

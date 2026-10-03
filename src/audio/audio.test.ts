@@ -3,7 +3,7 @@ import { computePeaks } from './peaks'
 import { clipBounds, cycleSeconds, glideSemis, playSeconds, tailSeconds } from './timing'
 import { envLevel } from './envelope'
 import { keyToMidi } from '../lib/piano'
-import { defaultSettings, GRAIN_DEFAULTS, migratePresetSettings, migrateSettings } from '../types'
+import { defaultSettings, GRAIN_DEFAULTS, GRAIN_DENSITY_MAX, GRAIN_DENSITY_MIN, migratePresetSettings, migrateSettings } from '../types'
 
 const S = (o: object = {}) => ({ ...defaultSettings(), ...o })
 
@@ -80,32 +80,54 @@ describe('migrateSettings', () => {
     const old = { ...defaultSettings('x'), fadeIn: 0.5, fadeOut: 2 } as Record<string, unknown>
     delete old.attack
     delete old.release
-    delete old.grainRate
+    delete old.grainDensity
+    delete old.grainKey
     const s = migrateSettings(old)
     expect(s.attack).toBe(0.5)
     expect(s.release).toBe(2)
-    expect(s.grainRate).toBe(GRAIN_DEFAULTS.grainRate)
+    expect(s.grainDensity).toBe(GRAIN_DEFAULTS.grainDensity)
+    expect(s.grainKey).toBe(false)
     expect('fadeIn' in s).toBe(false)
   })
 
   it('keeps an old grain cloud (size > 0 was on; density was an overlap) and gives unused ones the new defaults', () => {
     const legacy = (extra: Record<string, unknown>) => {
       const o = { ...defaultSettings('x'), ...extra } as Record<string, unknown>
-      for (const k of ['grain', 'grainRate', 'grainShape']) delete o[k]
+      for (const k of ['grain', 'grainKey', 'grainScan', 'grainShape']) delete o[k]
       return o
     }
     const cloud = migrateSettings(legacy({ grainSize: 100, grainDensity: 4, grainWidth: 0, grainScatter: 0 }))
     expect(cloud.grain).toBe(true)
-    expect(cloud.grainRate).toBeCloseTo(40) // 4 overlapping 100 ms grains = 40 a second
+    expect(cloud.grainDensity).toBe(4) // 4 overlapping grains: what DENSITY means again
     expect(cloud.grainWidth).toBe(0) // the user's own settings stay
-    expect('grainDensity' in cloud).toBe(false)
-    const unused = migrateSettings(legacy({ grainSize: 0, grainDensity: 2, grainWidth: 0 }))
+    expect(cloud.grainScan).toBe(0)
+    const unused = migrateSettings(legacy({ grainSize: 0, grainDensity: 2, grainWidth: 0.4 }))
     expect(unused.grain).toBe(false)
     expect(unused.grainSize).toBe(GRAIN_DEFAULTS.grainSize)
     expect(unused.grainWidth).toBe(GRAIN_DEFAULTS.grainWidth)
     // presets from before get the same treatment
-    expect(migratePresetSettings({ grainSize: 50, grainDensity: 1 } as never).grainRate).toBeCloseTo(20)
+    expect(migratePresetSettings({ grainSize: 50, grainDensity: 1 } as never).grainDensity).toBe(1)
     // already migrated: untouched
     expect(migrateSettings({ ...defaultSettings('y'), grain: true, grainSize: 0.5 }).grainSize).toBe(0.5)
+  })
+
+  it('turns 0.2 clouds (RATE: grains per second whatever their size) into the density they had', () => {
+    const v02 = (extra: Record<string, unknown>) => {
+      const o = { ...defaultSettings('x'), ...extra } as Record<string, unknown>
+      for (const k of ['grainDensity', 'grainKey', 'grainScan']) delete o[k]
+      return o
+    }
+    const cloud = migrateSettings(v02({ grain: true, grainSize: 100, grainRate: 40 }))
+    expect(cloud.grainDensity).toBeCloseTo(4) // 40 a second × 100 ms: four at a time, as before
+    expect('grainRate' in cloud).toBe(false)
+    expect(cloud.grainKey).toBe(false)
+    expect(cloud.grainScan).toBe(0)
+    // a sparse or a very dense one lands inside the knob's range
+    expect(migrateSettings(v02({ grain: true, grainSize: 1, grainRate: 1 })).grainDensity).toBe(GRAIN_DENSITY_MIN)
+    expect(migrateSettings(v02({ grain: true, grainSize: 2000, grainRate: 100 })).grainDensity).toBe(GRAIN_DENSITY_MAX)
+    expect(migratePresetSettings({ grain: true, grainSize: 80, grainRate: 30 } as never).grainDensity).toBeCloseTo(2.4)
+    // today's: untouched
+    expect(migrateSettings({ ...defaultSettings('y'), grainDensity: 7, grainKey: true, grainScan: 1 }).grainDensity).toBe(7)
+    expect(migrateSettings({ ...defaultSettings('y'), grainDensity: 7, grainKey: true, grainScan: 1 }).grainKey).toBe(true)
   })
 })

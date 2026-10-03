@@ -34,5 +34,8 @@ export function fmtGrainSize(ms: number, rate = 48000): string {
   if (ms < 10) return `${ms.toFixed(1)}ms`
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)}s`
 }
-export const fmtGrainRate = (v: number) => (v < 10 ? `${v.toFixed(1)}/s` : `${Math.round(v)}/s`)
+/** GRAIN DENSITY: grains sounding at once (per stream) */
+export const fmtGrainDensity = (v: number) => (v < 1 ? `×${v.toFixed(2)}` : v < 10 ? `×${v.toFixed(1)}` : `×${Math.round(v)}`)
+/** GRAIN SCAN: POS moving through the clip, as a multiple of real time */
+export const fmtGrainScan = (v: number) => (Math.abs(v) < 0.005 ? 'FRZ' : `${v > 0 ? '' : '-'}${Math.abs(v).toFixed(2)}×`)
 export const fmtGrainShape = (v: number) => (v <= 0.02 ? 'SQR' : v >= 0.98 ? 'HANN' : `${Math.round(v * 100)}`)

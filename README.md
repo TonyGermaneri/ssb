@@ -83,7 +83,7 @@ rows on screen exist in the DOM; grid mode (canvas-datagrid) handles very large 
 
 PLAY (vol, pan, repeat, choke) · TUNE (pitch, fine, speed + TAPE/STRETCH) · KEYS (root note, velocity amount,
 bend range) · CLIP · ADSR · FILTER (LP/HP/BP) ·
-FILTER ADSR · EQ · GRAIN (on/off, size, rate, pos, spray, shape, scatter, jitter, reverse, spread, streams, drift) · DELAY · REVERB ·
+FILTER ADSR · EQ · GRAIN (on/off, KEY, size, density, pos, scan, spray, shape, scatter, jitter, reverse, spread, streams, drift) · DELAY · REVERB ·
 MODE (STOP / RESTART / STACK / HOLD) · MIDI LEARN · MATRIX · PRESETS (save / load / copy / paste) · RESET ·
 duplicate · delete.
 
@@ -153,15 +153,24 @@ A .zip containing `board.json` still imports as a board; any other .zip is unpac
 
 ### Grain clouds
 
-GRAIN's **ON** switch plays the pad as a cloud of grains, the way asynchronous granular synthesis does it (Truax,
-Roads, Mutable Instruments Clouds): **RATE** is grains per second, independent of **SIZE**, so a cloud can be sparse
-(clicks and gaps) or dense (a smear); **SCATTER** moves their start times from a steady clock (0) to random, Poisson
-times (1) at the same average rate; **SPRAY** scatters where in the sample each grain reads, around **POS**; **SHAPE**
-runs each grain's window from square (harsh) to Hann (smooth). SIZE goes from a single sample (the first 15 % of the
-knob, shown in samples) through 5–500 ms (most of the travel, the middle is ~50 ms) to the whole sample. JITTER
-detunes each grain, REV plays some backwards, SPREAD pans them, **STREAMS** runs up to 8 independent streams per note
-and **DRIFT** sends each wandering through the clip. Grains render sample by sample (an AudioWorklet in the page, the
-same code in the plugin's engine), so hundreds a second are cheap.
+GRAIN's **ON** switch plays the pad as a cloud of grains, the way the granulators people reach for do it (Mutable
+Instruments Clouds, Padshop, Granulator II; Roads, "Microsound"). **DENSITY** is how many grains sound at once, so
+grains start DENSITY / SIZE times a second: shrink the grains and they come faster -- 2 ms grains at ×2 are a 1 kHz
+buzz, 80 ms ones at ×2 a slow smear, and a density under ×1 leaves gaps (a sparse cloud of clicks). **KEY** starts
+grains at the played note's frequency instead (pulsar / PSOLA synthesis): the cloud plays in tune with the keyboard
+whatever the sample, SIZE sets its formants, and PITCH / FINE shift those formants rather than the note. **SCAN**
+moves POS through the clip at a multiple of real time (frozen at 0, backwards below), so a KEY cloud can play a
+vocal through at its own tempo in any key. **SCATTER** moves start times from a steady clock (0: periodic, pitched)
+to random, Poisson times (1: noisy) at the same average rate; **SPRAY** scatters where in the sample each grain
+reads, around **POS**; **SHAPE** runs each grain's window from square (harsh) to Hann (smooth). A new cloud starts
+steady and in one place (SCATTER and SPRAY at 0: a smooth freeze of the sound at POS), which is what makes short
+grains a pitched tone; random times or places turn short grains to noise, so switching KEY on sets both to 0. SIZE goes from a
+single sample (the first 15 % of the knob, shown in samples) through 5–500 ms (most of the travel, the middle is
+~50 ms) to the whole sample. JITTER detunes each grain, REV plays some backwards, SPREAD pans them, **STREAMS** runs
+up to 8 independent streams per note and **DRIFT** sends each wandering through the clip. Grains start between
+samples, exactly when they are due, and read the sample with a 4-point interpolator, so a steady grain train is a
+clean harmonic tone; they render sample by sample (an AudioWorklet in the page, the same code in the plugin's
+engine), so thousands a second are cheap.
 
 The waveform follows what you hear (the output's timestamp, not the scheduler's clock) and shows every playing
 instance in its own colour (hue by note, brightness by velocity) with a label: a playhead for tape / stretch / SFZ

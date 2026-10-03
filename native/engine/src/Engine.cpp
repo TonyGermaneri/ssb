@@ -172,7 +172,8 @@ struct Engine::Voice
     enum class Kind : uint8_t { sample, stretch, cloud };
     Kind kind { Kind::sample };
     // the next grain is due `gap` after `last` (voice time): for a cloud `gap` is a random multiple of the
-    // period, divided by RATE when read, so turning RATE acts at once (grains.worklet.ts Stream)
+    // period, divided by the grain rate (DENSITY / SIZE, or KEY's note) when read, so turning a knob acts at
+    // once (grains.worklet.ts Stream)
     struct Stream { double last { 0 }; double gap { 0 }; float offset { 0 }; float speed { 0 }; };
     std::array<Stream, 8> streams {};
     int streamCount { 0 };
@@ -181,7 +182,8 @@ struct Engine::Voice
         double pos { 0 };        // read position, frames (moves backwards when reversed)
         double step { 1 };       // frames per output sample at the voice's base pitch
         float k { 1 };           // the voice's kRate when it started: sounding grains follow PITCH / FINE
-        int length { 0 }, index { 0 };
+        int length { 0 };
+        double index { 0 };      // samples in; fractional: a grain due between samples starts part-way into its first
         float gain { 1 };
         bool panned { false };
         float pan { 0 };         // SPREAD: this grain's own StereoPannerNode
@@ -1343,35 +1345,48 @@ struct Engine::Impl
         }
     }
 
-    /** grains.worklet.ts spawn(): start every grain whose time has come (`at`: this sample, engine time). */
-    void scheduleGrains (Voice& v, double at) noexcept
+    /** grains.worklet.ts spawn(): start every grain whose time has come (`at`: this sample, engine time;
+        `bend`: the voice's pitch bus as a rate). */
+    void scheduleGrains (Voice& v, double at, float bend) noexcept
     {
         const auto& s = v.s();
         const auto& smp = *v.sample;
         const bool cloud = v.kind == Voice::Kind::cloud;
+        const bool keyed = cloud && s.grainKey;
         const double sr = smp.rate;
         const double clipIn = v.clipIn / sr, clipOut = v.clipOut / sr, clipLen = std::max (1e-4, clipOut - clipIn);
         const double oneSample = 1.0 / engine.rate;
-        const double perSecond = std::max (0.1f, s.grainRate);
+        // grains per second per stream: DENSITY of them per SIZE, or (KEY) the note's frequency, bent
+        const double perSecond = ! cloud ? 0.0
+            : keyed ? dsp::noteHz (s.rootNote + v.semisAt (v.t)) * bend
+            : dsp::grainsPerSecond (s.grainDensity, std::max (oneSample, (s.grainSize + v.cGrainSize) / 1000.0));
         for (int si = 0; si < v.streamCount; ++si)
         {
             auto& st = v.streams[(size_t) si];
-            for (int guard = 0; guard < 16; ++guard)
+            for (int guard = 0; guard < dsp::maxStartsPerSample; ++guard)
             {
                 const double due = st.last + std::max (oneSample, cloud ? st.gap / perSecond : st.gap);
                 if (due > v.t) break;
-                // RATE turned up past a grain's time: it starts now, not in the past
+                // the rate turned up past a grain's time: it starts now, not in the past
                 const double when = due >= v.t - oneSample ? due : v.t;
-                const double size = cloud ? std::max (oneSample, (s.grainSize + v.cGrainSize) / 1000.0) : dsp::stretchGrain;
-                double rate = v.kRate * dsp::semisToRate (v.semisAt (when));
+                // this sample is `lead` samples (0..1) after the grain is due: it starts that far into its
+                // window and its sample, so a grain train keeps its exact period
+                const double lead = std::clamp ((v.t - when) * engine.rate, 0.0, 1.0);
+                double size = cloud ? std::max (oneSample, (s.grainSize + v.cGrainSize) / 1000.0) : dsp::stretchGrain;
+                if (keyed)
+                    size = std::min (size, dsp::keyMaxOverlap / perSecond);
+                // the sample's rate inside the grain: PITCH / FINE and the note -- unless KEY, where the note
+                // is the grain rate and PITCH / FINE move the formants alone
+                double rate = v.kRate * (keyed ? 1.0 : (double) dsp::semisToRate (v.semisAt (when)));
                 if (cloud && s.grainJitter > 0)
                     rate *= dsp::semisToRate ((random01() * 2 - 1) * s.grainJitter);
                 const double bufLen = std::min (size * rate, clipLen);
                 double start;
                 if (cloud)
                 {
-                    double pos = s.grainPos + v.cGrainPos + st.offset + st.speed * when / clipLen;
-                    pos = (st.speed != 0 || st.offset != 0) ? pos - std::floor (pos) : std::clamp (pos, 0.0, 1.0);
+                    const double moving = st.speed + s.grainScan;
+                    double pos = s.grainPos + v.cGrainPos + st.offset + moving * when / clipLen;
+                    pos = (moving != 0 || st.offset != 0) ? pos - std::floor (pos) : std::clamp (pos, 0.0, 1.0);
                     start = clipIn + pos * clipLen + (random01() - 0.5) * s.grainWidth * clipLen - bufLen / 2;
                 }
                 else
@@ -1379,7 +1394,7 @@ struct Engine::Impl
                 const double offset = std::min (std::max (start, clipIn), clipOut - bufLen);
                 const bool reverse = cloud && s.grainReverse > 0 && random01() < s.grainReverse;
                 const double dur = bufLen / rate;
-                const float overlap = cloud ? (float) (size * s.grainRate * v.streamCount) : (float) dsp::stretchOverlap;
+                const float overlap = cloud ? (float) (size * perSecond * v.streamCount) : (float) dsp::stretchOverlap;
                 const float gain = cloud ? dsp::grainGain (overlap) : std::min (1.0f, 2.0f / (float) dsp::stretchOverlap);
                 const bool panned = cloud && s.grainSpread > 0;
                 const float pan = panned ? (random01() * 2 - 1) * s.grainSpread : 0.0f;
@@ -1388,12 +1403,12 @@ struct Engine::Impl
                 {
                     auto& g = v.grainPool[(size_t) v.grainCount++];
                     g.length = std::max (1, (int) std::lround (dur * engine.rate));
-                    g.index = 0;
+                    g.index = lead;
                     g.gain = gain;
                     const double stepFrames = rate * sr / engine.rate;
                     g.step = reverse ? -stepFrames : stepFrames;
                     g.k = v.kRate;
-                    g.pos = reverse ? (offset + bufLen) * sr : offset * sr;
+                    g.pos = (reverse ? (offset + bufLen) * sr : offset * sr) + g.step * lead;
                     g.panned = panned;
                     g.pan = pan;
                 }
@@ -1484,21 +1499,41 @@ struct Engine::Impl
                     v.quantumPitch = vPitch;
                     v.quantumLeft = 128;
                 }
-                if (! ended)
-                    scheduleGrains (v, now + i * dt);
                 const float bend = dsp::semisToRate ((v.cPitch + v.quantumPitch) / 100.0f);
+                if (! ended)
+                    scheduleGrains (v, now + i * dt, bend);
+                const bool keyed = v.kind == Voice::Kind::cloud && s.grainKey;
+                const float contentBend = keyed ? 1.0f : bend;   // KEY: the bend is in the grain rate already
                 const float taper = v.kind == Voice::Kind::cloud ? s.grainShape : 1.0f;
                 const bool mono = smp.channels.size() < 2;
+                const auto last = (long) frames;
                 for (int gi = 0; gi < v.grainCount;)
                 {
                     auto& g = v.grainPool[(size_t) gi];
-                    const auto i0 = (size_t) std::max (0.0, g.pos);
-                    if ((double) i0 + 1 < frames)
+                    const double fl = std::floor (g.pos);
+                    const auto i0 = (long) fl;
+                    const auto f = (float) (g.pos - fl);
+                    float a = 0, b = 0;
+                    bool inside = true;
+                    if (i0 >= 1 && i0 + 2 < last)
                     {
-                        const auto f = (float) (g.pos - (double) i0);
+                        const auto k = (size_t) i0;
+                        a = dsp::hermite (chL[k - 1], chL[k], chL[k + 1], chL[k + 2], f);
+                        b = dsp::hermite (chR[k - 1], chR[k], chR[k + 1], chR[k + 2], f);
+                    }
+                    else if (i0 >= 0 && i0 + 1 < last)
+                    {
+                        const auto k = (size_t) i0;
+                        a = chL[k] + (chL[k + 1] - chL[k]) * f;
+                        b = chR[k] + (chR[k + 1] - chR[k]) * f;
+                    }
+                    else
+                        inside = false;
+                    if (inside)
+                    {
                         const float w = g.gain * dsp::grainWindow (g.index, g.length, taper);
-                        const float a = (chL[i0] + (chL[i0 + 1] - chL[i0]) * f) * w;
-                        const float b = (chR[i0] + (chR[i0 + 1] - chR[i0]) * f) * w;
+                        a *= w;
+                        b *= w;
                         if (g.panned)
                         {
                             float ol, orr;
@@ -1512,8 +1547,9 @@ struct Engine::Impl
                             xr += b;
                         }
                     }
-                    g.pos += g.step * bend * (v.kRate / g.k);
-                    if (++g.index >= g.length)
+                    g.pos += g.step * contentBend * (v.kRate / g.k);
+                    g.index += 1.0;
+                    if (g.index >= g.length)
                         g = v.grainPool[(size_t) --v.grainCount];   // done: the last one takes its place
                     else
                         ++gi;
@@ -1774,6 +1810,7 @@ Engine::~Engine()
 
 void Engine::prepare (double sampleRate, int maxBlockSize)
 {
+    dsp::riseTable();   // the grain window table, built off the audio thread
     auto& m = *impl;
     rate = sampleRate;
     m.maxBlock = std::max (maxBlockSize, chunk);
