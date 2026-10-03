@@ -39,7 +39,7 @@ const DEST_SHORT: Record<ModDest, string> = {
   volume: 'VOL',
   pan: 'PAN',
   grainPos: 'G.POS',
-  grainSize: 'G.SIZE',
+  grainSize: 'GRAIN',
   delayMix: 'DELAY',
   reverbMix: 'REVERB',
 }

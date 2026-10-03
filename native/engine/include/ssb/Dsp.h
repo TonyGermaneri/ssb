@@ -218,59 +218,97 @@ private:
 };
 
 // ------------------------------------------------------------------------------------ grains
-// src/audio/grainMath.ts, line for line: the page's grain worklet and this engine make the same cloud.
+// src/audio/grainMath.ts, line for line: Granulator II's grain voice, as the page's worklet plays it.
 
 constexpr double stretchGrain = 0.09;   // seconds: STRETCH's grains
 constexpr int stretchOverlap = 4;
-/** KEY grains longer than this many periods are shortened to it (grainMath.ts KEY_MAX_OVERLAP: coherent
-    grains on the harmonics would jump in level). */
-constexpr double keyMaxOverlap = 8;
-/** At most this many grains start per output sample per stream (grainMath.ts MAX_STARTS_PER_SAMPLE). */
-constexpr int maxStartsPerSample = 4;
+constexpr float freqRndSemis = 25;      // G<RND at 1
+constexpr double freqRndRate = 8;       // its random target changes 8 × GRAIN times a second (rand~)
+constexpr double maxPhaseStep = 0.5;
+constexpr int windowPoints = 512;
+using WindowTable = std::array<float, windowPoints + 1>;
 
-/** Grains per second per stream for DENSITY of them sounding at once, each `size` seconds long. */
-inline double grainsPerSecond (double density, double size) noexcept
+/** xorshift32 (grainMath.ts xorshift): both engines draw the same NOIZ table. */
+inline uint32_t xorshift (uint32_t& s) noexcept
 {
-    return std::max (1e-3, density) / std::max (1e-6, size);
+    s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+    return s;
 }
 
-/** Frequency of a MIDI note (69 = A4 = 440 Hz). */
-inline double noteHz (double midi) noexcept { return 440.0 * std::pow (2.0, (midi - 69.0) / 12.0); }
-
-/** The rising half of a Hann window, 0.5 - 0.5 cos(pi u) for u in 0..1, from a table (every sounding
-    grain reads it once per sample). Built on first use: Engine::prepare touches it. */
-constexpr int riseN = 1024;
-inline const std::array<float, riseN + 1>& riseTable() noexcept
+/** Granulator II's "table noiz": 514 values 0..127. */
+inline const std::array<int, windowPoints + 2>& noizTable() noexcept
 {
-    static const std::array<float, riseN + 1> table = []
+    static const std::array<int, windowPoints + 2> table = []
     {
-        std::array<float, riseN + 1> t {};
-        for (int i = 0; i <= riseN; ++i)
-            t[(size_t) i] = (float) (0.5 - 0.5 * std::cos (pi * i / riseN));
+        std::array<int, windowPoints + 2> t {};
+        uint32_t s = 0x5eed;
+        for (auto& v : t) v = (int) (xorshift (s) % 128);
         return t;
     }();
     return table;
 }
-inline float rise (double u) noexcept
+
+/** The grain window (grainMath.ts windowTable): Granulator II's Window patch. */
+inline void windowTable (float shape, GrainSymmetry sym, WindowTable& t) noexcept
 {
-    if (u <= 0) return 0.0f;
-    if (u >= 1) return 1.0f;
-    const double x = u * riseN;
-    const auto i = (size_t) x;
-    const auto& t = riseTable();
+    const double F = 1.0 + std::pow (0.04 * std::clamp (shape * 100.0, 0.0, 100.0), 3.0);
+    const auto& noiz = noizTable();
+    for (int i = 0; i <= windowPoints; ++i)
+    {
+        double x;
+        switch (sym)
+        {
+            case GrainSymmetry::fall: x = 0.5 * i + 256; break;
+            case GrainSymmetry::rise: x = 512 - 0.5 * i; break;
+            case GrainSymmetry::noiz: x = noiz[(size_t) i] + 256; break;
+            case GrainSymmetry::std:
+            default:                  x = i; break;
+        }
+        const double y = std::clamp (x, 0.0, 513.0);
+        const double u = y <= 256 ? y - 128 : 385 - y;
+        const double v = std::clamp (u * F + 128, 0.0, 256.0);
+        t[(size_t) i] = (float) std::sin (pi * v / 512);
+    }
+}
+
+/** The window at phase 0..1, linear between points. */
+inline float windowAt (const WindowTable& t, double phase) noexcept
+{
+    const double x = (phase - std::floor (phase)) * windowPoints;
+    const auto i = std::min ((size_t) x, (size_t) windowPoints - 1);
     return t[i] + (t[i + 1] - t[i]) * (float) (x - (double) i);
 }
 
-/** Tukey window at sample i of n: taper 0 = square .. 1 = Hann, sampled at sample centres (so a
-    one-sample grain plays). i may be fractional: a grain due between two samples starts part-way in. */
-inline float grainWindow (double i, int n, float taper) noexcept
+/** SPRAY: a grain's offset in ms from two uniform numbers in [0, 1). */
+inline double sprayOffset (float spray, float slope, SpraySign sign, float u1, float u2) noexcept
 {
-    if (taper <= 0 || n < 2) return 1.0f;
-    const double x = (i + 0.5) / n;
-    const double edge = taper / 2.0;
-    if (x < edge) return rise (x / edge);
-    if (x > 1 - edge) return rise ((1 - x) / edge);
-    return 1.0f;
+    if (spray <= 0) return 0;
+    const double mag = std::pow (std::abs (2.0 * u1 - 1.0), (double) std::max (1.0f, slope));
+    const double side = sign == SpraySign::right ? 1.0 : sign == SpraySign::left ? -1.0 : u2 < 0.5f ? -1.0 : 1.0;
+    return spray * mag * side;
+}
+
+/** T<RND: a grain's rate factor, 1 ± 0.5 · amount². */
+inline double tuneRndRatio (float amount, float u) noexcept { return 1.0 + 0.5 * amount * amount * (2.0 * u - 1.0); }
+
+/** A grain's level: FLUX (random, made up by 6 dB × amount) or VOID (√amount of them dropped to VOID⁴). */
+inline float grainLevel (GrainAmpMode mode, float amount, float voidLevel, float u) noexcept
+{
+    if (amount <= 0) return 1.0f;
+    const double n = 2.0 * u - 1.0;
+    if (mode == GrainAmpMode::drop)
+        return n < 2.0 * std::sqrt ((double) amount) - 1.0 ? (float) std::pow ((double) voidLevel, 4.0) : 1.0f;
+    const double g = 1.0 - amount * std::abs (n);
+    return (float) (g * g * std::pow (10.0, 6.0 * amount / 20.0));
+}
+
+/** SCAN's offset from POS (seconds), `t` seconds after the note. */
+inline double scanOffset (double t, float timePct, float dist, float curve, double clipLen) noexcept
+{
+    const double d = dist * clipLen;
+    if (d <= 0) return 0;
+    const double x = std::clamp (t * (100.0 / timePct) / d, 0.0, 1.0);
+    return d * std::pow (x, (double) curve);
 }
 
 /** 4-point, 3rd-order Hermite interpolation: `f` (0..1) of the way from y0 to y1. */
@@ -282,19 +320,24 @@ inline float hermite (float ym1, float y0, float y1, float y2, float f) noexcept
     return ((c3 * f + c2) * f + c1) * f + y0;
 }
 
-/** Seconds to the next grain at `rate` a second: steady at scatter 0, exponential (Poisson) at 1,
-    the same average. u uniform in [0, 1). */
-inline double grainInterval (float rate, float scatter, float u) noexcept
+/** `x` at frame position `p`, silent outside [lo, hi) (grainMath.ts readAt). */
+inline float readAt (const float* x, double p, long lo, long hi) noexcept
 {
-    const double mean = 1.0 / std::max (1e-3f, rate);
-    if (scatter <= 0) return mean;
-    return mean * (1.0 - scatter + scatter * -std::log (1.0 - std::min ((double) u, 0.999999)));
+    const double fl = std::floor (p);
+    const auto i0 = (long) fl;
+    if (i0 < lo || i0 + 1 >= hi) return 0.0f;
+    const auto f = (float) (p - fl);
+    const auto k = (size_t) i0;
+    if (i0 - 1 >= lo && i0 + 2 < hi) return hermite (x[k - 1], x[k], x[k + 1], x[k + 2], f);
+    return x[k] + (x[k + 1] - x[k]) * f;
 }
 
-/** Each grain's level when `overlap` sound at once on average: full when sparse, 1/sqrt when dense. */
-inline float grainGain (float overlap) noexcept
+/** STRETCH's window: Hann at sample i of n, at sample centres. */
+inline float hann (int i, int n) noexcept
 {
-    return std::min (1.0f, std::sqrt (2.0f / std::max (1e-6f, overlap)));
+    if (n < 2) return 1.0f;
+    const double x = std::clamp ((i + 0.5) / n, 0.0, 1.0);
+    return (float) (0.5 - 0.5 * std::cos (2 * pi * x));
 }
 
 // ------------------------------------------------------------------------------------ panning

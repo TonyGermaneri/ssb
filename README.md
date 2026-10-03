@@ -83,7 +83,7 @@ rows on screen exist in the DOM; grid mode (canvas-datagrid) handles very large 
 
 PLAY (vol, pan, repeat, choke) · TUNE (pitch, fine, speed + TAPE/STRETCH) · KEYS (root note, velocity amount,
 bend range) · CLIP · ADSR · FILTER (LP/HP/BP) ·
-FILTER ADSR · EQ · GRAIN (on/off, KEY, size, density, pos, scan, spray, shape, scatter, jitter, reverse, spread, streams, drift) · DELAY · REVERB ·
+FILTER ADSR · EQ · GRAIN (Granulator II: grain rate and key tracking, pos, spray, scan, window, spread, random pitch / rate, flux / void, FM) · DELAY · REVERB ·
 MODE (STOP / RESTART / STACK / HOLD) · MIDI LEARN · MATRIX · PRESETS (save / load / copy / paste) · RESET ·
 duplicate · delete.
 
@@ -153,24 +153,29 @@ A .zip containing `board.json` still imports as a board; any other .zip is unpac
 
 ### Grain clouds
 
-GRAIN's **ON** switch plays the pad as a cloud of grains, the way the granulators people reach for do it (Mutable
-Instruments Clouds, Padshop, Granulator II; Roads, "Microsound"). **DENSITY** is how many grains sound at once, so
-grains start DENSITY / SIZE times a second: shrink the grains and they come faster -- 2 ms grains at ×2 are a 1 kHz
-buzz, 80 ms ones at ×2 a slow smear, and a density under ×1 leaves gaps (a sparse cloud of clicks). **KEY** starts
-grains at the played note's frequency instead (pulsar / PSOLA synthesis): the cloud plays in tune with the keyboard
-whatever the sample, SIZE sets its formants, and PITCH / FINE shift those formants rather than the note. **SCAN**
-moves POS through the clip at a multiple of real time (frozen at 0, backwards below), so a KEY cloud can play a
-vocal through at its own tempo in any key. **SCATTER** moves start times from a steady clock (0: periodic, pitched)
-to random, Poisson times (1: noisy) at the same average rate; **SPRAY** scatters where in the sample each grain
-reads, around **POS**; **SHAPE** runs each grain's window from square (harsh) to Hann (smooth). A new cloud starts
-steady and in one place (SCATTER and SPRAY at 0: a smooth freeze of the sound at POS), which is what makes short
-grains a pitched tone; random times or places turn short grains to noise, so switching KEY on sets both to 0. SIZE goes from a
-single sample (the first 15 % of the knob, shown in samples) through 5–500 ms (most of the travel, the middle is
-~50 ms) to the whole sample. JITTER detunes each grain, REV plays some backwards, SPREAD pans them, **STREAMS** runs
-up to 8 independent streams per note and **DRIFT** sends each wandering through the clip. Grains start between
-samples, exactly when they are due, and read the sample with a 4-point interpolator, so a steady grain train is a
-clean harmonic tone; they render sample by sample (an AudioWorklet in the page, the same code in the plugin's
-engine), so thousands a second are cheap.
+GRAIN's **ON** switch plays the pad as a cloud of grains, with the engine of Robert Henke's **Granulator II**
+(Max for Live), ported from its voice patch. Each note runs two grain streams, left and right, each a phasor at the
+**GRAIN** frequency (0.25–150 Hz): a grain starts every time it wraps and another half a period later, and each lasts
+one whole period, so two always overlap and the window is a sine (the square root of a Hann). GRAIN follows the
+keyboard (**G<KEY**, from the pad's ROOT) and so does the sample's pitch (**T<KEY**): low GRAIN is a slow, smooth
+cloud; high GRAIN is a buzz that plays in tune with the keys. With T<KEY at 0 the note only moves the buzz, so the
+sample's tone stays put like a formant.
+
+- **POS** where the grains read; **P<KEY** moves it 1 % of the clip per semitone. **SPRAY** offsets each grain by up
+  to that many ms (SYM, or only RIGHT / LEFT of POS), **SLOPE** keeps most offsets near POS.
+- **SCAN** (switch): from each note, POS travels **S.DIST** of the clip, **S.TIME** 100 % at real time (200 % half
+  speed), along **CURVE**, then stays.
+- **SHAPE** steepens the window's edges up to a square half a period wide; STD / FALL / RISE / NOIZ picks the whole
+  sine, its falling or rising half, or noise.
+- **SPREAD** pulls the left and right grain rates apart (up to two octaves), **G<RND** lets GRAIN wander up to
+  ±25 semitones, **T<RND** gives each grain its own pitch.
+- **FLUX** gives each grain a random level; **VOID** drops a share of them, keeping **RESID** of their level.
+- **FM** (switch) swings where the grains read with a sine at **FM HZ** (following the keys by **FM<KEY**), by up to
+  ± **FM AMT** × 0.02 ms.
+
+Everything random is off to start with, as in Granulator II: SPRAY and the random amounts are what turn short grains
+into noise. The mod matrix reaches GRAIN POS and GRAIN (in semitones, like Granulator II's Grain<LFO). Grains render
+sample by sample, an AudioWorklet in the page and the same code in the plugin's engine.
 
 The waveform follows what you hear (the output's timestamp, not the scheduler's clock) and shows every playing
 instance in its own colour (hue by note, brightness by velocity) with a label: a playhead for tape / stretch / SFZ

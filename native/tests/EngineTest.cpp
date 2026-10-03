@@ -119,34 +119,11 @@ ssb::SamplePtr dc (float value, double seconds)
     return s;
 }
 
-/** A grain cloud with nothing random about it: no spray, a steady clock, centred. `perSecond` grains of
-    `ms` each: the DENSITY (overlap) that makes. */
-void steadyCloud (ssb::Settings& s, float ms, float perSecond)
+/** Granulator II's cloud as it starts (nothing random), GRAIN at `hz`: each grain lasts 1 / hz, two overlap. */
+void cloud (ssb::Settings& s, float hz)
 {
     s.grain = true;
-    s.grainSize = ms;
-    s.grainDensity = perSecond * ms / 1000.0f;
-    s.grainWidth = 0;
-    s.grainScatter = 0;
-    s.grainSpread = 0;
-}
-
-/** Amplitude of `x`'s component at `hz` between `from` and `to`: one DFT bin under a Blackman-Harris window,
-    so a strong line elsewhere (a cloud's DC level, its fundamental) does not leak into a quiet one. */
-double tone (const std::vector<float>& x, double from, double to, double hz)
-{
-    const auto a = (size_t) (from * rate), b = std::min (x.size(), (size_t) (to * rate));
-    const double n = (double) (b - a), w = 2 * ssb::dsp::pi * hz / rate;
-    double re = 0, im = 0, sum = 0;
-    for (size_t i = a; i < b; ++i)
-    {
-        const double u = 2 * ssb::dsp::pi * (double) (i - a) / n;
-        const double win = 0.35875 - 0.48829 * std::cos (u) + 0.14128 * std::cos (2 * u) - 0.01168 * std::cos (3 * u);
-        re += win * x[i] * std::cos (w * (double) (i - a));
-        im += win * x[i] * std::sin (w * (double) (i - a));
-        sum += win;
-    }
-    return 2 * std::sqrt (re * re + im * im) / sum;
+    s.grainFreq = hz;
 }
 
 /** How exactly `x` repeats every `period` seconds between `from` and `to`: 1 = perfectly, 0 = not at all. */
@@ -438,8 +415,8 @@ TEST ("engine: master delay repeats the whole mix")
 TEST ("engine: a grain cloud plays grains around GRAIN POS at the note's pitch, for as long as REPEAT says")
 {
     Rig rig;
-    // 1 s of 440 Hz, grains of 80 ms, 50 a second (four overlapping)
-    rig.add ("a", sine (440, 1.0), [] (auto& s) { steadyCloud (s, 80, 50); s.repeat = 1; s.release = 0.01f; });
+    // 1 s of 440 Hz, grains of 80 ms (GRAIN 12.5 Hz), two overlapping on each side
+    rig.add ("a", sine (440, 1.0), [] (auto& s) { cloud (s, 12.5f); s.repeat = 1; s.release = 0.01f; });
     rig.commit();
     rig.press ("a");
     rig.render (1.4);
@@ -554,336 +531,327 @@ double envelopePeriod (const std::vector<float>& x, double from, double to)
 }
 } // namespace
 
+// ------------------------------------------------------------------ the grain cloud: Granulator II's voice
+
+namespace
+{
+/** A cloud played from the keyboard at MIDI `note` (the pad's ROOT is C4). */
+std::unique_ptr<Rig> keyed (ssb::SamplePtr sample, std::function<void (ssb::Settings&)> tweak, int note, double seconds)
+{
+    auto rig = std::make_unique<Rig>();
+    rig->add ("a", sample, std::move (tweak));
+    rig->set ("play", true);
+    rig->set ("playable", "a");
+    rig->commit();
+    rig->render (seconds, { on (0.0, note) });
+    return rig;
+}
+} // namespace
+
 TEST ("engine: GRAIN POS picks where in the sample grains read from")
 {
     auto play = [] (float pos)
     {
         auto rig = std::make_unique<Rig>();
-        rig->add ("a", sweep(), [pos] (auto& s) { steadyCloud (s, 60, 66.7f); s.grainPos = pos; });
+        rig->add ("a", sweep(), [pos] (auto& s) { cloud (s, 15); s.grainPos = pos; });
         rig->commit();
         rig->press ("a");
         rig->render (0.6);
         return rig->hz (0.15, 0.55);
     };
-    // 200 * 10^pos Hz; overlapping grains blur it a little
+    // 200 * 10^pos Hz; a 66 ms grain hears a little of the sweep, hence the tolerance
     CHECK_NEAR (play (0.1f), 252.0, 30.0);
     CHECK_NEAR (play (0.5f), 632.0, 60.0);
     CHECK_NEAR (play (0.9f), 1589.0, 120.0);
 }
 
-TEST ("engine: GRAIN SIZE sets how long each grain is (and so the grain rhythm)")
-{
-    auto period = [] (float ms)
-    {
-        auto rig = std::make_unique<Rig>();
-        rig->add ("a", sine (440, 3), [ms] (auto& s) { steadyCloud (s, ms, 1000.0f / ms); });
-        rig->commit();
-        rig->press ("a");
-        rig->render (1.2);
-        return envelopePeriod (rig->left, 0.1, 1.1);
-    };
-    // one grain every SIZE: grains end to end, one Hann window each
-    CHECK_NEAR (period (40), 0.040, 0.006);
-    CHECK_NEAR (period (150), 0.150, 0.012);
-}
-
-namespace
-{
-/** Start times (seconds) of the grains in `x`: where it rises from silence, at least `gap` apart. */
-std::vector<double> onsets (const std::vector<float>& x, double from, double to, double gap = 0.0005)
-{
-    std::vector<double> out;
-    double last = -1;
-    for (auto i = (size_t) (from * rate) + 1; i < (size_t) (to * rate) && i < x.size(); ++i)
-        if (std::abs (x[i]) > 1e-3f && std::abs (x[i - 1]) <= 1e-3f)
-        {
-            const double t = (double) i / rate;
-            if (last < 0 || t - last >= gap) out.push_back (t);
-            last = t;
-        }
-    return out;
-}
-} // namespace
-
-TEST ("engine: a DENSITY under one leaves gaps: a sparse cloud")
+TEST ("engine: GRAIN is how often grains start; each lasts one period, and two overlap")
 {
     Rig rig;
-    rig.add ("a", dc (0.5f, 2), [] (auto& s) { steadyCloud (s, 10, 10); });   // 10 ms grains, density 0.1: 10 a second
+    rig.add ("a", dc (0.5f, 3), [] (auto& s) { cloud (s, 10); });
     rig.commit();
     rig.press ("a");
     rig.render (1.2);
-    const auto starts = onsets (rig.left, 0.05, 1.15);
-    CHECK_NEAR ((double) starts.size(), 11.0, 1.0);
-    size_t silent = 0, n = 0;
-    for (auto i = (size_t) (0.1 * rate); i < (size_t) (1.1 * rate); ++i, ++n)
-        silent += std::abs (rig.left[i]) < 1e-4f;
-    CHECK_NEAR ((double) silent / (double) n, 0.9, 0.03);   // sounding 10 % of the time
+    // two sine windows half a period apart: a ripple at twice GRAIN (sin + cos)
+    CHECK_NEAR (envelopePeriod (rig.left, 0.1, 1.1), 0.05, 0.006);
+    std::vector<ssb::GrainView> grains;
+    rig.engine.readGrains (grains, 1000);
+    // two at the note on each side, then two a period on each side
+    CHECK_NEAR ((double) grains.size(), 4 + 1.2 * 10 * 2 * 2, 3.0);
+    for (const auto& g : grains)
+        CHECK_NEAR (g.dur, 0.1, 1e-4);
 }
 
-TEST ("engine: a grain can be one sample long, and hundreds start a second")
+TEST ("engine: short grains are a pitched tone that follows the keyboard (G<KEY)")
+{
+    auto at = [] (int note, float key)
+    {
+        return keyed (sine (500, 2), [key] (auto& s) { cloud (s, 100); s.grainFreqKey = key; }, note, 0.6);
+    };
+    const auto root = at (60, 1);
+    CHECK (root->rms (0.1, 0.5) > 0.05);
+    CHECK (periodicity (root->left, 0.1, 0.5, 0.01) > 0.98);       // 100 Hz: GRAIN
+    const auto octave = at (72, 1);
+    CHECK (periodicity (octave->left, 0.1, 0.5, 0.005) > 0.98);    // an octave up: 200 Hz
+    const auto fixed = at (72, 0);
+    CHECK (periodicity (fixed->left, 0.1, 0.5, 0.01) > 0.98);      // G<KEY 0: GRAIN stays put
+    CHECK (fixed->rms (0.1, 0.5) > 0.05);
+}
+
+TEST ("engine: T<KEY decides whether the note transposes the sample inside the grains")
+{
+    auto at = [] (float tuneKey)
+    {
+        return keyed (sine (440, 2), [tuneKey] (auto& s) { cloud (s, 20); s.grainFreqKey = 0; s.grainTuneKey = tuneKey; }, 72, 0.6);
+    };
+    CHECK_NEAR (at (1)->hz (0.1, 0.5), 880.0, 20.0);
+    CHECK_NEAR (at (0)->hz (0.1, 0.5), 440.0, 15.0);
+}
+
+TEST ("engine: SPREAD pulls the left and right grain rates apart, up to two octaves")
 {
     Rig rig;
-    rig.add ("a", dc (0.5f, 2), [] (auto& s) { steadyCloud (s, 1000.0f / 48000.0f, 200); s.cutoff = 20000; });
+    rig.add ("a", sine (500, 2), [] (auto& s) { cloud (s, 100); s.grainStereo = 1; });
     rig.commit();
     rig.press ("a");
-    rig.render (1.1);
-    const auto starts = onsets (rig.left, 0.05, 1.05, 0.002);
-    CHECK_NEAR ((double) starts.size(), 200.0, 3.0);
-    // each is a click: one sample at the grain's level, then (after the 20 kHz filter rings) nothing
-    size_t loud = 0;
-    for (auto i = (size_t) (0.05 * rate); i < (size_t) (1.05 * rate); ++i)
-        loud += std::abs (rig.left[i]) > 0.1f;
-    CHECK (loud >= 200 && loud < 200 * 4);
+    rig.render (0.6);
+    CHECK (periodicity (rig.left, 0.1, 0.5, 0.02) > 0.98);    // GRAIN / 2
+    CHECK (periodicity (rig.right, 0.1, 0.5, 0.005) > 0.98);  // GRAIN × 2
 }
 
-TEST ("engine: SHAPE runs the grain window from square to Hann")
+TEST ("engine: SHAPE squares the window: the overlapping pair sits flat between short bumps")
 {
-    auto firstSample = [] (float shape)
+    auto flat = [] (float shape)
     {
         Rig rig;
-        rig.add ("a", dc (0.5f, 2), [shape] (auto& s) { steadyCloud (s, 20, 10); s.grainShape = shape; });
+        rig.add ("a", dc (0.5f, 2), [shape] (auto& s) { cloud (s, 20); s.grainWindow = shape; });
         rig.commit();
         rig.press ("a");
-        rig.render (0.5);
-        const auto starts = onsets (rig.left, 0.05, 0.45);
-        const auto i = (size_t) (starts.at (1) * rate);
-        float peak = 0;   // the grain's own top, whatever the voice's volume and pan law make of it
-        for (auto j = i; j < i + (size_t) (0.02 * rate); ++j) peak = std::max (peak, std::abs (rig.left[j]));
-        return std::abs (rig.left[i + 2]) / peak;
+        rig.render (0.6);
+        float top = 0;
+        for (auto i = (size_t) (0.1 * rate); i < (size_t) (0.5 * rate); ++i) top = std::max (top, std::abs (rig.left[i]));
+        // the share of the time the pair is at one window's full level (√2 below the sine pair's top)
+        size_t at = 0, n = 0;
+        const float one = shape > 0 ? top / 1.63f : top / std::sqrt (2.0f);
+        for (auto i = (size_t) (0.1 * rate); i < (size_t) (0.5 * rate); ++i, ++n)
+            at += std::abs (std::abs (rig.left[i]) - one) < 0.02f * one;
+        return (double) at / (double) n;
     };
-    CHECK (firstSample (0) > 0.9f);    // square: full level from the start
-    CHECK (firstSample (1) < 0.05f);   // Hann: fades in
+    CHECK (flat (0) < 0.3);   // sine windows: always between 1 and √2 of one
+    CHECK (flat (1) > 0.9);   // squares half a period wide end to end, a bump where they meet (as in Granulator II)
 }
 
-TEST ("engine: SCATTER moves grains from a steady clock to random (Poisson) times, at the same rate")
+TEST ("engine: SPRAY offsets each grain by up to ±SPRAY ms, or to one side")
 {
-    auto intervals = [] (float scatter)
+    auto spread = [] (ssb::SpraySign sign)
     {
         Rig rig;
-        rig.add ("a", dc (0.5f, 30), [scatter] (auto& s) { steadyCloud (s, 1, 40); s.grainScatter = scatter; });
+        rig.add ("a", sine (440, 2), [sign] (auto& s) { cloud (s, 20); s.grainSpray = 200; s.grainSpraySign = sign; });
         rig.commit();
         rig.press ("a");
-        rig.render (20);
-        const auto t = onsets (rig.left, 0.1, 19.9, 0.0015);
-        double mean = 0, var = 0;
-        for (size_t i = 1; i < t.size(); ++i) mean += t[i] - t[i - 1];
-        mean /= (double) (t.size() - 1);
-        for (size_t i = 1; i < t.size(); ++i) var += std::pow (t[i] - t[i - 1] - mean, 2);
-        return std::pair { mean, std::sqrt (var / (double) (t.size() - 1)) / mean };   // mean, spread (CV)
+        rig.render (1.0);
+        std::vector<ssb::GrainView> grains;
+        rig.engine.readGrains (grains, 1000);
+        double lo = 9, hi = -9;
+        for (const auto& g : grains)
+        {
+            lo = std::min (lo, (double) g.pos);
+            hi = std::max (hi, (double) g.pos);
+        }
+        return std::pair { lo, hi };
     };
-    const auto [steadyMean, steadyCv] = intervals (0);
-    const auto [randomMean, randomCv] = intervals (1);
-    CHECK_NEAR (steadyMean, 0.025, 0.0005);
-    CHECK (steadyCv < 0.01);
-    CHECK_NEAR (randomMean, 0.025, 0.003);   // same rate on average (a few near-simultaneous grains merge)
-    CHECK (randomCv > 0.7);                  // exponential: CV 1 (merged neighbours trim it a little)
+    const auto [lo, hi] = spread (ssb::SpraySign::sym);   // around POS: 1 s
+    CHECK (lo >= 0.8 - 1e-4 && hi <= 1.2 + 1e-4);
+    CHECK (hi - lo > 0.3);
+    const auto [rlo, rhi] = spread (ssb::SpraySign::right);
+    CHECK (rlo >= 1.0 - 1e-4 && rhi > 1.15);
+}
+
+TEST ("engine: VOID drops √amount of the grains; T<RND gives each its own pitch")
+{
+    Rig rig;
+    rig.add ("a", sine (440, 3), [] (auto& s)
+    {
+        cloud (s, 20);
+        s.grainAmpMode = ssb::GrainAmpMode::drop;
+        s.grainAmp = 0.49f;
+        s.grainTuneRnd = 1;
+    });
+    rig.commit();
+    rig.press ("a");
+    rig.render (2.0);
+    std::vector<ssb::GrainView> grains;
+    rig.engine.readGrains (grains, 1000);
+    int dropped = 0;
+    double lo = 9, hi = 0;
+    for (const auto& g : grains)
+    {
+        dropped += g.gain < 0.5f;
+        lo = std::min (lo, (double) g.rate);
+        hi = std::max (hi, (double) g.rate);
+    }
+    CHECK_NEAR ((double) dropped / (double) grains.size(), 0.7, 0.1);
+    CHECK (lo >= 0.5 - 1e-6 && hi <= 1.5 + 1e-6 && hi - lo > 0.7);
+}
+
+TEST ("engine: FM swings where the grains read, so their pitch wobbles")
+{
+    auto wobble = [] (bool fm)
+    {
+        Rig rig;
+        rig.add ("a", sine (440, 3), [fm] (auto& s) { cloud (s, 20); s.grainFm = fm; s.grainFmFreq = 3; s.grainFmAmount = 250; });
+        rig.commit();
+        rig.press ("a");
+        rig.render (1.0);
+        double lo = 1e9, hi = 0;
+        for (double t = 0.1; t < 0.9; t += 0.05)
+        {
+            const double f = rig.hz (t, t + 0.05);
+            lo = std::min (lo, f);
+            hi = std::max (hi, f);
+        }
+        return hi - lo;
+    };
+    CHECK (wobble (false) < 15);
+    CHECK (wobble (true) > 40);   // ± 5 ms at 3 Hz: ± 9 %
+}
+
+TEST ("engine: SCAN moves POS from each note at 100 / TIME times real time, for its distance")
+{
+    auto play = [] (float time, float dist)
+    {
+        auto rig = std::make_unique<Rig>();
+        rig->add ("a", sweep(), [time, dist] (auto& s)
+        {
+            cloud (s, 15);
+            s.grainPos = 0;
+            s.grainScanOn = true;
+            s.grainScanTime = time;
+            s.grainScanDist = dist;
+        });
+        rig->commit();
+        rig->press ("a");
+        rig->render (1.0);
+        return std::pair { rig->hz (0.15, 0.25), rig->hz (0.75, 0.85) };
+    };
+    // the 2 s sweep is at 200 × 10^(t / 2) Hz t seconds in
+    const auto [early, late] = play (100, 1);
+    CHECK_NEAR (early, 252.0, 35.0);
+    CHECK_NEAR (late, 502.0, 60.0);
+    CHECK_NEAR (play (200, 1).second, 317.0, 40.0);    // half speed
+    CHECK_NEAR (play (100, 0.25f).second, 355.0, 45.0); // stopped half a second in
 }
 
 TEST ("engine: the grains it starts are reported for the editor's waveform")
 {
     Rig rig;
-    rig.add ("a", sine (440, 1.0), [] (auto& s) { steadyCloud (s, 50, 20); s.grainPos = 0.25f; s.grainReverse = 1; });
+    rig.add ("a", sine (440, 1.0), [] (auto& s) { cloud (s, 20); s.grainPos = 0.25f; });
     rig.commit();
     rig.press ("a", 0.5f);
     rig.render (0.5);
     std::vector<ssb::GrainView> grains;
     rig.engine.readGrains (grains, 1000);
-    CHECK_NEAR ((double) grains.size(), 10.0, 1.0);
+    CHECK_NEAR ((double) grains.size(), 4 + 0.5 * 20 * 2 * 2, 3.0);
     std::vector<ssb::VoiceView> voices;
     double time = 0;
     CHECK (rig.engine.readVoices (voices, time));
     CHECK (voices.size() == 1 && voices[0].grains && std::abs (voices[0].velocity - 0.5f) < 1e-6f);
+    int left = 0;
     for (const auto& g : grains)
     {
         CHECK (g.voice == voices[0].id);
-        CHECK (g.reverse);
-        CHECK_NEAR (g.pos + g.len / 2, 0.25, 0.001);   // centred on GRAIN POS
+        CHECK_NEAR (g.pos, 0.25, 0.001);   // at GRAIN POS
         CHECK_NEAR (g.dur, 0.05, 1e-4);
         CHECK (g.when >= 0 && g.when <= time);
+        left += g.stream == 0;
     }
-    CHECK_NEAR (grains[1].when - grains[0].when, 0.05, 1e-3);
+    CHECK_NEAR ((double) left, grains.size() / 2.0, 1.0);   // left and right
     rig.engine.readGrains (grains, 1000);
     CHECK (grains.empty());   // each one once
 }
 
-TEST ("engine: a session saved before 0.2 keeps its grain cloud (density was an overlap count, as it is again)")
+TEST ("engine: clouds saved before the Granulator II model keep their grain length and POS")
 {
-    auto o = new juce::DynamicObject();
+    auto o = new juce::DynamicObject();   // before 0.2: a SIZE > 0 was on
     o->setProperty ("grainSize", 100);
     o->setProperty ("grainDensity", 4);
-    const auto old = ssb::settingsFromJson (juce::var (o));
-    CHECK (old.grain);
-    CHECK_NEAR (old.grainDensity, 4.0, 1e-6);
-    CHECK_NEAR (old.grainWidth, 0.0, 1e-9);   // what it had, not today's defaults
-    CHECK (! old.grainKey);
+    const auto v01 = ssb::settingsFromJson (juce::var (o));
+    CHECK (v01.grain);
+    CHECK_NEAR (v01.grainFreq, 10.0, 1e-4);
+    auto last = new juce::DynamicObject();   // the version before: sprayed, scattered, 80 ms
+    last->setProperty ("grain", true);
+    last->setProperty ("grainSize", 80);
+    last->setProperty ("grainPos", 0.3);
+    last->setProperty ("grainWidth", 0.1);
+    last->setProperty ("grainScatter", 0.5);
+    const auto v03 = ssb::settingsFromJson (juce::var (last));
+    CHECK (v03.grain);
+    CHECK_NEAR (v03.grainFreq, 12.5, 1e-4);
+    CHECK_NEAR (v03.grainPos, 0.3, 1e-6);
+    CHECK_NEAR (v03.grainSpray, 0.0, 1e-9);
     auto off = new juce::DynamicObject();
     off->setProperty ("grainSize", 0);
-    const auto plain = ssb::settingsFromJson (juce::var (off));
-    CHECK (! plain.grain);
-    CHECK_NEAR (plain.grainDensity, ssb::Settings {}.grainDensity, 1e-6);
-}
-
-TEST ("engine: a 0.2 cloud (RATE: grains per second whatever their size) keeps the density it had")
-{
-    auto o = new juce::DynamicObject();
-    o->setProperty ("grain", true);
-    o->setProperty ("grainSize", 100);
-    o->setProperty ("grainRate", 40);
-    const auto s = ssb::settingsFromJson (juce::var (o));
-    CHECK (s.grain);
-    CHECK_NEAR (s.grainDensity, 4.0, 1e-5);   // 40 a second × 100 ms
-    CHECK (! s.grainKey);
-    CHECK_NEAR (s.grainScan, 0.0, 1e-9);
-    auto sparse = new juce::DynamicObject();
-    sparse->setProperty ("grain", true);
-    sparse->setProperty ("grainSize", 1);
-    sparse->setProperty ("grainRate", 1);
-    CHECK_NEAR (ssb::settingsFromJson (juce::var (sparse)).grainDensity, 0.125, 1e-6);   // the knob's floor
+    CHECK (! ssb::settingsFromJson (juce::var (off)).grain);
     auto now = new juce::DynamicObject();
     now->setProperty ("grain", true);
-    now->setProperty ("grainDensity", 7);
-    now->setProperty ("grainKey", true);
-    now->setProperty ("grainScan", -0.5);
+    now->setProperty ("grainFreq", 77);
+    auto long_ = new juce::DynamicObject();   // a grain the length of a 20 s sample: below Granulator II's floor
+    long_->setProperty ("grain", true);
+    long_->setProperty ("grainFreq", 0.05);
+    CHECK_NEAR (ssb::settingsFromJson (juce::var (long_)).grainFreq, 0.05, 1e-6);
+    now->setProperty ("grainSymmetry", "fall");
+    now->setProperty ("grainAmpMode", "void");
+    now->setProperty ("grainSpraySign", "left");
+    now->setProperty ("grainScanOn", true);
     const auto today = ssb::settingsFromJson (juce::var (now));
-    CHECK_NEAR (today.grainDensity, 7.0, 1e-6);
-    CHECK (today.grainKey);
-    CHECK_NEAR (today.grainScan, -0.5, 1e-6);
+    CHECK_NEAR (today.grainFreq, 77.0, 1e-6);
+    CHECK (today.grainSymmetry == ssb::GrainSymmetry::fall);
+    CHECK (today.grainAmpMode == ssb::GrainAmpMode::drop);
+    CHECK (today.grainSpraySign == ssb::SpraySign::left);
+    CHECK (today.grainScanOn);
 }
 
-TEST ("engine: turning DENSITY up takes effect at once, not after the grain the old rate had drawn")
+TEST ("engine: turning GRAIN up takes effect at once")
 {
     Rig rig;
-    rig.add ("a", dc (0.5f, 5), [] (auto& s) { steadyCloud (s, 2, 1); });   // one grain a second
+    rig.add ("a", dc (0.5f, 5), [] (auto& s) { cloud (s, 1); });
     rig.commit();
     rig.press ("a");
     rig.render (0.3);
-    CHECK (onsets (rig.left, 0, 0.3).size() == 1);   // the note's first grain; the next is due at 1 s
-    rig.add ("a", dc (0.5f, 5), [] (auto& s) { steadyCloud (s, 2, 50); });
-    rig.commit();                                     // the knob turned up: 50 a second
+    std::vector<ssb::GrainView> grains;
+    rig.engine.readGrains (grains, 1000);
+    CHECK (grains.size() == 4);   // the note's; the next are half a second off
+    rig.add ("a", dc (0.5f, 5), [] (auto& s) { cloud (s, 40); });
+    rig.commit();
     rig.render (0.3);
-    const auto starts = onsets (rig.left, 0, 0.3);
-    CHECK_NEAR ((double) starts.size(), 15.0, 1.0);
-    CHECK (starts.at (0) < 0.005);                    // the first right away
+    rig.engine.readGrains (grains, 1000);
+    CHECK_NEAR ((double) grains.size(), 0.3 * 40 * 2 * 2, 4.0);
 }
 
-TEST ("engine: turning PITCH retunes grains that are already sounding")
+TEST ("engine: PITCH reaches the grains that start after it turns")
 {
     Rig rig;
-    rig.add ("a", sine (440, 4), [] (auto& s) { steadyCloud (s, 1500, 0.5f); s.grainShape = 0; });   // one long grain
+    rig.add ("a", sine (440, 4), [] (auto& s) { cloud (s, 20); });
     rig.commit();
     rig.press ("a");
     rig.render (0.4);
-    CHECK_NEAR (rig.hz (0.1, 0.4), 440.0, 3.0);
-    rig.add ("a", sine (440, 4), [] (auto& s) { steadyCloud (s, 1500, 0.5f); s.grainShape = 0; s.pitch = 12; });
+    CHECK_NEAR (rig.hz (0.1, 0.4), 440.0, 6.0);
+    rig.add ("a", sine (440, 4), [] (auto& s) { cloud (s, 20); s.pitch = 12; });
     rig.commit();
     rig.render (0.4);
-    CHECK_NEAR (rig.hz (0.02, 0.4), 880.0, 6.0);     // the same grain, an octave up, straight away
+    CHECK_NEAR (rig.hz (0.1, 0.4), 880.0, 12.0);
 }
 
 TEST ("engine: turning GRAIN POS while a cloud sounds moves it")
 {
     Rig rig;
-    rig.add ("a", sweep(), [] (auto& s) { steadyCloud (s, 60, 66.7f); s.grainPos = 0.1f; });
+    rig.add ("a", sweep(), [] (auto& s) { cloud (s, 15); s.grainPos = 0.1f; });
     rig.commit();
     rig.press ("a");
     rig.render (0.5);
     CHECK_NEAR (rig.hz (0.15, 0.45), 252.0, 30.0);
-    rig.add ("a", sweep(), [] (auto& s) { steadyCloud (s, 60, 66.7f); s.grainPos = 0.9f; });
+    rig.add ("a", sweep(), [] (auto& s) { cloud (s, 15); s.grainPos = 0.9f; });
     rig.commit();   // the page's knob, as the next performance
     rig.render (0.5);
     CHECK_NEAR (rig.hz (0.15, 0.45), 1589.0, 120.0);
-}
-
-TEST ("engine: DENSITY keeps the overlap as SIZE shrinks: short grains are a tone, not a trickle of clicks")
-{
-    Rig rig;
-    // 2 ms grains, two at a time: a thousand a second
-    rig.add ("a", sine (500, 2), [] (auto& s) { steadyCloud (s, 2, 1000); });
-    rig.commit();
-    rig.press ("a");
-    rig.render (0.6);
-    CHECK (rig.rms (0.1, 0.5) > 0.1);
-    // never a gap: every 2 ms of it sounds
-    float quietest = 1;
-    for (auto i = (size_t) (0.1 * rate); i + 96 < (size_t) (0.5 * rate); i += 96)
-    {
-        double sum = 0;
-        for (size_t j = 0; j < 96; ++j) sum += (double) rig.left[i + j] * rig.left[i + j];
-        quietest = std::min (quietest, (float) std::sqrt (sum / 96));
-    }
-    CHECK (quietest > 0.03);
-    // and it is a 1 kHz tone: periodic at the grain rate, the 500 Hz of the sample folded onto its harmonics
-    CHECK (periodicity (rig.left, 0.1, 0.5, 0.001) > 0.95);
-    CHECK (tone (rig.left, 0.1, 0.5, 500) < 0.1 * tone (rig.left, 0.1, 0.5, 1000));
-}
-
-TEST ("engine: grains start between samples, so a grain train with a non-integer period is exactly periodic")
-{
-    Rig rig;
-    // Hann grains of 2.1 ms (100.8 samples) end to end: 476.19 a second. Started on whole samples instead, the
-    // pattern would only repeat every five grains, putting a line at a fifth of the grain rate.
-    rig.add ("a", dc (0.5f, 2), [] (auto& s) { steadyCloud (s, 2.1f, 1000 / 2.1f); });
-    rig.commit();
-    rig.press ("a");
-    rig.render (1.0);
-    const double f0 = 1000 / 2.1;
-    const double fundamental = tone (rig.left, 0.3, 0.9, f0);
-    CHECK (fundamental > 0.05);
-    CHECK (tone (rig.left, 0.3, 0.9, f0 / 5) < 1e-3 * fundamental);
-    CHECK (tone (rig.left, 0.3, 0.9, f0 * 2 / 5) < 1e-3 * fundamental);
-}
-
-TEST ("engine: SCAN moves POS through the clip, so the cloud plays the sample through at that speed")
-{
-    auto play = [] (float scan)
-    {
-        auto rig = std::make_unique<Rig>();
-        rig->add ("a", sweep(), [scan] (auto& s) { steadyCloud (s, 60, 66.7f); s.grainPos = 0; s.grainScan = scan; });
-        rig->commit();
-        rig->press ("a");
-        rig->render (1.0);
-        return std::pair { rig->hz (0.1, 0.3), rig->hz (0.7, 0.9) };
-    };
-    // forwards at real time: where the 2 s sweep (200 Hz × 10^(t/2)) is at 0.2 s, then at 0.8 s
-    const auto [early, late] = play (1);
-    CHECK_NEAR (early, 252.0, 40.0);
-    CHECK_NEAR (late, 502.0, 60.0);
-    // backwards from POS 0 wraps to the end of the clip and walks back
-    const auto [earlyBack, lateBack] = play (-1);
-    CHECK_NEAR (earlyBack, 1589.0, 160.0);
-    CHECK_NEAR (lateBack, 796.0, 90.0);
-    // frozen (the default): the same place throughout
-    const auto [a, b] = play (0);
-    CHECK_NEAR (a, 200.0, 25.0);
-    CHECK_NEAR (b, 200.0, 25.0);
-}
-
-TEST ("engine: KEY starts grains at the note's frequency, so the cloud plays in tune whatever the sample")
-{
-    auto play = [] (bool key, float pitch = 0)
-    {
-        auto rig = std::make_unique<Rig>();
-        // a 500 Hz sample in 10 ms grains, played at A3 (220 Hz; the pad's root is C4)
-        rig->add ("a", sine (500, 2), [key, pitch] (auto& s) { steadyCloud (s, 10, 200); s.grainKey = key; s.pitch = pitch; });
-        rig->set ("play", true);
-        rig->set ("playable", "a");
-        rig->commit();
-        rig->render (0.6, { on (0.0, 57) });
-        return rig;
-    };
-    const auto keyed = play (true);
-    CHECK (keyed->rms (0.1, 0.5) > 0.05);
-    CHECK (periodicity (keyed->left, 0.1, 0.5, 1.0 / 220) > 0.97);   // repeats every 1/220 s: an A
-    // the sample's 500 Hz is no harmonic of 220: it has become 440 and 660
-    const double at440 = tone (keyed->left, 0.1, 0.5, 440), at660 = tone (keyed->left, 0.1, 0.5, 660);
-    CHECK (tone (keyed->left, 0.1, 0.5, 500) < 0.2 * std::max (at440, at660));
-    // without KEY the note transposes the sample and grains come at DENSITY / SIZE: 200 a second
-    const auto plain = play (false);
-    CHECK (periodicity (plain->left, 0.1, 0.5, 1.0 / 220) < 0.9);
-    CHECK (periodicity (plain->left, 0.1, 0.5, 1.0 / 200) > 0.95);
-    // PITCH moves the formants, not the note: an octave up it is still an A, with the sample's tone at 1 kHz
-    const auto bright = play (true, 12);
-    CHECK (periodicity (bright->left, 0.1, 0.5, 1.0 / 220) > 0.97);
-    CHECK (tone (bright->left, 0.1, 0.5, 880) + tone (bright->left, 0.1, 0.5, 1100)
-           > tone (bright->left, 0.1, 0.5, 440) + tone (bright->left, 0.1, 0.5, 660));
 }

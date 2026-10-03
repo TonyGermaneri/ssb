@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
-import { activeVoices, clock, type VoiceInfo } from '../audio/engine'
+import { activeVoices, buffers, clock, type VoiceInfo } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { midiNoteName } from '../lib/format'
 import type { Sound } from '../types'
@@ -74,13 +74,16 @@ function draw() {
     g.fillRect(x, y1, Math.max(1, W / n - 0.3), Math.max(1, y2 - y1))
   }
 
-  // grain cloud: where POS sends grains, and how far SPRAY scatters them
+  // grain cloud: where POS sends grains, and how far SPRAY (ms) scatters them either side
   if (s.grain) {
     const clipW = b - a
     const cx = a + s.grainPos * clipW
-    const half = (s.grainWidth * clipW) / 2
+    const seconds = buffers.get(props.sound.audioId)?.duration ?? 0
+    const half = seconds > 0 ? (s.grainSpray / 1000 / seconds) * W : 0
+    const from = s.grainSpraySign === 'right' ? cx : cx - half
+    const to = s.grainSpraySign === 'left' ? cx : cx + half
     g.fillStyle = th.secondary + '24'
-    g.fillRect(cx - half, 0, half * 2, H)
+    g.fillRect(from, 0, to - from, H)
     g.fillStyle = th.secondary + 'aa'
     g.fillRect(cx - 0.5, 0, 1, H)
   }

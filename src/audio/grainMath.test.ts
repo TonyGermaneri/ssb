@@ -1,106 +1,120 @@
 import { describe, expect, it } from 'vitest'
 import {
-  grainGain, grainInterval, grainPan, grainsPerSecond, grainWindow, hermite, KEY_MAX_OVERLAP, noteHz, rise,
+  GRAIN_FREQ_FLOOR, grainFreqMin, grainLevel, hermite, readAt, scanOffset, sprayOffset, tuneRndRatio, windowAt, windowTable, WINDOW_POINTS,
 } from './grainMath'
 
-describe('grain window', () => {
-  it('runs from square to Hann, and a one-sample grain plays', () => {
-    expect(grainWindow(0, 1, 1)).toBe(1)
-    expect(grainWindow(0, 64, 0)).toBe(1) // square: full level from the first sample
-    expect(grainWindow(0, 64, 1)).toBeLessThan(0.01) // Hann: fades in
-    expect(grainWindow(32, 64, 1)).toBeGreaterThan(0.99)
-    // a half taper: flat in the middle half, cosine edges
-    expect(grainWindow(32, 64, 0.5)).toBe(1)
-    expect(grainWindow(20, 64, 0.5)).toBe(1)
-    expect(grainWindow(3, 64, 0.5)).toBeLessThan(0.3)
-    for (let i = 0; i < 10; i++) expect(grainWindow(i, 10, 1)).toBeCloseTo(grainWindow(9 - i, 10, 1), 6) // symmetric
+describe('grain window (Granulator II\'s Window patch)', () => {
+  it('is a sine window at SHAPE 0: the square root of a Hann', () => {
+    const w = windowTable(0, 'std')
+    expect(w.length).toBe(WINDOW_POINTS + 1)
+    for (const i of [0, 37, 128, 256, 300, 480]) expect(w[i]).toBeCloseTo(Math.sin((Math.PI * Math.min(i, 513 - i)) / 512), 6)
+    expect(w[256]).toBe(1)
+    // two grains half a period apart keep the power constant (within the 1 % its mirror at 513, not 512, costs)
+    for (const ph of [0.05, 0.2, 0.37]) expect(Math.abs(windowAt(w, ph) ** 2 + windowAt(w, ph + 0.5) ** 2 - 1)).toBeLessThan(0.01)
   })
 
-  it('is the raised cosine it stands for, between samples too', () => {
-    const exact = (u: number) => 0.5 - 0.5 * Math.cos(Math.PI * Math.min(1, Math.max(0, u)))
-    for (let k = 0; k <= 1000; k++) expect(rise(k / 1000 + 0.00037)).toBeCloseTo(exact(k / 1000 + 0.00037), 5)
-    expect(rise(-1)).toBe(0)
-    expect(rise(2)).toBe(1)
-    // a grain due 0.3 samples before its first output sample starts 0.3 into its window
-    const n = 48
-    for (const i of [0.3, 7.3, 40.3]) {
-      const x = (i + 0.5) / n
-      const hann = 0.5 - 0.5 * Math.cos(2 * Math.PI * x)
-      expect(grainWindow(i, n, 1)).toBeCloseTo(hann, 5)
+  it('SHAPE steepens the edges and flattens the top, to a square half a period wide', () => {
+    const w = windowTable(1, 'std') // F = 65
+    expect(w[100]).toBe(0)
+    expect(w[200]).toBe(1)
+    expect(w[256]).toBe(1)
+    expect(w[330]).toBe(1)
+    expect(w[420]).toBe(0)
+    const half = windowTable(0.5, 'std') // F = 9: edges from 128 ∓ 128 / 9
+    expect(half[110]).toBe(0)
+    expect(half[125]).toBeGreaterThan(0.2)
+    expect(half[125]).toBeLessThan(0.8)
+    expect(half[150]).toBe(1)
+  })
+
+  it('FALL and RISE stretch one half of the window over the grain; NOIZ is noise near the top', () => {
+    const fall = windowTable(0, 'fall')
+    const rise = windowTable(0, 'rise')
+    expect(fall[0]).toBeCloseTo(1, 3)
+    expect(fall[512]).toBeLessThan(0.01)
+    expect(rise[0]).toBeLessThan(0.01)
+    expect(rise[512]).toBeCloseTo(1, 3)
+    for (let i = 1; i <= 512; i++) {
+      expect(fall[i]).toBeLessThanOrEqual(fall[i - 1] + 1e-9)
+      expect(rise[i]).toBeGreaterThanOrEqual(rise[i - 1] - 1e-9)
     }
-    // past the end (a fractional start can leave the last sample a hair over): silent, not negative
-    expect(grainWindow(n - 0.3, n, 1)).toBeGreaterThanOrEqual(0)
-    expect(grainWindow(n - 0.3, n, 1)).toBeLessThan(0.01)
+    const noiz = windowTable(0, 'noiz')
+    const vals = new Set(Array.from(noiz, (v) => v.toFixed(3)))
+    expect(vals.size).toBeGreaterThan(50)
+    for (const v of noiz) {
+      expect(v).toBeGreaterThan(0.7)
+      expect(v).toBeLessThanOrEqual(1)
+    }
   })
 })
 
-describe('grain timing', () => {
-  it('starts DENSITY grains per SIZE: shorter grains come faster, keeping the overlap', () => {
-    expect(grainsPerSecond(2, 0.08)).toBeCloseTo(25) // 80 ms grains, two at a time: 25 a second
-    expect(grainsPerSecond(2, 0.002)).toBeCloseTo(1000) // 2 ms grains: a 1 kHz buzz, not 25 clicks
-    expect(grainsPerSecond(0.125, 0.08)).toBeCloseTo(1.5625) // sparse: one every eight grain lengths
-    expect(grainsPerSecond(2, 1 / 48000) * (1 / 48000)).toBeCloseTo(2) // one-sample grains keep the overlap too
-    expect(KEY_MAX_OVERLAP).toBe(8)
-  })
-
-  it('KEY: grains at the note', () => {
-    expect(noteHz(69)).toBe(440)
-    expect(noteHz(57)).toBeCloseTo(220)
-    expect(noteHz(60)).toBeCloseTo(261.63, 1)
-    expect(noteHz(60 + 0.5)).toBeCloseTo(noteHz(60) * Math.pow(2, 1 / 24)) // glides land between notes
-  })
-
-  it('is steady at scatter 0 and Poisson at 1, with the same average rate', () => {
-    expect(grainInterval(20, 0, 0.7)).toBe(0.05)
-    let seed = 1
-    const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646
-    for (const scatter of [0.5, 1]) {
-      let sum = 0
-      let min = Infinity
-      for (let i = 0; i < 20000; i++) {
-        const d = grainInterval(20, scatter, rand())
-        sum += d
-        min = Math.min(min, d)
-      }
-      expect(sum / 20000).toBeCloseTo(0.05, 2)
-      if (scatter === 1) expect(min).toBeLessThan(0.001) // exponential: some grains land almost together
-      else expect(min).toBeGreaterThanOrEqual(0.025) // half steady: never closer than half the period
-    }
-  })
-
-  it('sparse clouds play grains at full level, dense ones by 1/√overlap', () => {
-    expect(grainGain(0.2)).toBe(1)
-    expect(grainGain(2)).toBe(1)
-    expect(grainGain(8)).toBeCloseTo(0.5)
-    expect(grainGain(32)).toBeCloseTo(0.25)
+describe('GRAIN\'s range', () => {
+  it('reaches down to one grain as long as the sample', () => {
+    expect(grainFreqMin(3.32)).toBeCloseTo(1 / 3.32) // the dial's long end is the whole file
+    expect(grainFreqMin(30)).toBeCloseTo(1 / 30)
+    expect(grainFreqMin(0)).toBe(0.25) // not decoded yet: Granulator II's floor
+    expect(grainFreqMin(1e6)).toBe(GRAIN_FREQ_FLOOR)
+    expect(grainFreqMin(0.001)).toBe(150) // shorter than the shortest grain
   })
 })
 
-describe('grain interpolation', () => {
+describe('per-grain draws', () => {
+  it('SPRAY offsets up to ±SPRAY ms, one-sided when asked, clustered near POS by SLOPE', () => {
+    expect(sprayOffset(0, 1, 'sym', 0.9, 0.9)).toBe(0)
+    expect(sprayOffset(100, 1, 'sym', 1 - 1e-9, 0.9)).toBeCloseTo(100)
+    expect(sprayOffset(100, 1, 'sym', 1 - 1e-9, 0.1)).toBeCloseTo(-100)
+    expect(sprayOffset(100, 1, 'sym', 0.75, 0.9)).toBeCloseTo(50)
+    expect(sprayOffset(100, 1, 'right', 0.75, 0.1)).toBeCloseTo(50)
+    expect(sprayOffset(100, 1, 'left', 0.75, 0.9)).toBeCloseTo(-50)
+    expect(sprayOffset(100, 10, 'sym', 0.75, 0.9)).toBeCloseTo(100 * 0.5 ** 10)
+  })
+
+  it('T<RND moves each grain\'s rate by up to ±0.5 × amount²', () => {
+    expect(tuneRndRatio(0, 0)).toBe(1)
+    expect(tuneRndRatio(1, 0)).toBe(0.5)
+    expect(tuneRndRatio(1, 1)).toBe(1.5)
+    expect(tuneRndRatio(0.5, 0)).toBe(0.875)
+  })
+
+  it('FLUX sets a random level (made up by 6 dB × amount); VOID drops √amount of the grains', () => {
+    expect(grainLevel('flux', 0, 0, 0.1)).toBe(1)
+    expect(grainLevel('flux', 1, 0, 0.5)).toBeCloseTo(10 ** (6 / 20))
+    expect(grainLevel('flux', 1, 0, 0)).toBe(0)
+    expect(grainLevel('flux', 0.5, 0, 0)).toBeCloseTo(0.25 * 10 ** (3 / 20))
+    expect(grainLevel('void', 0.25, 0.5, 0.4)).toBeCloseTo(0.0625) // dropped, keeping 0.5⁴
+    expect(grainLevel('void', 0.25, 0.5, 0.6)).toBe(1)
+    let dropped = 0
+    for (let i = 0; i < 1000; i++) if (grainLevel('void', 0.49, 0, (i + 0.5) / 1000) < 1) dropped++
+    expect(dropped / 1000).toBeCloseTo(0.7, 2)
+  })
+
+  it('SCAN travels its distance at 100 / TIME times real time, along its curve, then stays', () => {
+    expect(scanOffset(0, 100, 1, 1, 2)).toBe(0)
+    expect(scanOffset(1, 100, 1, 1, 2)).toBeCloseTo(1)
+    expect(scanOffset(3, 100, 1, 1, 2)).toBeCloseTo(2)
+    expect(scanOffset(1, 200, 1, 1, 2)).toBeCloseTo(0.5)
+    expect(scanOffset(1, 100, 1, 2, 2)).toBeCloseTo(0.5)
+    expect(scanOffset(1, 100, 0.25, 1, 2)).toBeCloseTo(0.5)
+  })
+})
+
+describe('reading the sample', () => {
   it('passes through the samples and follows a curve between them', () => {
     expect(hermite(1, 2, 3, 4, 0)).toBe(2)
     expect(hermite(1, 2, 3, 4, 1)).toBeCloseTo(3)
     expect(hermite(1, 2, 3, 4, 0.25)).toBeCloseTo(2.25) // a line stays a line
     const sq = (x: number) => x * x
     expect(hermite(sq(-1), sq(0), sq(1), sq(2), 0.5)).toBeCloseTo(sq(0.5)) // a parabola too
-    // a sine at an eighth of the sample rate (6 kHz at 48 k): far closer than the straight line between samples
     const s = (x: number) => Math.sin((Math.PI / 4) * x)
-    const f = 0.5
-    const linear = s(0) + (s(1) - s(0)) * f
-    expect(Math.abs(hermite(s(-1), s(0), s(1), s(2), f) - s(f))).toBeLessThan(Math.abs(linear - s(f)) / 4)
+    const linear = s(0) + (s(1) - s(0)) * 0.5
+    expect(Math.abs(hermite(s(-1), s(0), s(1), s(2), 0.5) - s(0.5))).toBeLessThan(Math.abs(linear - s(0.5)) / 4)
   })
-})
 
-describe('grain pan', () => {
-  it('follows StereoPannerNode: equal power for mono, fold-over for stereo', () => {
-    expect(grainPan(null, true)).toEqual([1, 0, 0, 1])
-    const [ll, lr] = grainPan(0, true)
-    expect(ll).toBeCloseTo(Math.SQRT1_2)
-    expect(lr).toBeCloseTo(Math.SQRT1_2)
-    expect(grainPan(-1, false)).toEqual([1, 0, 1, expect.closeTo(0, 9)]) // hard left: R folds into L
-    const [l2, r2, , rr2] = grainPan(1, false)
-    expect(l2).toBeCloseTo(0)
-    expect(r2).toBeCloseTo(1)
-    expect(rr2).toBe(1)
+  it('is silent outside the clip', () => {
+    const x = new Float32Array([1, 1, 1, 1, 1, 1, 1, 1])
+    expect(readAt(x, 3.5, 2, 6)).toBe(1)
+    expect(readAt(x, 1.5, 2, 6)).toBe(0)
+    expect(readAt(x, 5.5, 2, 6)).toBe(0)
+    expect(readAt(x, -3, 0, 8)).toBe(0)
   })
 })

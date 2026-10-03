@@ -1,13 +1,18 @@
 /**
- * The grain engine: one processor per grain voice, rendering its grains sample by sample (so a grain can be a
- * single sample long, and thousands can start each second), the way native/engine does it. Its output feeds the
- * voice's envelope / filter / FX like any other source.
+ * The grain engine, one processor per grain voice, rendering sample by sample the way native/engine does.
+ *
+ * cloud: Granulator II's voice (grainMath.ts). Two phasors -- left, right -- at the GRAIN frequency; each runs two
+ *   grain slots, A starting when the phasor wraps and B half a period later, each windowed by the phasor's phase
+ *   (B's shifted half a cycle), so a slot's grain lasts exactly one period and two always overlap. A slot draws its
+ *   start position, pitch and level when it starts and reads forward from there; FM swings the read position.
+ *   Phase wraps are found between samples, and a grain that starts between them begins that far in.
+ * stretch: grains that walk through the clip at SPEED, played at PITCH.
  *
  * Samples are sent once per context and shared by every processor in this AudioWorkletGlobalScope.
  */
 import {
-  grainGain, grainInterval, grainPan, grainsPerSecond, grainWindow, hermite, KEY_MAX_OVERLAP, MAX_STARTS_PER_SAMPLE,
-  noteHz, STRETCH_GRAIN, STRETCH_OVERLAP, type FromGrains, type GrainConfig, type GrainEvent, type PanGains,
+  FREQ_RND_RATE, FREQ_RND_SEMIS, grainLevel, hann, MAX_PHASE_STEP, readAt, scanOffset, sprayOffset, STRETCH_GRAIN,
+  STRETCH_OVERLAP, tuneRndRatio, windowAt, windowTable, type FromGrains, type GrainConfig, type GrainEvent,
   type ToGrains,
 } from './grainMath'
 import { glideSemis, semisToRate } from './timing'
@@ -26,46 +31,39 @@ interface Sample {
 }
 const samples = new Map<string, Sample>()
 
-interface Grain {
-  pos: number // frames into the sample (moves backwards when reversed)
-  step: number // frames per output sample, before pitch modulation
-  /** PITCH / FINE (as a rate) when it started: a sounding grain follows those knobs as they turn */
-  k: number
-  length: number // output samples
-  /** samples into the grain; fractional: a grain due between two samples starts part-way into its first */
+/** A cloud's grain slot: the grain it is playing. */
+interface Slot {
+  on: boolean
+  pos: number // frames into the sample
+  step: number // frames per output sample
+  amp: number
+}
+const newSlot = (): Slot => ({ on: false, pos: 0, step: 1, amp: 1 })
+
+/** A stretch grain. */
+interface StretchGrain {
+  pos: number
+  step: number
+  k: number // PITCH / FINE (as a rate) when it started: it follows the knobs as they turn
+  length: number
   index: number
-  gain: number
-  pan: PanGains
-  /** the block sample it starts at (grains that start mid-block) */
   from: number
 }
-const newGrain = (): Grain => ({ pos: 0, step: 0, k: 1, length: 0, index: 0, gain: 0, pan: [1, 0, 0, 1], from: 0 })
-/**
- * One grain stream. Its next grain is due `gap` after the `last`: for a cloud `gap` is a random multiple of the
- * period (1 on average), divided by the grain rate when it is read -- so turning DENSITY or SIZE, or bending a
- * KEY cloud's note, takes effect at once, not after the interval that was drawn at the old rate; for STRETCH it
- * is seconds.
- */
-interface Stream {
-  last: number
-  gap: number
-  offset: number
-  speed: number
-}
 
-const POOL = 256
 /** grain starts reported to the page per message (it only draws them) */
 const REPORT_MAX = 48
 const REPORT_EVERY = 1024
+const STRETCH_POOL = 64
 
 class GrainProcessor extends AudioWorkletProcessor {
   static get parameterDescriptors() {
     return [
-      // cents from the voice's pitch bus (bend, MPE, pitch routes); k-rate like a buffer source's detune
+      // cents from the voice's pitch bus (bend, MPE, pitch routes): part of the note, k-rate like a source's detune
       { name: 'detune', defaultValue: 0, automationRate: 'k-rate' },
-      // mod matrix → GRAIN POS (fraction of the clip) and GRAIN SIZE (ms), read as each grain starts
+      // mod matrix -> GRAIN POS (fraction of the clip), read as each grain starts
       { name: 'posMod', defaultValue: 0, automationRate: 'a-rate' },
-      { name: 'sizeMod', defaultValue: 0, automationRate: 'a-rate' },
+      // mod matrix -> GRAIN (semitones), like Granulator II's Grain<LFO
+      { name: 'freqMod', defaultValue: 0, automationRate: 'a-rate' },
     ]
   }
 
@@ -73,21 +71,31 @@ class GrainProcessor extends AudioWorkletProcessor {
   private id: string
   private sample?: Sample
   private asked = false
-  /** every grain this processor will ever use, made up front: [0, live) are sounding, the rest are free */
-  private grains: Grain[] = Array.from({ length: POOL }, newGrain)
-  private live = 0
-  private streams: Stream[] = []
   private events: GrainEvent[] = []
   private sinceReport = 0
   private stopped = false
+
+  // cloud
+  private started = false
+  private phase = [0, 0]
+  /** [left A, left B, right A, right B] */
+  private slots: Slot[] = [newSlot(), newSlot(), newSlot(), newSlot()]
+  private rnd = { from: 0, to: 0, phase: 1 }
+  private fmPhase = 0
+  private window = windowTable(0, 'std')
+  private windowKey = ''
+
+  // stretch
+  private grains: StretchGrain[] = []
+  private nextStretch = 0
 
   constructor(options: { processorOptions: { id: string; config: GrainConfig; sample?: Sample } }) {
     super()
     const o = options.processorOptions
     this.id = o.id
     this.cfg = o.config
+    this.nextStretch = o.config.t0
     if (o.sample) samples.set(o.id, o.sample)
-    this.startStreams()
     this.port.onmessage = (e: MessageEvent<ToGrains>) => {
       const m = e.data
       if (m.type === 'config') this.cfg = m.config
@@ -100,85 +108,165 @@ class GrainProcessor extends AudioWorkletProcessor {
     this.port.postMessage(m)
   }
 
-  /** Poly grains: each stream starts at a random time and offset, and drifts at its own speed. */
-  private startStreams() {
-    const c = this.cfg
-    const cloud = c.kind === 'cloud'
-    const n = cloud ? Math.min(8, Math.max(1, Math.round(c.streams))) : 1
-    // the first grain at the note, the other streams' somewhere in their first period
-    this.streams = Array.from({ length: n }, (_, i) => ({
-      last: c.t0,
-      gap: i ? Math.random() * (cloud ? 1 : STRETCH_GRAIN) : 0,
-      offset: n > 1 ? (Math.random() - 0.5) * Math.max(c.width, 0.2) : 0,
-      speed: cloud ? (Math.random() * 2 - 1) * c.drift : 0,
-    }))
+  private report(e: GrainEvent) {
+    if (this.events.length < REPORT_MAX) this.events.push(e)
   }
 
-  /**
-   * Grains per second per stream right now: DENSITY of them per SIZE, or (KEY) the note's frequency, bent by
-   * the pitch bus. Stretch's streams keep their gap in seconds (0 here: unused).
-   */
-  private perSecond(bend: number, sizeMod: number): number {
-    const c = this.cfg
-    if (c.kind !== 'cloud') return 0
-    if (c.key) return noteHz(c.rootNote + glideSemis(c.glide, currentTime)) * bend
-    return grainsPerSecond(c.density, Math.max(1 / sampleRate, (c.size + sizeMod) / 1000))
-  }
+  // ── cloud ──────────────────────────────────────────────────────────────────
 
-  /**
-   * Start a grain due at `when`, rendering from block sample `from`, which is `lead` samples (0..1) after it is
-   * due: the grain begins that far into its window and its sample, so grain trains keep their exact period.
-   */
-  private spawn(
-    st: Stream, si: number, when: number, from: number, lead: number,
-    posMod: number, sizeMod: number, perSecond: number, smp: Sample,
-  ) {
+  /** Slot `si` of side `side` starts a grain at time `t`, `lead` samples ago (between this sample and the last). */
+  private startSlot(si: number, side: number, t: number, lead: number, semis: number, posMod: number, smp: Sample, f: number) {
     const c = this.cfg
-    const cloud = c.kind === 'cloud'
-    const key = cloud && c.key
+    const slot = this.slots[si]
     const clipLen = Math.max(1e-4, c.clipOut - c.clipIn)
-    // the sample's playback rate inside the grain: PITCH / FINE, and the note -- unless KEY, where the note is
-    // the grain rate and PITCH / FINE move the formants alone
-    let rate = c.kRate * (key ? 1 : semisToRate(glideSemis(c.glide, when)))
-    if (cloud && c.jitter > 0) rate *= semisToRate((Math.random() * 2 - 1) * c.jitter)
-    let size = cloud ? Math.max(1 / sampleRate, (c.size + sizeMod) / 1000) : STRETCH_GRAIN
-    if (key) size = Math.min(size, KEY_MAX_OVERLAP / perSecond)
-    const bufLen = Math.min(size * rate, clipLen)
+    const at = c.clipIn + (c.pos + posMod + c.posKey * 0.01 * semis) * clipLen +
+      sprayOffset(c.spray, c.spraySlope, c.spraySign, Math.random(), Math.random()) / 1000 +
+      (c.scan ? scanOffset(t - c.t0, c.scanTime, c.scanDist, c.scanCurve, clipLen) : 0)
+    const rate = c.kRate * semisToRate(semis * c.tuneKey) * (c.tuneRnd > 0 ? tuneRndRatio(c.tuneRnd, Math.random()) : 1)
+    slot.step = (rate * smp.rate) / sampleRate
+    slot.pos = at * smp.rate + slot.step * lead
+    slot.amp = c.amp > 0 ? grainLevel(c.ampMode, c.amp, c.voidLevel, Math.random()) : 1
+    slot.on = true
+    const dur = 1 / f
+    this.report({ when: t - lead / sampleRate, pos: at, len: dur * rate, dur, rate, reverse: false, pan: side ? 0.5 : -0.5, gain: Math.min(1, slot.amp), stream: side })
+  }
 
-    let start: number
-    if (cloud) {
-      const elapsed = when - c.t0
-      const moving = st.speed + c.scan
-      let pos = c.pos + posMod + st.offset + (moving * elapsed) / clipLen
-      // a single fixed stream clamps at the clip edges; moving streams wrap around the clip
-      pos = moving || st.offset ? ((pos % 1) + 1) % 1 : Math.min(1, Math.max(0, pos))
-      start = c.clipIn + pos * clipLen + (Math.random() - 0.5) * c.width * clipLen - bufLen / 2
-    } else start = c.clipIn + (((when - c.t0) * c.speed) % clipLen)
-    const offset = Math.min(Math.max(start, c.clipIn), c.clipOut - bufLen)
-    const reverse = cloud && c.reverse > 0 && Math.random() < c.reverse
-    const dur = bufLen / rate
-    const length = Math.max(1, Math.round(dur * sampleRate))
-    const overlap = cloud ? size * perSecond * this.streams.length : STRETCH_OVERLAP
-    const gain = cloud ? grainGain(overlap) : Math.min(1, 2 / STRETCH_OVERLAP)
-    const pan = cloud && c.spread > 0 ? (Math.random() * 2 - 1) * c.spread : null
-    const step = (rate * smp.rate) / sampleRate
-    const dir = reverse ? -step : step
-
-    if (this.live < POOL) {
-      // reused, not allocated: a cloud of one-sample grains starts ~100 000 a second
-      const g = this.grains[this.live++]
-      g.pos = (reverse ? offset + bufLen : offset) * smp.rate + dir * lead
-      g.step = dir
-      g.k = c.kRate
-      g.length = length
-      g.index = lead
-      g.gain = gain
-      grainPan(pan, smp.ch.length < 2, g.pan)
-      g.from = from
+  private renderCloud(L: Float32Array, R: Float32Array, n: number, params: Record<string, Float32Array>, smp: Sample) {
+    const c = this.cfg
+    const key = `${c.window}|${c.symmetry}`
+    if (key !== this.windowKey) {
+      this.window = windowTable(c.window, c.symmetry)
+      this.windowKey = key
     }
-    if (this.events.length < REPORT_MAX)
-      this.events.push({ when, pos: offset, len: bufLen, dur, rate, reverse, pan: pan ?? 0, gain, stream: si })
-    return dur
+    const win = this.window
+    const bendSemis = params.detune[0] / 100
+    const posMod = params.posMod
+    const freqMod = params.freqMod
+    const chans = [smp.ch[0], smp.ch[1] ?? smp.ch[0]]
+    const lo = Math.max(0, Math.floor(c.clipIn * smp.rate))
+    const hi = Math.min(chans[0].length, Math.ceil(c.clipOut * smp.rate))
+    const spread = 1 + c.stereo * c.stereo
+    const fmDepth = c.fm ? ((c.fmAmount * 0.02) / 1000) * smp.rate : 0 // frames
+    const rnd = this.rnd
+    const slots = this.slots
+    for (let i = 0; i < n; i++) {
+      const t = currentTime + i / sampleRate
+      if (t < c.t0) continue
+      const ending = t >= c.end
+      const semis = glideSemis(c.glide, t) + bendSemis
+      // G<RND: Max's rand~ -- a straight line to a new random target, 8 × GRAIN times a second
+      rnd.phase += (FREQ_RND_RATE * c.freq) / sampleRate
+      if (rnd.phase >= 1) {
+        rnd.phase -= Math.floor(rnd.phase)
+        rnd.from = rnd.to
+        rnd.to = Math.random() * 2 - 1
+      }
+      const wander = c.freqRnd > 0 ? (rnd.from + (rnd.to - rnd.from) * rnd.phase) * c.freqRnd * FREQ_RND_SEMIS : 0
+      const fm = freqMod.length > 1 ? freqMod[i] : freqMod[0]
+      const base = c.freq * semisToRate(semis * c.freqKey + wander + fm)
+      const pm = posMod.length > 1 ? posMod[i] : posMod[0]
+      let fmOffset = 0
+      if (fmDepth) {
+        this.fmPhase += (c.fmFreq * semisToRate(semis * c.fmKey)) / sampleRate
+        this.fmPhase -= Math.floor(this.fmPhase)
+        fmOffset = fmDepth * Math.sin(2 * Math.PI * this.fmPhase)
+      }
+      let l = 0
+      let r = 0
+      for (let side = 0; side < 2; side++) {
+        const f = side ? base * spread : base / spread
+        const step = Math.min(MAX_PHASE_STEP, f / sampleRate)
+        const a = side * 2
+        if (!this.started) {
+          // the note: A starts at once, and B with it at the top of its window (Granulator II retriggers both)
+          this.phase[side] = 0
+          if (!ending) {
+            this.startSlot(a, side, t, 0, semis, pm, smp, f)
+            this.startSlot(a + 1, side, t, 0, semis, pm, smp, f)
+          }
+        } else {
+          const prev = this.phase[side]
+          let next = prev + step
+          if (next >= 1) {
+            next -= 1
+            if (ending) slots[a].on = false
+            else this.startSlot(a, side, t, next / step, semis, pm, smp, f)
+          } else if (prev < 0.5 && next >= 0.5) {
+            if (ending) slots[a + 1].on = false
+            else this.startSlot(a + 1, side, t, (next - 0.5) / step, semis, pm, smp, f)
+          }
+          this.phase[side] = next
+        }
+        const ph = this.phase[side]
+        const x = chans[side]
+        let y = 0
+        const sa = slots[a]
+        if (sa.on) {
+          y += windowAt(win, ph) * sa.amp * readAt(x, sa.pos + fmOffset, lo, hi)
+          sa.pos += sa.step
+        }
+        const sb = slots[a + 1]
+        if (sb.on) {
+          y += windowAt(win, ph + 0.5) * sb.amp * readAt(x, sb.pos + fmOffset, lo, hi)
+          sb.pos += sb.step
+        }
+        if (side) r = y
+        else l = y
+      }
+      this.started = true
+      L[i] += l
+      R[i] += r
+    }
+    return slots.some((s) => s.on)
+  }
+
+  // ── stretch ────────────────────────────────────────────────────────────────
+
+  private renderStretch(L: Float32Array, R: Float32Array, n: number, params: Record<string, Float32Array>, smp: Sample) {
+    const c = this.cfg
+    const clipLen = Math.max(1e-4, c.clipOut - c.clipIn)
+    const lastStart = currentTime + (n - 1) / sampleRate
+    // steady grains, four overlapping, each starting where SPEED has got to through the clip
+    while (this.nextStretch <= lastStart && this.nextStretch < c.end) {
+      const when = Math.max(this.nextStretch, currentTime)
+      const rate = c.kRate * semisToRate(glideSemis(c.glide, when))
+      const bufLen = Math.min(STRETCH_GRAIN * rate, clipLen)
+      const at = Math.min(c.clipIn + (((when - c.t0) * c.speed) % clipLen), c.clipOut - bufLen)
+      const dur = bufLen / rate
+      if (this.grains.length < STRETCH_POOL) {
+        this.grains.push({
+          pos: at * smp.rate,
+          step: (rate * smp.rate) / sampleRate,
+          k: c.kRate,
+          length: Math.max(1, Math.round(dur * sampleRate)),
+          index: 0,
+          from: Math.max(0, Math.min(n - 1, Math.ceil((when - currentTime) * sampleRate))),
+        })
+      }
+      this.report({ when, pos: at, len: bufLen, dur, rate, reverse: false, pan: 0, gain: 1, stream: 0 })
+      this.nextStretch = when + Math.max(dur, 1 / sampleRate) / STRETCH_OVERLAP
+    }
+    const bend = Math.pow(2, params.detune[0] / 1200)
+    const a = smp.ch[0]
+    const b = smp.ch[1] ?? a
+    const lo = 0
+    const hi = a.length
+    const gain = 2 / STRETCH_OVERLAP
+    let live = 0
+    for (const g of this.grains) {
+      const step = g.step * bend * (c.kRate / g.k)
+      let i = g.from
+      g.from = 0
+      for (; i < n && g.index < g.length; i++, g.index++) {
+        const w = gain * hann(g.index, g.length)
+        L[i] += w * readAt(a, g.pos, lo, hi)
+        R[i] += w * readAt(b, g.pos, lo, hi)
+        g.pos += step
+      }
+      if (g.index < g.length) this.grains[live++] = g
+    }
+    this.grains.length = live
+    return live > 0
   }
 
   process(_inputs: Float32Array[][], outputs: Float32Array[][], params: Record<string, Float32Array>): boolean {
@@ -193,79 +281,7 @@ class GrainProcessor extends AudioWorkletProcessor {
       return !this.stopped
     }
     if (this.stopped) return false
-    const c = this.cfg
-    const cloud = c.kind === 'cloud'
-    const key = cloud && c.key
-    const bend = Math.pow(2, params.detune[0] / 1200)
-    const posMod = params.posMod
-    const sizeMod = params.sizeMod
-    const perSecond = this.perSecond(bend, sizeMod[0])
-
-    // start the grains due in this block; one due after its last sample waits for the next block
-    const lastStart = currentTime + (n - 1) / sampleRate
-    const maxStarts = MAX_STARTS_PER_SAMPLE * n
-    for (let si = 0; si < this.streams.length; si++) {
-      const st = this.streams[si]
-      let guard = 0
-      for (;;) {
-        const due = st.last + Math.max(1 / sampleRate, cloud ? st.gap / perSecond : st.gap)
-        if (due > lastStart || due >= c.end || guard++ >= maxStarts) break
-        // the rate turned up past a grain's time: it starts now, not in the past (no burst of catch-up grains)
-        const when = Math.max(due, currentTime)
-        const x = (when - currentTime) * sampleRate
-        const from = Math.min(n - 1, Math.ceil(x))
-        const lead = Math.max(0, from - x)
-        const pm = posMod.length > 1 ? posMod[from] : posMod[0]
-        const sm = sizeMod.length > 1 ? sizeMod[from] : sizeMod[0]
-        const dur = this.spawn(st, si, when, from, lead, pm, sm, perSecond, smp)
-        st.last = when
-        st.gap = cloud ? grainInterval(1, c.scatter, Math.random()) : Math.max(dur, 1 / sampleRate) / STRETCH_OVERLAP
-      }
-    }
-
-    // render
-    const contentBend = key ? 1 : bend // KEY: the bend is in the grain rate already
-    const a = smp.ch[0]
-    const b = smp.ch[1] ?? a
-    const frames = a.length
-    const taper = cloud ? c.shape : 1
-    const grains = this.grains
-    let live = 0
-    for (let gi = 0; gi < this.live; gi++) {
-      const g = grains[gi]
-      const [ll, lr, rl, rr] = g.pan
-      const step = g.step * contentBend * (c.kRate / g.k)
-      let i = g.from
-      g.from = 0
-      for (; i < n && g.index < g.length; i++, g.index++) {
-        const i0 = Math.floor(g.pos)
-        const f = g.pos - i0
-        let x: number
-        let y: number
-        if (i0 >= 1 && i0 + 2 < frames) {
-          x = hermite(a[i0 - 1], a[i0], a[i0 + 1], a[i0 + 2], f)
-          y = hermite(b[i0 - 1], b[i0], b[i0 + 1], b[i0 + 2], f)
-        } else if (i0 >= 0 && i0 + 1 < frames) {
-          x = a[i0] + (a[i0 + 1] - a[i0]) * f
-          y = b[i0] + (b[i0 + 1] - b[i0]) * f
-        } else {
-          g.pos += step
-          continue
-        }
-        const w = g.gain * grainWindow(g.index, g.length, taper)
-        x *= w
-        y *= w
-        L[i] += x * ll + y * rl
-        R[i] += x * lr + y * rr
-        g.pos += step
-      }
-      if (g.index < g.length) {
-        // still sounding: keep it in the front part; the finished one it displaces goes back to the free part
-        grains[gi] = grains[live]
-        grains[live++] = g
-      }
-    }
-    this.live = live
+    const ringing = this.cfg.kind === 'cloud' ? this.renderCloud(L, R, n, params, smp) : this.renderStretch(L, R, n, params, smp)
 
     this.sinceReport += n
     if (this.events.length && this.sinceReport >= REPORT_EVERY) {
@@ -273,7 +289,7 @@ class GrainProcessor extends AudioWorkletProcessor {
       this.events = []
       this.sinceReport = 0
     }
-    if (currentTime >= c.end && !live) {
+    if (currentTime >= this.cfg.end && !ringing) {
       if (this.events.length) this.post({ type: 'grains', list: this.events })
       this.post({ type: 'done' })
       return false
