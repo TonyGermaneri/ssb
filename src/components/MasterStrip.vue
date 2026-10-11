@@ -7,6 +7,8 @@ import { DIVISIONS } from '../types'
 import Knob from './Knob.vue'
 import VuMeter from './VuMeter.vue'
 import ThemePicker from './ThemePicker.vue'
+import StripSection from './StripSection.vue'
+import VcoScopes from './VcoScopes.vue'
 import { callNative, nativeEngine } from '../native/bridge'
 
 const board = useBoard()
@@ -93,181 +95,167 @@ function onImport(e: Event) {
       <ThemePicker v-model="themeMenu" />
     </v-menu>
 
-    <section class="group">
-      <h5>OUTPUT</h5>
-      <div class="controls">
-        <Knob v-model="board.master.volume" label="MASTER" :max="1.2" :default="0.8" :format="fmtPct" :size="K" />
-        <button
-          class="hw-btn icon"
-          :class="{ lit: board.master.muted }"
-          :title="board.master.muted ? 'Unmute' : 'Mute'"
-          @click="board.master.muted = !board.master.muted"
-        >
-          <v-icon size="16" :icon="board.master.muted ? 'mdi-volume-off' : 'mdi-volume-high'" />
-        </button>
-        <button class="panic" title="PANIC — stop all sounds (Space)" @click="board.panic()">
-          <v-icon size="18" icon="mdi-alert-octagon" />
-        </button>
-        <VuMeter />
-      </div>
-    </section>
+    <StripSection id="output" title="OUTPUT">
+      <Knob v-model="board.master.volume" label="MASTER" :max="1.2" :default="0.8" :format="fmtPct" :size="K" />
+      <button
+        class="hw-btn icon"
+        :class="{ lit: board.master.muted }"
+        :title="board.master.muted ? 'Unmute' : 'Mute'"
+        @click="board.master.muted = !board.master.muted"
+      >
+        <v-icon size="16" :icon="board.master.muted ? 'mdi-volume-off' : 'mdi-volume-high'" />
+      </button>
+      <button class="panic" title="PANIC — stop all sounds (Space)" @click="board.panic()">
+        <v-icon size="18" icon="mdi-alert-octagon" />
+      </button>
+      <VuMeter />
+    </StripSection>
 
-    <section class="group">
-      <h5>PATCH</h5>
-      <div class="controls">
-        <button class="hw-btn icon" title="Previous patch" @click="board.selectPatchStep(-1)">
-          <v-icon size="18" icon="mdi-chevron-left" />
-        </button>
-        <div class="lcd" :title="board.selectedPatch ? `Patch: ${board.selectedPatch.name}` : 'No patch selected'">
-          {{ patchLabel }}
-        </div>
-        <button class="hw-btn icon" title="Next patch" @click="board.selectPatchStep(1)">
-          <v-icon size="18" icon="mdi-chevron-right" />
-        </button>
-        <button
-          class="hw-btn icon"
-          :disabled="!board.sounds.length"
-          :title="`New patch from ${(board.selected ?? board.sounds[0])?.settings.name ?? 'a sound'}`"
-          @click="newPatch"
-        >
-          <v-icon size="16" icon="mdi-plus-box-multiple" />
-        </button>
-        <button
-          class="hw-btn icon play"
-          :class="{ lit: board.master.play }"
-          title="PLAY: MIDI and the computer keyboard (Z / Q rows, - = octave) play the selected patch. C4 = original pitch."
-          @click="board.master.play = !board.master.play"
-        >
-          <v-icon size="16" icon="mdi-piano" />
-        </button>
-        <div class="stack">
-          <button
-            class="chip"
-            :class="{ on: board.master.mono }"
-            title="MONO: one voice, legato glide between held notes. POLY: every note its own voice."
-            @click="board.master.mono = !board.master.mono"
-          >
-            {{ board.master.mono ? 'MONO' : 'POLY' }}
-          </button>
-          <button
-            class="chip"
-            :class="{ on: board.master.mpe }"
-            title="MPE (lower zone): channel 1 is global; notes on channels 2-16 get their own bend, pressure and timbre"
-            @click="board.master.mpe = !board.master.mpe"
-          >
-            MPE
-          </button>
-          <span class="chip dim" title="Computer-keyboard octave (- / = keys)">{{ octaveLabel }}</span>
-        </div>
-        <Knob v-model="board.master.glide" label="GLIDE" :min="0" :max="2" :step="0.005" :default="0" :format="fmtSec" :size="K" />
+    <StripSection id="patch" title="PATCH">
+      <button class="hw-btn icon" title="Previous patch" @click="board.selectPatchStep(-1)">
+        <v-icon size="18" icon="mdi-chevron-left" />
+      </button>
+      <div class="lcd" :title="board.selectedPatch ? `Patch: ${board.selectedPatch.name}` : 'No patch selected'">
+        {{ patchLabel }}
       </div>
-    </section>
-
-    <section class="group">
-      <h5>PERFORM</h5>
-      <div class="controls">
-        <Knob v-model="board.perform.mod" label="MOD" :default="0" :format="fmtPct" :size="K" color="secondary" />
-        <Knob v-model="board.perform.bend" label="BEND" :min="-1" :max="1" :default="0" bipolar spring :format="fmtPct" :size="K" color="secondary" />
-        <div class="stack">
-          <button
-            class="chip"
-            :class="{ on: board.perform.sustain }"
-            title="Sustain pedal (MIDI CC64) — click to latch"
-            @click="board.perform.sustain = !board.perform.sustain"
-          >
-            SUS
-          </button>
-        </div>
+      <button class="hw-btn icon" title="Next patch" @click="board.selectPatchStep(1)">
+        <v-icon size="18" icon="mdi-chevron-right" />
+      </button>
+      <button
+        class="hw-btn icon"
+        :disabled="!board.sounds.length"
+        :title="`New patch from ${(board.selected ?? board.sounds[0])?.settings.name ?? 'a sound'}`"
+        @click="newPatch"
+      >
+        <v-icon size="16" icon="mdi-plus-box-multiple" />
+      </button>
+      <button
+        class="hw-btn icon play"
+        :class="{ lit: board.master.play }"
+        title="PLAY: MIDI and the computer keyboard (Z / Q rows, - = octave) play the selected patch. C4 = original pitch."
+        @click="board.master.play = !board.master.play"
+      >
+        <v-icon size="16" icon="mdi-piano" />
+      </button>
+      <div class="stack">
         <button
-          class="hw-btn icon"
-          :class="{ lit: board.master.mod.routes.length }"
-          title="Global modulation matrix (LFOs, mod wheel, aftertouch, velocity, bend, timbre)"
-          @click="board.openMatrix('global')"
+          class="chip"
+          :class="{ on: board.master.mono }"
+          title="MONO: one voice, legato glide between held notes. POLY: every note its own voice."
+          @click="board.master.mono = !board.master.mono"
         >
-          <v-icon size="16" icon="mdi-matrix" />
+          {{ board.master.mono ? 'MONO' : 'POLY' }}
+        </button>
+        <button
+          class="chip"
+          :class="{ on: board.master.mpe }"
+          title="MPE (lower zone): channel 1 is global; notes on channels 2-16 get their own bend, pressure and timbre"
+          @click="board.master.mpe = !board.master.mpe"
+        >
+          MPE
+        </button>
+        <span class="chip dim" title="Computer-keyboard octave (- / = keys)">{{ octaveLabel }}</span>
+      </div>
+      <Knob v-model="board.master.glide" label="GLIDE" :min="0" :max="2" :step="0.005" :default="0" :format="fmtSec" :size="K" />
+    </StripSection>
+
+    <StripSection id="vco" title="VCO">
+      <VcoScopes />
+    </StripSection>
+
+    <StripSection id="perform" title="PERFORM">
+      <div class="stack">
+        <button
+          class="chip"
+          :class="{ on: board.perform.sustain }"
+          title="Sustain pedal (MIDI CC64) — click to latch"
+          @click="board.perform.sustain = !board.perform.sustain"
+        >
+          SUS
         </button>
       </div>
-    </section>
+      <button
+        class="hw-btn icon"
+        :class="{ lit: board.master.mod.routes.length }"
+        title="Global modulation matrix (LFOs, mod wheel, aftertouch, velocity, bend, timbre)"
+        @click="board.openMatrix('global')"
+      >
+        <v-icon size="16" icon="mdi-matrix" />
+      </button>
+    </StripSection>
 
-    <section class="group">
-      <h5>TEMPO · MIDI</h5>
-      <div class="controls">
-        <div
-          class="bpm-knob"
-          :title="hosted ? 'Following the host (DAW) tempo' : following ? 'Following MIDI clock (knob sets the fallback tempo)' : 'Internal tempo'"
-        >
-          <Knob
-            v-model="board.master.bpm"
-            label="BPM"
-            :min="40"
-            :max="240"
-            :step="0.5"
-            :default="120"
-            :format="() => bpmLabel"
-            :size="K"
-          />
-          <i class="beat" :class="{ on: beatLed && (hosted || !following || board.tempo.extBpm) }" />
-        </div>
-        <div class="stack">
-          <button
-            v-if="hosted"
-            class="chip on"
-            title="Tempo source: the host. Synced LFOs and delays follow the DAW's tempo and song position."
-          >
-            HOST
-          </button>
-          <button
-            v-else
-            class="chip"
-            :class="{ on: following }"
-            title="Tempo source: INT = BPM knob, EXT = incoming MIDI clock (MIDI Start restarts global LFOs)"
-            @click="board.master.clockSource = following ? 'internal' : 'midi'"
-          >
-            {{ following ? 'EXT' : 'INT' }}
-          </button>
-          <button
-            class="chip"
-            :class="{ on: board.master.midiAuto }"
-            title="MIDI pad mapping: AUTO = notes map to pads in grid order from BASE; LRN = each pad's learned note"
-            @click="board.master.midiAuto = !board.master.midiAuto"
-          >
-            {{ board.master.midiAuto ? 'AUTO' : 'LRN' }}
-          </button>
-        </div>
+    <StripSection id="tempo" title="TEMPO · MIDI">
+      <div
+        class="bpm-knob"
+        :title="hosted ? 'Following the host (DAW) tempo' : following ? 'Following MIDI clock (knob sets the fallback tempo)' : 'Internal tempo'"
+      >
         <Knob
-          v-if="board.master.midiAuto"
-          v-model="board.master.midiBase"
-          label="BASE"
-          :min="0"
-          :max="127"
-          :step="1"
-          :default="36"
-          :format="fmtNote"
+          v-model="board.master.bpm"
+          label="BPM"
+          :min="40"
+          :max="240"
+          :step="0.5"
+          :default="120"
+          :format="() => bpmLabel"
           :size="K"
         />
+        <i class="beat" :class="{ on: beatLed && (hosted || !following || board.tempo.extBpm) }" />
+      </div>
+      <div class="stack">
         <button
-          class="hw-btn icon"
-          :class="{ lit: board.midi.enabled }"
-          :title="board.midi.enabled ? `MIDI on (${board.midi.inputs} inputs)` : 'Enable MIDI'"
-          @click="board.enableMidi()"
+          v-if="hosted"
+          class="chip on"
+          title="Tempo source: the host. Synced LFOs and delays follow the DAW's tempo and song position."
         >
-          <v-icon size="16" icon="mdi-midi-port" />
+          HOST
+        </button>
+        <button
+          v-else
+          class="chip"
+          :class="{ on: following }"
+          title="Tempo source: INT = BPM knob, EXT = incoming MIDI clock (MIDI Start restarts global LFOs)"
+          @click="board.master.clockSource = following ? 'internal' : 'midi'"
+        >
+          {{ following ? 'EXT' : 'INT' }}
+        </button>
+        <button
+          class="chip"
+          :class="{ on: board.master.midiAuto }"
+          title="MIDI pad mapping: AUTO = notes map to pads in grid order from BASE; LRN = each pad's learned note"
+          @click="board.master.midiAuto = !board.master.midiAuto"
+        >
+          {{ board.master.midiAuto ? 'AUTO' : 'LRN' }}
         </button>
       </div>
-    </section>
+      <Knob
+        v-if="board.master.midiAuto"
+        v-model="board.master.midiBase"
+        label="BASE"
+        :min="0"
+        :max="127"
+        :step="1"
+        :default="36"
+        :format="fmtNote"
+        :size="K"
+      />
+      <button
+        class="hw-btn icon"
+        :class="{ lit: board.midi.enabled }"
+        :title="board.midi.enabled ? `MIDI on (${board.midi.inputs} inputs)` : 'Enable MIDI'"
+        @click="board.enableMidi()"
+      >
+        <v-icon size="16" icon="mdi-midi-port" />
+      </button>
+    </StripSection>
 
-    <section class="group">
-      <h5>CHORUS</h5>
-      <div class="controls">
-        <Knob v-model="fx.chorusRate" label="RATE" :min="0.05" :max="8" curve="log" :default="0.6" :format="fmtRate" :size="K" color="accent" />
-        <Knob v-model="fx.chorusDepth" label="DEPTH" :default="0.5" :format="fmtPct" :size="K" color="accent" />
-        <Knob v-model="fx.chorusMix" label="MIX" :default="0" :format="fmtPct" :size="K" color="accent" />
-      </div>
-    </section>
+    <StripSection id="chorus" title="CHORUS">
+      <Knob v-model="fx.chorusRate" label="RATE" :min="0.05" :max="8" curve="log" :default="0.6" :format="fmtRate" :size="K" color="accent" />
+      <Knob v-model="fx.chorusDepth" label="DEPTH" :default="0.5" :format="fmtPct" :size="K" color="accent" />
+      <Knob v-model="fx.chorusMix" label="MIX" :default="0" :format="fmtPct" :size="K" color="accent" />
+    </StripSection>
 
-    <section class="group">
-      <h5>
-        DELAY
+    <StripSection id="delay" title="DELAY">
+      <template #title>
         <button
           class="chip tiny"
           :class="{ on: fx.delaySync }"
@@ -276,101 +264,93 @@ function onImport(e: Event) {
         >
           SYNC
         </button>
-      </h5>
-      <div class="controls">
-        <Knob
-          v-if="fx.delaySync"
-          :model-value="delayDiv"
-          label="DIV"
-          :min="0"
-          :max="DIVISIONS.length - 1"
-          :step="1"
-          :default="8"
-          :format="fmtDiv"
-          :size="K"
-          color="success"
-          @update:model-value="(v: number) => (fx.delayDivision = DIVISIONS[Math.round(v)].id)"
-        />
-        <Knob v-else v-model="fx.delayTime" label="TIME" :min="0.01" :max="2" curve="log" :default="0.375" :format="fmtSec" :size="K" color="success" />
-        <Knob v-model="fx.delayFeedback" label="FDBK" :max="0.9" :default="0.4" :format="fmtPct" :size="K" color="success" />
-        <Knob v-model="fx.delayMix" label="MIX" :default="0" :format="fmtPct" :size="K" color="success" />
-      </div>
-    </section>
+      </template>
+      <Knob
+        v-if="fx.delaySync"
+        :model-value="delayDiv"
+        label="DIV"
+        :min="0"
+        :max="DIVISIONS.length - 1"
+        :step="1"
+        :default="8"
+        :format="fmtDiv"
+        :size="K"
+        color="success"
+        @update:model-value="(v: number) => (fx.delayDivision = DIVISIONS[Math.round(v)].id)"
+      />
+      <Knob v-else v-model="fx.delayTime" label="TIME" :min="0.01" :max="2" curve="log" :default="0.375" :format="fmtSec" :size="K" color="success" />
+      <Knob v-model="fx.delayFeedback" label="FDBK" :max="0.9" :default="0.4" :format="fmtPct" :size="K" color="success" />
+      <Knob v-model="fx.delayMix" label="MIX" :default="0" :format="fmtPct" :size="K" color="success" />
+    </StripSection>
 
-    <section class="group">
-      <h5>REVERB</h5>
-      <div class="controls">
-        <Knob v-model="fx.reverbSize" label="SIZE" :min="0.1" :max="8" :default="3" :format="fmtSec" :size="K" color="success" />
-        <Knob v-model="fx.reverbDecay" label="DECAY" :min="0.5" :max="10" :default="3" :format="fmtNum" :size="K" color="success" />
-        <Knob v-model="fx.reverbMix" label="MIX" :default="0" :format="fmtPct" :size="K" color="success" />
-      </div>
-    </section>
+    <StripSection id="reverb" title="REVERB">
+      <Knob v-model="fx.reverbSize" label="SIZE" :min="0.1" :max="8" :default="3" :format="fmtSec" :size="K" color="success" />
+      <Knob v-model="fx.reverbDecay" label="DECAY" :min="0.5" :max="10" :default="3" :format="fmtNum" :size="K" color="success" />
+      <Knob v-model="fx.reverbMix" label="MIX" :default="0" :format="fmtPct" :size="K" color="success" />
+    </StripSection>
 
 
-    <section class="group">
-      <h5>BOARD</h5>
-      <div class="controls">
-        <button
-          v-if="inPlugin"
-          class="hw-btn icon"
-          :class="{ lit: zoomed }"
-          :title="zoomed ? 'Back to the size it was (or double-click the header)' : 'Fill the screen (or double-click the header)'"
-          @click="zoom"
-        >
-          <v-icon size="16" :icon="zoomed ? 'mdi-arrow-collapse-all' : 'mdi-arrow-expand-all'" />
-        </button>
-        <button
-          class="hw-btn icon"
-          :class="{ lit: board.master.view === 'grid' }"
-          :title="board.master.view === 'grid' ? 'Show pads' : 'Show grid (spreadsheet view)'"
-          @click="board.master.view = board.master.view === 'grid' ? 'pads' : 'grid'"
-        >
-          <v-icon size="16" :icon="board.master.view === 'grid' ? 'mdi-view-grid' : 'mdi-table'" />
-        </button>
-        <!-- layout: rack + list → rack only (fills the screen) → list only -->
-        <button
-          class="hw-btn icon"
-          :class="{ lit: board.master.rack }"
-          :title="layoutTitle"
-          @click="cycleLayout"
-        >
-          <v-icon size="16" :icon="board.master.list ? (board.master.rack ? 'mdi-view-split-horizontal' : 'mdi-format-list-bulleted-square') : 'mdi-view-column'" />
-        </button>
-        <Knob v-model="board.master.scale" label="SCALE" :min="0.5" :max="2" :step="0.05" :default="1" :format="fmtScale" :size="K" color="secondary" />
-        <button
-          class="hw-btn icon"
-          :class="{ lit: board.master.scanlines }"
-          title="CRT scanlines"
-          @click="board.master.scanlines = !board.master.scanlines"
-        >
-          <v-icon size="16" icon="mdi-television-classic" />
-        </button>
-        <button class="hw-btn icon" title="Undo (⌘Z)" :disabled="!board.canUndo" @click="board.undo()">
-          <v-icon size="16" icon="mdi-undo" />
-        </button>
-        <button class="hw-btn icon" title="Redo (⇧⌘Z)" :disabled="!board.canRedo" @click="board.redo()">
-          <v-icon size="16" icon="mdi-redo" />
-        </button>
-        <v-menu location="bottom end">
-          <template #activator="{ props: act }">
-            <button class="hw-btn icon" title="Add sounds" v-bind="act"><v-icon size="16" icon="mdi-plus" /></button>
-          </template>
-          <div class="add-menu">
-            <button @click="emit('add')"><v-icon size="16" icon="mdi-file-music" /> ADD FILES… <small>audio · .sfz · .zip</small></button>
-            <button @click="emit('addFolder')"><v-icon size="16" icon="mdi-folder-music" /> ADD FOLDER… <small>SFZ instrument + samples</small></button>
-            <button @click="emit('library')"><v-icon size="16" icon="mdi-music-box-multiple" /> BROWSE LIBRARY… <small>SFZ · GM · drums · URL</small></button>
-            <button @click="board.installFactory()"><v-icon size="16" icon="mdi-factory" /> ADD FACTORY PATCHES <small>built-in synth waves</small></button>
-          </div>
-        </v-menu>
-        <button class="hw-btn icon" title="Export board (.zip)" @click="board.exportBoard()">
-          <v-icon size="16" icon="mdi-download" />
-        </button>
-        <button class="hw-btn icon" title="Import board (.zip)" @click="importInput?.click()">
-          <v-icon size="16" icon="mdi-upload" />
-        </button>
-        <input ref="importInput" type="file" accept=".zip" hidden @change="onImport" />
-      </div>
-    </section>
+    <StripSection id="board" title="BOARD">
+      <button
+        v-if="inPlugin"
+        class="hw-btn icon"
+        :class="{ lit: zoomed }"
+        :title="zoomed ? 'Back to the size it was (or double-click the header)' : 'Fill the screen (or double-click the header)'"
+        @click="zoom"
+      >
+        <v-icon size="16" :icon="zoomed ? 'mdi-arrow-collapse-all' : 'mdi-arrow-expand-all'" />
+      </button>
+      <button
+        class="hw-btn icon"
+        :class="{ lit: board.master.view === 'grid' }"
+        :title="board.master.view === 'grid' ? 'Show pads' : 'Show grid (spreadsheet view)'"
+        @click="board.master.view = board.master.view === 'grid' ? 'pads' : 'grid'"
+      >
+        <v-icon size="16" :icon="board.master.view === 'grid' ? 'mdi-view-grid' : 'mdi-table'" />
+      </button>
+      <!-- layout: rack + list → rack only (fills the screen) → list only -->
+      <button
+        class="hw-btn icon"
+        :class="{ lit: board.master.rack }"
+        :title="layoutTitle"
+        @click="cycleLayout"
+      >
+        <v-icon size="16" :icon="board.master.list ? (board.master.rack ? 'mdi-view-split-horizontal' : 'mdi-format-list-bulleted-square') : 'mdi-view-column'" />
+      </button>
+      <Knob v-model="board.master.scale" label="SCALE" :min="0.5" :max="2" :step="0.05" :default="1" :format="fmtScale" :size="K" color="secondary" />
+      <button
+        class="hw-btn icon"
+        :class="{ lit: board.master.scanlines }"
+        title="CRT scanlines"
+        @click="board.master.scanlines = !board.master.scanlines"
+      >
+        <v-icon size="16" icon="mdi-television-classic" />
+      </button>
+      <button class="hw-btn icon" title="Undo (⌘Z)" :disabled="!board.canUndo" @click="board.undo()">
+        <v-icon size="16" icon="mdi-undo" />
+      </button>
+      <button class="hw-btn icon" title="Redo (⇧⌘Z)" :disabled="!board.canRedo" @click="board.redo()">
+        <v-icon size="16" icon="mdi-redo" />
+      </button>
+      <v-menu location="bottom end">
+        <template #activator="{ props: act }">
+          <button class="hw-btn icon" title="Add sounds" v-bind="act"><v-icon size="16" icon="mdi-plus" /></button>
+        </template>
+        <div class="add-menu">
+          <button @click="emit('add')"><v-icon size="16" icon="mdi-file-music" /> ADD FILES… <small>audio · .sfz · .zip</small></button>
+          <button @click="emit('addFolder')"><v-icon size="16" icon="mdi-folder-music" /> ADD FOLDER… <small>SFZ instrument + samples</small></button>
+          <button @click="emit('library')"><v-icon size="16" icon="mdi-music-box-multiple" /> BROWSE LIBRARY… <small>SFZ · GM · drums · URL</small></button>
+          <button @click="board.installFactory()"><v-icon size="16" icon="mdi-factory" /> ADD FACTORY PATCHES <small>built-in synth waves</small></button>
+        </div>
+      </v-menu>
+      <button class="hw-btn icon" title="Export board (.zip)" @click="board.exportBoard()">
+        <v-icon size="16" icon="mdi-download" />
+      </button>
+      <button class="hw-btn icon" title="Import board (.zip)" @click="importInput?.click()">
+        <v-icon size="16" icon="mdi-upload" />
+      </button>
+      <input ref="importInput" type="file" accept=".zip" hidden @change="onImport" />
+    </StripSection>
   </header>
 </template>
 
@@ -430,32 +410,6 @@ function onImport(e: Event) {
   letter-spacing: 0.06em;
   color: var(--text-mute);
   white-space: nowrap;
-}
-.group {
-  display: flex;
-  flex-direction: column;
-  padding: 2px 4px 3px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.16);
-}
-.group h5 {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin: 0 0 1px;
-  font-family: 'Orbitron', sans-serif;
-  font-size: 7px;
-  font-weight: 900;
-  letter-spacing: 0.2em;
-  color: var(--text-head);
-  opacity: 0.75;
-}
-.controls {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 5px;
 }
 .panic {
   display: grid;

@@ -1254,6 +1254,25 @@ export const useBoard = defineStore('board', () => {
     if (s) s.filterType = cycle(FILTER_TYPES, s.filterType)
   }
 
+  /** RPT as it was before GRAIN went on (this session), per sound or layer id */
+  const repeatBeforeGrain = new Map<string, number>()
+  /**
+   * A cloud plays for as long as the key is held: GRAIN on sets RPT to ∞; off puts RPT back to what it was
+   * (×1 if that isn't known), so a sample goes back to ×1 and a looping synth wave keeps looping.
+   */
+  function toggleGrain(id: string) {
+    const s = resolveSound(id)?.settings
+    if (!s) return
+    s.grain = !s.grain
+    if (s.grain) {
+      repeatBeforeGrain.set(id, s.repeat)
+      s.repeat = 0
+    } else {
+      s.repeat = repeatBeforeGrain.get(id) ?? 1
+      repeatBeforeGrain.delete(id)
+    }
+  }
+
   /** Back to defaults, keeping the pad's identity (name, tag, MIDI note). */
   function resetSettings(id: string) {
     const s = resolveSound(id)?.settings
@@ -1552,7 +1571,7 @@ export const useBoard = defineStore('board', () => {
     pressPatch, releasePatch, patchIdOfLayer,
     tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
     addFiles, load, press, release, panic, noteOn, noteOff,
-    select, selectStep, togglePanel, cycleMode, cycleFilter, resetSettings, duplicate, remove, removeSounds, move,
+    select, selectStep, togglePanel, cycleMode, cycleFilter, toggleGrain, resetSettings, duplicate, remove, removeSounds, move,
     exportBoard, importBoard, enableMidi, learnMidi,
   }
 })

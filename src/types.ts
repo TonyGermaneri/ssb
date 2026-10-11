@@ -462,6 +462,8 @@ export interface MasterState {
   listWidth: number
   /** control-panel sections folded to their title (shared by every panel) */
   folded: string[]
+  /** header sections folded to their title */
+  headerFolded: string[]
   /** show only favourites, per catalog */
   favSounds: boolean
   favPatches: boolean
@@ -499,6 +501,7 @@ export const defaultMaster = (): MasterState => ({
   list: true,
   listWidth: 0.33,
   folded: ['eq', 'delay', 'reverb'],
+  headerFolded: ['perform', 'chorus', 'reverb'],
   favSounds: false,
   favPatches: false,
   factory: false,

@@ -198,8 +198,8 @@ function doReset() {
           <button
             class="chip"
             :class="{ on: s.grain }"
-            :title="s.grain ? 'Grain cloud on: the sound plays as grains (Granulator II\'s engine) — click for the plain sample' : 'Play the sound as a cloud of grains (Granulator II\'s engine)'"
-            @click="s.grain = !s.grain"
+            :title="s.grain ? 'Grain cloud on: the sound plays as grains (Granulator II\'s engine) — click for the plain sample (RPT goes back)' : 'Play the sound as a cloud of grains (Granulator II\'s engine); RPT goes to ∞ so it lasts while the key is held'"
+            @click="board.toggleGrain(sound.id)"
           >
             {{ s.grain ? 'ON' : 'OFF' }}
           </button>

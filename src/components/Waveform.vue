@@ -18,11 +18,12 @@ function voiceColor(info: VoiceInfo, i: number): { hue: number; vel: number } {
   return { hue: props.hue + turn, vel: Math.min(1, Math.max(0, info.voice.velocity ?? 1)) }
 }
 
-const props = defineProps<{ sound: Sound; hue: number; height?: number }>()
+/** width: fixed (the header's VCO scopes), else it follows the container. readonly: a display, no clip dragging */
+const props = defineProps<{ sound: Sound; hue: number; height?: number; width?: number; readonly?: boolean }>()
 const board = useBoard()
 const canvas = ref<HTMLCanvasElement>()
 /** width follows the container (full-width panels), height is fixed per layout */
-const Wr = ref(386)
+const Wr = ref(props.width ?? 386)
 const H = props.height ?? 52
 
 const peaks = computed(() => board.peaks.get(props.sound.audioId))
@@ -187,7 +188,7 @@ function draw() {
       g.font = '10px VT323, monospace'
       const tw = g.measureText(text).width + 4
       const lx = Math.min(W - tw, Math.max(0, labelX + 3))
-      const ly = 6 + (i % 3) * 10
+      const ly = 6 + (i % (H < 48 ? 2 : 3)) * 10
       g.fillStyle = 'rgba(0,0,0,0.65)'
       g.fillRect(lx, ly, tw, 10)
       g.fillStyle = hsl(hue, 100, 60 + 25 * vel)
@@ -198,10 +199,12 @@ function draw() {
 
 let ro: ResizeObserver | undefined
 onMounted(() => {
-  const measure = () => (Wr.value = Math.max(160, canvas.value?.parentElement?.clientWidth ?? 386))
-  measure()
-  ro = new ResizeObserver(measure)
-  if (canvas.value?.parentElement) ro.observe(canvas.value.parentElement)
+  if (!props.width) {
+    const measure = () => (Wr.value = Math.max(160, canvas.value?.parentElement?.clientWidth ?? 386))
+    measure()
+    ro = new ResizeObserver(measure)
+    if (canvas.value?.parentElement) ro.observe(canvas.value.parentElement)
+  }
   watchEffect(draw)
 })
 onBeforeUnmount(() => ro?.disconnect())
@@ -213,6 +216,8 @@ function toPct(e: PointerEvent) {
   return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))
 }
 function onDown(e: PointerEvent) {
+  if (props.readonly) return
+  e.stopPropagation()
   canvas.value!.setPointerCapture(e.pointerId)
   const x = toPct(e)
   const s = props.sound.settings
@@ -232,9 +237,10 @@ function onMove(e: PointerEvent) {
   <canvas
     ref="canvas"
     class="waveform"
+    :class="{ readonly }"
     :style="{ width: `${Wr}px`, height: `${H}px` }"
-    title="Drag to set clip in / out"
-    @pointerdown.stop="onDown"
+    :title="readonly ? undefined : 'Drag to set clip in / out'"
+    @pointerdown="onDown"
     @pointermove="onMove"
     @pointerup="dragging = null"
     @pointercancel="dragging = null"
@@ -252,5 +258,9 @@ function onMove(e: PointerEvent) {
     inset 0 0 0 1px color-mix(in srgb, var(--c-success) 15%, transparent);
   cursor: ew-resize;
   touch-action: none;
+}
+.waveform.readonly {
+  cursor: inherit;
+  touch-action: auto;
 }
 </style>
