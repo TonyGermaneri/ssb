@@ -172,6 +172,63 @@ export function decode(data: ArrayBuffer): Promise<AudioBuffer> {
   return getCtx().decodeAudioData(data)
 }
 
+/** seconds a single cycle is repeated to fill (as long as a built-in generator's buffer) */
+const CYCLE_FILL = 0.25
+/**
+ * A single cycle (an AKWF wave, or any one-cycle WAV with a whole-file loop) at its own rate, repeated to fill
+ * a quarter second: never resampled, so the loop stays exact, and grains / STRETCH have room to move.
+ */
+export function cycleBuffer(channels: Float32Array[], rate: number): AudioBuffer {
+  const n = channels[0].length
+  const times = Math.max(1, Math.round((rate * CYCLE_FILL) / n))
+  const buf = new AudioBuffer({ numberOfChannels: channels.length, length: n * times, sampleRate: rate })
+  channels.forEach((ch, c) => {
+    const d = buf.getChannelData(c)
+    for (let k = 0; k < times; k++) d.set(ch, k * n)
+  })
+  return buf
+}
+
+let previewCtx: AudioContext | null = null
+let previewing: { src: AudioBufferSourceNode; gain: GainNode } | null = null
+/**
+ * Audition a buffer that isn't a pad yet (the library's waves): looped at `rate`, faded in and out, dry. In the
+ * plugin this page's engine is silent, so it plays from a little context of its own.
+ */
+export function preview(buffer: AudioBuffer, rate: number, seconds = 0.9) {
+  const c = external ? (previewCtx ??= new AudioContext({ latencyHint: 'interactive' })) : getCtx()
+  void c.resume()
+  stopPreview()
+  const src = c.createBufferSource()
+  src.buffer = buffer
+  src.loop = true
+  src.playbackRate.value = rate
+  const gain = c.createGain()
+  const t = c.currentTime
+  gain.gain.setValueAtTime(0, t)
+  gain.gain.linearRampToValueAtTime(0.45, t + 0.008)
+  gain.gain.setValueAtTime(0.45, t + seconds)
+  gain.gain.linearRampToValueAtTime(0, t + seconds + 0.12)
+  src.connect(gain).connect(external ? c.destination : master)
+  src.start(t)
+  src.stop(t + seconds + 0.15)
+  previewing = { src, gain }
+  src.onended = () => {
+    gain.disconnect()
+    if (previewing?.src === src) previewing = null
+  }
+}
+export function stopPreview() {
+  if (!previewing) return
+  const { src, gain } = previewing
+  const t = src.context.currentTime
+  gain.gain.cancelScheduledValues(t)
+  gain.gain.setValueAtTime(gain.gain.value, t)
+  gain.gain.linearRampToValueAtTime(0, t + 0.03)
+  src.stop(t + 0.05)
+  previewing = null
+}
+
 /** Buffer for an audio id; SFZ generators ("synth:sine" …) are built on first use. */
 export function getBuffer(audioId: string): AudioBuffer | undefined {
   let b = buffers.get(audioId)

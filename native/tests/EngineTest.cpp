@@ -177,6 +177,31 @@ TEST ("engine: a sample at another rate plays at its own pitch")
     CHECK_NEAR (rig.hz (0.1, 0.4), 440.0, 2.0);
 }
 
+TEST ("engine: a one-cycle loop wraps seamlessly: past its last frame it reads its first")
+{
+    // an AKWF wave: one cycle in 600 frames, at the rate that makes it C2, looped (a cosine: full scale at the seam)
+    auto s = std::make_shared<ssb::Sample>();
+    s->rate = 39244;
+    s->channels.assign (1, std::vector<float> (600));
+    for (size_t i = 0; i < 600; ++i)
+        s->channels[0][i] = (float) std::cos (2 * ssb::dsp::pi * (double) i / 600.0);
+    Rig rig;
+    rig.add ("a", s);
+    rig.commit();
+    rig.press ("a");
+    rig.render (0.5);
+    double peak = 0, step = 0;
+    for (auto i = (size_t) (0.1 * rate); i < (size_t) (0.4 * rate); ++i)
+    {
+        peak = std::max (peak, (double) std::abs (rig.left[i]));
+        step = std::max (step, (double) std::abs (rig.left[i] - rig.left[i - 1]));
+    }
+    // a 65 Hz cosine moves at most 2π·65/48000 of its peak per frame; a silent frame at the seam would jump ~all of it
+    CHECK (peak > 0.1);
+    CHECK (step < 0.02 * peak);
+    CHECK_NEAR (rig.hz (0.1, 0.4), 39244.0 / 600.0, 0.5);
+}
+
 TEST ("engine: attack ramps linearly, release fades to silence")
 {
     Rig rig;

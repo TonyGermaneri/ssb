@@ -1590,11 +1590,16 @@ struct Engine::Impl
             {
                 const double p = v.pos;
                 const auto i0 = (size_t) p;
-                if ((double) i0 + 1 < frames)
+                // the frame after i0: past a loop's end that is the loop's start again (an AKWF wave loops every
+                // 600 frames, so stopping short at the end -- a silent frame -- would buzz)
+                const bool wraps = v.loops && v.loopEnd > v.loopStart && (double) i0 + 1 >= v.loopEnd;
+                const double next = wraps ? (double) i0 + 1 - (v.loopEnd - v.loopStart) : (double) i0 + 1;
+                if ((double) i0 < frames && next >= 0 && next < frames)
                 {
+                    const auto i1 = (size_t) next;
                     const auto f = (float) (p - (double) i0);
-                    xl = chL[i0] + (chL[i0 + 1] - chL[i0]) * f;
-                    xr = chR[i0] + (chR[i0 + 1] - chR[i0]) * f;
+                    xl = chL[i0] + (chL[i1] - chL[i0]) * f;
+                    xr = chR[i0] + (chR[i1] - chR[i0]) * f;
                 }
                 if (--v.quantumLeft <= 0)
                 {

@@ -22,6 +22,12 @@ import { defineAsyncComponent } from 'vue'
 const GridView = defineAsyncComponent(() => import('./components/GridView.vue'))
 const LibraryDialog = defineAsyncComponent(() => import('./components/LibraryDialog.vue'))
 const libraryOpen = ref(false)
+/** the library's tab when it opens: the AKWF waves, or the online sources */
+const libraryTab = ref<'akwf' | 'sfz'>('akwf')
+const openLibrary = (tab: 'akwf' | 'sfz') => {
+  libraryTab.value = tab
+  libraryOpen.value = true
+}
 
 
 const board = useBoard()
@@ -138,7 +144,7 @@ onBeforeUnmount(() => {
   <v-app>
     <div class="console" :class="{ scanlines: board.master.scanlines }">
       <div class="chrome">
-        <MasterStrip @add="fileInput?.click()" @add-folder="folderInput?.click()" @library="libraryOpen = true" />
+        <MasterStrip @add="fileInput?.click()" @add-folder="folderInput?.click()" @library="openLibrary('sfz')" @waves="openLibrary('akwf')" />
       </div>
       <!-- rack (the selected patch's three VCO slots) on the left, the sounds / patches list on the right third -->
       <div class="body" :class="{ split: board.master.rack && board.master.list }">
@@ -189,7 +195,7 @@ onBeforeUnmount(() => {
     </div>
     <DropZone />
     <MatrixDialog />
-    <LibraryDialog v-if="libraryOpen" v-model="libraryOpen" />
+    <LibraryDialog v-if="libraryOpen" v-model="libraryOpen" :start="libraryTab" />
     <input ref="fileInput" type="file" accept="audio/*,.mp3,.sfz,.zip" multiple hidden @change="onPick" />
     <!-- a folder picker keeps relative paths, which SFZ files use to find their samples -->
     <input ref="folderInput" type="file" webkitdirectory multiple hidden @change="onPick" />

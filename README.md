@@ -39,9 +39,19 @@ The header **◀ ▶** step through patches (in the Patches tab's filtered order
 patch. **♥** marks favourites on sound cards, patch cards, the rack and in the grids (♥ column); **♥ FAV** in the tag
 strip shows only those.
 
-**Factory patches** built on the built-in synth waves (saw, square, sine, triangle, noise) are installed on a new board:
-POLY SAW, PURE SINE, FM PIANO, SQUARE LEAD, WARM PAD, SUB BASS, BRASS STAB, WIND, RING BELL. **+ → ADD FACTORY
-PATCHES** adds them again.
+**AKWF waves**: all 4,358 of [Adventure Kid's single-cycle waveforms](https://github.com/KristofferKarlAxelEkstrand/AKWF-FREE)
+(Kristoffer Ekstrand, CC0) ship with SSB, in AKWF's own 65 categories (its folders: AKWF_0001 … AKWF_0020, AKWF_epiano,
+AKWF_fmsynth, AKWF_hvoice, …). **+ → BROWSE WAVES** (the library's first tab) shows each category's waves as outlines:
+click one to hear it, **+** adds it to the board, **1 / 2 / 3** put it straight into that VCO slot of the patch; ← → step
+through the waves, ↑ ↓ through the categories, **ADD ALL** takes a whole category. An added wave is a sound tagged
+**akwf** and its category (`akwf_epiano`), so the tag strip filters by category; it loops while held, with its root
+note at C2 (each 600-frame cycle is stored at the rate that makes it exactly C2, with a WAV `smpl` loop, and played
+at that rate so the loop is sample-exact). `scripts/akwf.mjs` rebuilds `public/akwf` from an AKWF-FREE checkout.
+
+**Factory patches** made of AKWF waves (the perfect saw, square, sine and triangle, and a human-voice wave) are
+installed on a new board: POLY SAW, PURE SINE, FM PIANO, SQUARE LEAD, WARM PAD, SUB BASS, BRASS STAB, VOX PAD, RING BELL.
+**+ → ADD FACTORY PATCHES** adds them again. Boards made before the AKWF waves lose the old generated SAW WAVE … NOISE sounds: their
+patches move to the AKWF waves (WIND, made of NOISE, gives way to VOX PAD).
 
 ### VCO slots + rack
 
@@ -234,4 +244,5 @@ See [PLAN.md](PLAN.md) for the design and audio graph.
 ## License
 
 [MIT](LICENSE). The desktop app and plugins are built with [JUCE](https://juce.com), which has its own license
-terms for distributed binaries.
+terms for distributed binaries. The AKWF waveforms in `public/akwf` are Kristoffer Ekstrand's, dedicated to the public
+domain under [CC0 1.0](public/akwf/LICENSE.md).

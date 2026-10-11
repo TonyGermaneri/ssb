@@ -5,7 +5,7 @@ import * as engine from '../audio/engine'
 import { computePeaks } from '../audio/peaks'
 import { connectMidi, parseMidi, type MidiEvent } from '../audio/midi'
 import { callNative, inNative, nativeBoardKey, nativeInfo, onNative, onNativeMidi, saveFile } from '../native/bridge'
-import { encodeWav, planarFromBase64 } from '../lib/wav'
+import { encodeWav, planarFromBase64, readCycleWav } from '../lib/wav'
 import { History } from '../lib/history'
 import { ClockTracker } from '../lib/midiClock'
 import { THEMES, themeById } from '../theme/themes'
@@ -16,7 +16,8 @@ import { normalisePath, parseSfz } from '../lib/sfz'
 import { sniffSampleRate } from '../lib/sampleRate'
 import { filterPlayable, nearestZone, pickZones, regionToZone, zoneSemis } from '../lib/zones'
 import { isSynthAudioId, synthAudioId, synthWave } from '../audio/synthWaves'
-import { FACTORY_PATCHES, FACTORY_WAVES, waveSettings } from '../lib/factory'
+import { FACTORY_PATCHES, FACTORY_WAVES, waveSettings, type FactoryWave } from '../lib/factory'
+import { akwfIndex, akwfWave, categoryTag, CYCLE_ROOT, waveAudioId, waveBlob, waveLabel, type AkwfWave } from '../lib/akwf'
 import { stripExt } from '../lib/format'
 import {
   divisionBeats, defaultMaster, defaultSettings, FILTER_TYPES, migrateMaster, migratePresetSettings, migrateSettings, presetSettings,
@@ -60,6 +61,8 @@ interface SavedBoard {
 }
 
 const uid = () => crypto.randomUUID()
+/** 2: the factory patches are made of AKWF waves (see upgradeFactory) */
+const FACTORY_VERSION = 2
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(toRaw(v)))
 const cycle = <T>(list: readonly T[], cur: T) => list[(list.indexOf(cur) + 1) % list.length]
 
@@ -203,7 +206,9 @@ export const useBoard = defineStore('board', () => {
   async function loadAudio(audioId: string, blob: Blob): Promise<number> {
     const bytes = await blob.arrayBuffer()
     const rate = sniffSampleRate(bytes) ?? 44100
-    const buf = await engine.decode(bytes) // detaches `bytes`
+    // a single cycle (an AKWF wave) plays at its own rate: resampled, its loop would no longer be exact
+    const cycle = readCycleWav(bytes)
+    const buf = cycle ? engine.cycleBuffer(cycle.channels, cycle.rate) : await engine.decode(bytes) // detaches `bytes`
     engine.buffers.set(audioId, buf)
     peaks.set(audioId, computePeaks(buf))
     return rate
@@ -397,8 +402,9 @@ export const useBoard = defineStore('board', () => {
         for (const s of ok) applyCcDefaults(s)
         applyCcDefaults(selected.value)
       }
-      // first run: built-in synth sounds + factory patches
-      if (!master.factory) installFactory()
+      // first run: factory patches (and the AKWF waves they're made of); older boards swap their generated sounds
+      if (!master.factory) await installFactory()
+      else if (master.factoryVersion < FACTORY_VERSION) await upgradeFactory()
       if (nativeBoardKey()) await restoreInstance()
       void collectOrphanAudio()
     } finally {
@@ -420,7 +426,7 @@ export const useBoard = defineStore('board', () => {
             peaks.set(audioId, computePeaks(engine.getBuffer(audioId)!))
             continue
           }
-          const blob = (await get<Blob>(audioKey(audioId))) ?? (await audioFromPlugin(audioId))
+          const blob = (await get<Blob>(audioKey(audioId))) ?? (await audioFromAkwf(audioId)) ?? (await audioFromPlugin(audioId))
           if (!blob) {
             missing = true
             break
@@ -434,6 +440,21 @@ export const useBoard = defineStore('board', () => {
       }
     }
     return ok
+  }
+
+  /** An AKWF wave's audio, made again from the waves that ship with SSB (and stored again). */
+  async function audioFromAkwf(audioId: string): Promise<Blob | null> {
+    if (!audioId.startsWith(waveAudioId(''))) return null
+    try {
+      const name = audioId.slice(waveAudioId('').length)
+      const cat = (await akwfIndex()).categories.find((c) => c.waves.includes(name))
+      if (!cat) return null
+      const blob = waveBlob(await akwfWave(cat.folder, name))
+      await set(audioKey(audioId), blob)
+      return blob
+    } catch {
+      return null
+    }
   }
 
   /**
@@ -1193,22 +1214,57 @@ export const useBoard = defineStore('board', () => {
   const patchLayerIds = (p: Patch) => new Set(patchLayers(p).map((l) => l.id))
 
   // ── factory content ──
-  /** Built-in wave sounds (reused if already there) and the factory patches made from them. */
-  function installFactory() {
-    const waveSound = new Map<string, Sound>()
-    for (const { wave, name } of FACTORY_WAVES) {
-      const audioId = synthAudioId(wave)
-      let snd = sounds.value.find((x) => x.audioId === audioId && !x.zones)
-      if (!snd) {
-        peaks.set(audioId, computePeaks(engine.getBuffer(audioId)!))
-        const settings = { ...defaultSettings(name), ...waveSettings(), tag: 'built-in, synth, wave' }
-        snd = { id: uid(), audioId, fileName: `*${wave}`, settings }
-        sounds.value.push(snd)
+  /**
+   * AKWF waves as sounds, tagged "akwf" + their category, looping while held. A wave already on the board is
+   * reused rather than added twice (its sound is returned) unless `copy`.
+   */
+  async function addWaves(waves: AkwfWave[], opts: { copy?: boolean } = {}): Promise<Sound[]> {
+    const out: Sound[] = []
+    for (const w of waves) {
+      const audioId = waveAudioId(w.name)
+      const had = opts.copy ? undefined : sounds.value.find((s) => s.audioId === audioId && !s.zones)
+      if (had) {
+        out.push(had)
+        continue
       }
-      waveSound.set(wave, snd)
+      if (!engine.buffers.has(audioId)) {
+        const blob = waveBlob(w)
+        await loadAudio(audioId, blob)
+        await set(audioKey(audioId), blob)
+      }
+      const settings = { ...defaultSettings(waveLabel(w.name)), ...waveSettings(), rootNote: CYCLE_ROOT }
+      settings.tag = addTags('', ['akwf', categoryTag(w.folder)])
+      const snd: Sound = { id: uid(), audioId, fileName: `${w.name}.wav`, settings }
+      addSound(snd)
+      out.push(snd)
+    }
+    return out
+  }
+
+  /** The sound for each factory wave (added if the board hasn't got it). */
+  async function factorySounds(): Promise<Map<FactoryWave, Sound>> {
+    const out = new Map<FactoryWave, Sound>()
+    for (const key of Object.keys(FACTORY_WAVES) as FactoryWave[]) {
+      const { folder, name } = FACTORY_WAVES[key]
+      const [snd] = await addWaves([await akwfWave(folder, name)])
+      out.set(key, snd)
+    }
+    return out
+  }
+
+  /** Factory patches (`only`: just those), made from AKWF waves added to the board as sounds. */
+  async function installFactory(only?: string[]) {
+    let waveSound: Map<FactoryWave, Sound>
+    try {
+      waveSound = await factorySounds()
+    } catch (e) {
+      console.error(e)
+      toast.value = 'Couldn\'t load the factory waves'
+      return
     }
     const d = defaultMaster()
-    for (const fp of FACTORY_PATCHES) {
+    const list = FACTORY_PATCHES.filter((fp) => !only || only.includes(fp.name))
+    for (const fp of list) {
       const slots = fp.slots.map((x) => {
         const src = x && waveSound.get(x.wave)
         if (!x || !src) return null
@@ -1225,8 +1281,53 @@ export const useBoard = defineStore('board', () => {
       const header = headerOf({ ...d, ...fp.header, fx: { ...d.fx, ...fp.header?.fx } } as MasterState)
       patches.value.push({ id: uid(), name: fp.name, tag: fp.tag, slots, header })
     }
-    master.factory = true
-    toast.value = `Added ${FACTORY_PATCHES.length} factory patches`
+    Object.assign(master, { factory: true, factoryVersion: FACTORY_VERSION })
+    toast.value = `Added ${list.length} factory patch${list.length === 1 ? '' : 'es'}`
+  }
+
+  /**
+   * Boards from before AKWF: the five generated sounds (SAW WAVE … NOISE) go. Patches made of them move to the
+   * AKWF waves that replace them, keeping their settings (the root note follows the new wave, C2 for C4); the
+   * factory WIND, all NOISE, gives way to VOX PAD. Only a NOISE that a patch of your own still plays stays.
+   */
+  async function upgradeFactory() {
+    const OLD: Record<string, { name: string; wave: FactoryWave | null }> = {
+      '*saw': { name: 'SAW WAVE', wave: 'saw' },
+      '*square': { name: 'SQUARE WAVE', wave: 'square' },
+      '*sine': { name: 'SINE WAVE', wave: 'sine' },
+      '*triangle': { name: 'TRIANGLE WAVE', wave: 'triangle' },
+      '*noise': { name: 'NOISE', wave: null },
+    }
+    const old = sounds.value.filter((s) => isSynthAudioId(s.audioId) && !s.zones && OLD[s.fileName]?.name === s.settings.name)
+    if (old.length) {
+      let waveSound: Map<FactoryWave, Sound>
+      try {
+        waveSound = await factorySounds()
+      } catch (e) {
+        console.error(e) // try again next launch
+        return
+      }
+      const oldIds = new Set(old.map((s) => s.id))
+      const isWind = (p: Patch) =>
+        p.name === 'WIND' && /\bfactory\b/.test(p.tag) && p.slots.every((x) => !x || OLD[byId(x.layer.soundId)?.fileName ?? '']?.wave === null)
+      const hadWind = patches.value.some(isWind)
+      patches.value = patches.value.filter((p) => !isWind(p))
+      for (const p of patches.value)
+        for (const x of p.slots) {
+          const was = x && oldIds.has(x.layer.soundId) ? byId(x.layer.soundId) : undefined
+          const wave = was && OLD[was.fileName].wave
+          if (!x || !wave) continue
+          x.layer.soundId = waveSound.get(wave)!.id
+          x.layer.settings.rootNote = Math.max(0, x.layer.settings.rootNote - (60 - CYCLE_ROOT))
+        }
+      const stillPlayed = new Set(patches.value.flatMap((p) => p.slots.map((x) => x?.layer.soundId)))
+      const gone = new Set(old.filter((s) => !stillPlayed.has(s.id)).map((s) => s.id))
+      sounds.value = sounds.value.filter((s) => !gone.has(s.id))
+      if (master.selectedId && gone.has(master.selectedId)) master.selectedId = sounds.value[0]?.id ?? null
+      if (hadWind && !patches.value.some((p) => p.name === 'VOX PAD')) await installFactory(['VOX PAD'])
+      toast.value = `Factory sounds are now AKWF waves (${gone.size} old ones removed)`
+    }
+    master.factoryVersion = FACTORY_VERSION
   }
 
   // ── favourites ──
@@ -1571,7 +1672,7 @@ export const useBoard = defineStore('board', () => {
     pressPatch, releasePatch, patchIdOfLayer,
     tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
     addFiles, load, press, release, panic, noteOn, noteOff,
-    select, selectStep, togglePanel, cycleMode, cycleFilter, toggleGrain, resetSettings, duplicate, remove, removeSounds, move,
+    select, selectStep, togglePanel, cycleMode, cycleFilter, toggleGrain, addWaves, resetSettings, duplicate, remove, removeSounds, move,
     exportBoard, importBoard, enableMidi, learnMidi,
   }
 })

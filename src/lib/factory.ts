@@ -1,18 +1,20 @@
 /**
- * Factory content: built-in synth sounds (looped band-limited wavetables) and patches made from them.
+ * Factory content: patches made from AKWF waves (lib/akwf.ts), which are added to the board as sounds when the
+ * patches are installed.
  */
 import type { GlobalFx, ModRoute, PatchSlot, SoundSettings } from '../types'
-import type { SynthWave } from '../audio/synthWaves'
 
-export const FACTORY_WAVES: { wave: SynthWave; name: string }[] = [
-  { wave: 'saw', name: 'SAW WAVE' },
-  { wave: 'square', name: 'SQUARE WAVE' },
-  { wave: 'sine', name: 'SINE WAVE' },
-  { wave: 'triangle', name: 'TRIANGLE WAVE' },
-  { wave: 'noise', name: 'NOISE' },
-]
+/** the AKWF waves the factory patches are made of */
+export const FACTORY_WAVES = {
+  saw: { folder: 'AKWF_bw_perfectwaves', name: 'AKWF_saw' },
+  square: { folder: 'AKWF_bw_perfectwaves', name: 'AKWF_squ' },
+  sine: { folder: 'AKWF_bw_perfectwaves', name: 'AKWF_sin' },
+  triangle: { folder: 'AKWF_bw_perfectwaves', name: 'AKWF_tri' },
+  voice: { folder: 'AKWF_hvoice', name: 'AKWF_hvoice_0039' },
+} as const
+export type FactoryWave = keyof typeof FACTORY_WAVES
 
-/** a built-in wave as a playable sound: loops while held, gentle release */
+/** a wave as a playable sound: loops while held, gentle release */
 export const waveSettings = (): Partial<SoundSettings> => ({
   repeat: 0,
   mode: 'hold',
@@ -28,7 +30,7 @@ export interface FactoryPatch {
   name: string
   tag: string
   /** slot 1..3: which wave, the layer's knob overrides, and how the slot joins the patch */
-  slots: ({ wave: SynthWave; settings?: Partial<SoundSettings>; slot?: SlotParams } | null)[]
+  slots: ({ wave: FactoryWave; settings?: Partial<SoundSettings>; slot?: SlotParams } | null)[]
   /** routes on the main voice's pad matrix (VCO n = slot n) */
   routes?: ModRoute[]
   lfo1?: { shape: 'sine' | 'triangle'; rate: number }
@@ -94,7 +96,7 @@ export const FACTORY_PATCHES: FactoryPatch[] = [
     name: 'SUB BASS',
     tag: 'factory, synth, bass, mono',
     slots: [
-      { wave: 'sine', settings: { release: 0.12, rootNote: 60 } },
+      { wave: 'sine', settings: { release: 0.12 } },
       { wave: 'square', settings: { cutoff: 900, release: 0.12 }, slot: { level: 0.25 } },
       null,
     ],
@@ -114,12 +116,17 @@ export const FACTORY_PATCHES: FactoryPatch[] = [
     header: { fx: { reverbMix: 0.25 } },
   },
   {
-    name: 'WIND',
-    tag: 'factory, noise, texture',
-    slots: [{ wave: 'noise', settings: { filterType: 'bandpass', cutoff: 900, resonance: 6, attack: 1.5, release: 3 } }, null, null],
-    lfo1: { shape: 'sine', rate: 0.15 },
-    routes: [{ source: 'lfo1', dest: 'cutoff', amount: 0.4 }],
-    header: { fx: { reverbMix: 0.5, reverbSize: 6 } },
+    name: 'VOX PAD',
+    tag: 'factory, synth, pad, voice',
+    slots: [
+      { wave: 'voice', settings: { attack: 0.8, release: 2.2, cutoff: 6000 } },
+      // the same vowel a few cents away: a choir rather than one voice
+      { wave: 'voice', settings: { attack: 1, release: 2.2, cutoff: 6000 }, slot: { fine: 8, level: 0.6 } },
+      null,
+    ],
+    lfo1: { shape: 'sine', rate: 0.2 },
+    routes: [{ source: 'lfo1', dest: 'cutoff', amount: 0.1 }],
+    header: { fx: { chorusMix: 0.45, reverbMix: 0.45, reverbSize: 5 } },
   },
   {
     name: 'RING BELL',

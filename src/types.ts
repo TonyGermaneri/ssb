@@ -469,6 +469,8 @@ export interface MasterState {
   favPatches: boolean
   /** factory sounds + patches have been installed once */
   factory: boolean
+  /** which factory content the board has: 0/1 = the generated SAW WAVE … NOISE, 2 = AKWF waves (FACTORY_VERSION) */
+  factoryVersion: number
   /** show the selected patch (+ its VCOs) panels under the header */
   rack: boolean
   /** which catalog is showing */
@@ -505,6 +507,7 @@ export const defaultMaster = (): MasterState => ({
   favSounds: false,
   favPatches: false,
   factory: false,
+  factoryVersion: 0,
   rack: false,
   tab: 'sounds',
   patchId: null,
