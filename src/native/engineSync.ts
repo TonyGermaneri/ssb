@@ -78,6 +78,7 @@ function metaJson(board: Board, ids: string[]) {
     volume: m.volume,
     muted: m.muted,
     mono: m.mono,
+    hold: m.hold,
     play: m.play,
     mpe: m.mpe,
     glide: m.glide,

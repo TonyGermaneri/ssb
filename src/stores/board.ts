@@ -220,6 +220,28 @@ export const useBoard = defineStore('board', () => {
   }
 
   /**
+   * CAPTURE (Granulator III's): the input's last seconds as a new pad right after `fromId`, with that pad's
+   * settings, selected.
+   */
+  async function addCapture(fromId: string, channels: Float32Array[], rate: number) {
+    const from = byId(fromId)
+    const audioId = uid()
+    const now = new Date()
+    const stamp = [now.getHours(), now.getMinutes(), now.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':')
+    const name = `CAPTURE ${stamp}`
+    const blob = encodeWav(channels, rate)
+    await loadAudio(audioId, blob)
+    await set(audioKey(audioId), blob)
+    const settings: SoundSettings = from ? { ...JSON.parse(JSON.stringify(toRaw(from.settings))), name } : defaultSettings(name)
+    settings.tag = addTags(from?.settings.tag ?? '', ['capture'])
+    const sound: Sound = { id: uid(), audioId, fileName: `${name.replace(/:/g, '-')}.wav`, settings }
+    const i = sounds.value.findIndex((s) => s.id === fromId)
+    sounds.value.splice(i < 0 ? sounds.value.length : i + 1, 0, sound)
+    master.selectedId = sound.id
+    toast.value = `${name}: ${(channels[0].length / rate).toFixed(1)} s`
+  }
+
+  /**
    * Load dropped / picked files: audio files become pads, .sfz files become multi-sample instruments (their samples
    * are looked up among the other files), and .zip files are either a board export or a sample pack to unpack.
    */
@@ -961,7 +983,35 @@ export const useBoard = defineStore('board', () => {
   }
   const voiceKey = (note: number, ch?: number) => (isMember(ch) ? `${ch}:${note}` : `${note}`)
 
+  // ── HOLD: Granulator III's latch, in front of mono / poly ──────────────
+  // (with the native engine playing, it latches: the page passes every note on as it comes)
+  /** keys physically down, and the ones HOLD keeps sounding after they came up */
+  const downKeys = new Set<string>()
+  const latched = new Map<string, { note: number; channel?: number }>()
+  function releaseLatched() {
+    const notes = [...latched.values()]
+    latched.clear()
+    for (const n of notes) playNoteOff(n.note, n.channel)
+  }
+  watch(() => master.hold, (on) => !on && releaseLatched())
+
   function noteOn(note: number, velocity = 1, channel?: number) {
+    const key = voiceKey(note, channel)
+    // a note with no key down lets the latched chord go first; one played while keys are down joins it
+    if (!engine.external && master.hold && !downKeys.size) releaseLatched()
+    downKeys.add(key)
+    latched.delete(key)
+    return playNoteOn(note, velocity, channel)
+  }
+
+  function noteOff(note: number, channel?: number) {
+    const key = voiceKey(note, channel)
+    downKeys.delete(key)
+    if (!engine.external && master.hold) return void latched.set(key, { note, channel })
+    return playNoteOff(note, channel)
+  }
+
+  function playNoteOn(note: number, velocity = 1, channel?: number) {
     const sound = playable.value
     if (!sound) return
     if (engine.external) {
@@ -997,7 +1047,7 @@ export const useBoard = defineStore('board', () => {
     }
   }
 
-  function noteOff(note: number, channel?: number) {
+  function playNoteOff(note: number, channel?: number) {
     heldNotes.value = heldNotes.value.filter((n) => n !== note)
     if (engine.external) return toEngine({ type: 'noteOff', note, channel: channel ?? 0 })
     if (master.mono && !isMember(channel)) {
@@ -1034,6 +1084,8 @@ export const useBoard = defineStore('board', () => {
 
   function allNotesOff() {
     heldNotes.value = []
+    downKeys.clear()
+    latched.clear()
     polyVoices.clear()
     mpeChannels.clear()
     sustainedKeys.clear()
@@ -1671,7 +1723,7 @@ export const useBoard = defineStore('board', () => {
     installFactory, selectPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, removePatches, assignSlot, slotsOf, toggleSlot, toggleFav,
     pressPatch, releasePatch, patchIdOfLayer,
     tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
-    addFiles, load, press, release, panic, noteOn, noteOff,
+    addFiles, addCapture, load, press, release, panic, noteOn, noteOff,
     select, selectStep, togglePanel, cycleMode, cycleFilter, toggleGrain, addWaves, resetSettings, duplicate, remove, removeSounds, move,
     exportBoard, importBoard, enableMidi, learnMidi,
   }

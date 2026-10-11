@@ -1,6 +1,6 @@
 import { markRaw, ref, shallowRef } from 'vue'
-import { defaultMatrix, lfoHz, type GlobalFx, type ModMatrix, type Sound } from '../types'
-import { LfoSource } from './lfo'
+import { defaultMatrix, type GlobalFx, type ModMatrix, type Sound } from '../types'
+import { lfoConfig, LfoSource } from './lfo'
 import { isSynthAudioId, makeSynthBuffer, type SynthWave } from './synthWaves'
 import { MasterFx } from './masterFx'
 import { Voice, type GrainMark, type ModHub, type VoiceOptions } from './voice'
@@ -57,7 +57,7 @@ export function getCtx(): AudioContext {
     split.connect(a, i)
   })
   const now = ctx.currentTime
-  const globalLfos = [globalMatrix.lfo1, globalMatrix.lfo2].map((l) => new LfoSource(ctx!, l.shape, lfoHz(l, bpm), now))
+  const globalLfos = [globalMatrix.lfo1, globalMatrix.lfo2].map((l) => new LfoSource(ctx!, lfoConfig(l, bpm), now, 0))
   silentBus = ctx.createGain()
   silentBus.gain.value = 0
   silentBus.connect(master)
@@ -90,7 +90,7 @@ export function getCtx(): AudioContext {
 
 function applyGlobalLfos() {
   getCtx()
-  ;[globalMatrix.lfo1, globalMatrix.lfo2].forEach((lfo, i) => hub.globalLfos[i].set(lfo.shape, lfoHz(lfo, bpm)))
+  ;[globalMatrix.lfo1, globalMatrix.lfo2].forEach((lfo, i) => hub.globalLfos[i].set(lfoConfig(lfo, bpm)))
 }
 
 /** Tempo for synced LFOs (internal knob or MIDI clock). */

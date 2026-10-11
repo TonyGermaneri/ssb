@@ -4,9 +4,10 @@ import { clock } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { fmtPct, fmtRate } from '../lib/format'
 import { fmtRouteAmount, lfoValue } from '../lib/modulation'
+import { isRandomShape } from '../audio/lfoMath'
 import {
-  DIVISIONS, lfoHz, LFO_SHAPES, MOD_DEST_IDS, MOD_DESTS, MOD_SOURCES, type Lfo, type LfoShape, type ModDest, type ModMatrix,
-  type ModSource,
+  DIVISIONS, lfoHz, LFO_PHASES, LFO_RATIO_MAX, LFO_RATIO_MIN, LFO_SHAPES, MOD_DEST_IDS, MOD_DESTS, MOD_SOURCES, type Lfo,
+  type LfoShape, type ModDest, type ModMatrix, type ModSource,
 } from '../types'
 import Knob from './Knob.vue'
 
@@ -20,6 +21,7 @@ const SHAPE_ICON: Record<LfoShape, string> = {
   rampDown: 'mdi-sawtooth-wave',
   random: 'mdi-stairs',
   smooth: 'mdi-waves',
+  wander: 'mdi-chart-bell-curve-cumulative',
 }
 const SHAPE_NAME: Record<LfoShape, string> = {
   sine: 'Sine',
@@ -29,6 +31,7 @@ const SHAPE_NAME: Record<LfoShape, string> = {
   rampDown: 'Saw down',
   random: 'Sample & hold (random steps)',
   smooth: 'Smooth random',
+  wander: 'RAND: random steps four times a cycle, smoothed (Granulator III\'s Rand / Move)',
 }
 const divIndex = (lfo: Lfo) => Math.max(0, DIVISIONS.findIndex((d) => d.id === lfo.division))
 const fmtDiv = (v: number) => DIVISIONS[Math.round(v)]?.id ?? ''
@@ -40,6 +43,14 @@ const DEST_SHORT: Record<ModDest, string> = {
   pan: 'PAN',
   grainPos: 'G.POS',
   grainSize: 'GRAIN',
+  grainSkew: 'SKEW',
+  grainVar: 'G.VAR',
+  grainDetune: 'DETUNE',
+  grainScan: 'SCAN',
+  lfo1Rate: 'L1 RATE',
+  lfo1Amt: 'L1 AMT',
+  lfo2Rate: 'L2 RATE',
+  lfo2Amt: 'L2 AMT',
   delayMix: 'DELAY',
   reverbMix: 'REVERB',
 }
@@ -74,12 +85,27 @@ function clearAll() {
   if (matrix.value) matrix.value.routes.splice(0)
 }
 /** blinking LED per LFO (display only) */
-const lfoLed = (lfo: Lfo) => (lfoValue(lfo.shape === 'random' || lfo.shape === 'smooth' ? 'square' : lfo.shape, clock.value * lfoHz(lfo, board.bpm)) + 1) / 2
+const lfoLed = (lfo: Lfo) => (lfoValue(isRandomShape(lfo.shape) ? 'square' : lfo.shape, clock.value * Math.min(20, lfoHz(lfo, board.bpm))) + 1) / 2
+/** HZ → SYNC → RATIO */
+const lfoMode = (lfo: Lfo) => (lfo.ratioMode ? 'RATIO' : lfo.sync ? 'SYNC' : 'HZ')
+function nextMode(lfo: Lfo) {
+  if (lfo.ratioMode) {
+    lfo.ratioMode = false
+    lfo.sync = false
+  } else if (lfo.sync) lfo.ratioMode = true
+  else lfo.sync = true
+}
+const fmtPhase = (deg: number) => (deg < 0 ? 'FREE' : `${deg}°`)
+const nextPhase = (lfo: Lfo) => (lfo.phase = LFO_PHASES[(LFO_PHASES.indexOf(lfo.phase) + 1) % LFO_PHASES.length])
+const fmtRatio = (v: number) => `×${v < 1 ? v.toFixed(2) : v.toFixed(v < 2 ? 2 : 1)}`
+const fmtDeg = (v: number) => `${Math.round(v)}°`
+/** the global matrix drives shared LFOs: the pad-only columns (a pad's own LFOs) aren't there */
+const destIds = computed(() => MOD_DEST_IDS.filter((d) => !(isGlobal.value && MOD_DESTS[d].pad)))
 const routeCount = computed(() => matrix.value?.routes.length ?? 0)
 </script>
 
 <template>
-  <v-dialog v-model="open" max-width="780" scrollable>
+  <v-dialog v-model="open" max-width="1000" scrollable>
     <div class="matrix" @keydown.stop>
       <header>
         <v-icon icon="mdi-matrix" color="primary" />
@@ -109,6 +135,22 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
           <h4>
             LFO {{ i + 1 }}
             <i class="led" :style="{ opacity: 0.15 + 0.85 * lfoLed(lfo) }" />
+            <button
+              class="chip on"
+              title="HZ: a free rate · SYNC: note divisions of the tempo · RATIO: a multiple of the note's frequency (from middle C at the pad's ROOT; the global LFOs, of middle C)"
+              @click="nextMode(lfo)"
+            >
+              {{ lfoMode(lfo) }}
+            </button>
+            <button
+              v-if="!isGlobal"
+              class="chip"
+              :class="{ on: lfo.phase >= 0 }"
+              title="Where each note starts the LFO: 0° / 90° / 180°, or FREE (where one running all along would be)"
+              @click="nextPhase(lfo)"
+            >
+              {{ fmtPhase(lfo.phase) }}
+            </button>
           </h4>
           <div class="row">
             <div class="shapes">
@@ -122,17 +164,20 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
               >
                 <v-icon size="16" :icon="SHAPE_ICON[sh]" />
               </button>
-              <button
-                class="shape sync"
-                :class="{ on: lfo.sync }"
-                :title="lfo.sync ? 'Synced to tempo — click for free rate (Hz)' : 'Free rate — click to sync to tempo'"
-                @click="lfo.sync = !lfo.sync"
-              >
-                <v-icon size="15" icon="mdi-sync" />
-              </button>
             </div>
             <Knob
-              v-if="lfo.sync"
+              v-if="lfo.ratioMode"
+              v-model="lfo.ratio"
+              label="RATIO"
+              :min="LFO_RATIO_MIN"
+              :max="LFO_RATIO_MAX"
+              curve="log"
+              :default="1"
+              :format="fmtRatio"
+              color="accent"
+            />
+            <Knob
+              v-else-if="lfo.sync"
               :model-value="divIndex(lfo)"
               label="DIV"
               :min="0"
@@ -144,6 +189,9 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
               @update:model-value="(v: number) => (lfo.division = DIVISIONS[Math.round(v)].id)"
             />
             <Knob v-else v-model="lfo.rate" label="RATE" :min="0.02" :max="20" curve="log" :default="i ? 0.5 : 5" :format="fmtRate" color="accent" />
+            <Knob v-model="lfo.amount" label="AMOUNT" :default="1" :format="fmtPct" color="accent" />
+            <Knob v-model="lfo.stereo" label="STEREO" :min="0" :max="180" :step="1" :default="0" :format="fmtDeg" color="accent" />
+            <Knob v-model="lfo.quant" label="QUANT" :default="0" :format="fmtPct" color="accent" />
           </div>
         </section>
         <section class="module perform">
@@ -173,13 +221,13 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
           <thead>
             <tr>
               <th />
-              <th v-for="d in MOD_DEST_IDS" :key="d" :title="MOD_DESTS[d].label">{{ DEST_SHORT[d] }}</th>
+              <th v-for="d in destIds" :key="d" :title="MOD_DESTS[d].label">{{ DEST_SHORT[d] }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="src in MOD_SOURCES" :key="src.id">
               <th class="src">{{ src.label }}</th>
-              <td v-for="d in MOD_DEST_IDS" :key="d" :class="{ active: amount(src.id, d) !== 0 }">
+              <td v-for="d in destIds" :key="d" :class="{ active: amount(src.id, d) !== 0 }">
                 <Knob
                   :model-value="amount(src.id, d)"
                   :label="''"

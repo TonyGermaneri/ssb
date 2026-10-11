@@ -4,18 +4,21 @@ import { useBoard } from '../stores/board'
 import { buffers } from '../audio/engine'
 import {
   fmtCents, fmtChoke, fmtDb, fmtFinePct, fmtFix1, fmtFix2, fmtGrainHz, fmtHz, fmtMs, fmtNum, fmtOct, fmtPan, fmtPct, fmtQ,
-  fmtSignedPct, fmtWholePct,
-  fmtRatio, fmtRepeat, fmtSec, fmtSemis, midiNoteName,
+  fmtSignedPct, fmtWholePct, fmtDbOct,
+  fmtRatio, fmtRepeat, fmtSec, fmtSemis, fmtSemisJitter, fmtSemisSpread, midiNoteName,
 } from '../lib/format'
 import { joinTags, splitTags } from '../lib/tags'
 import {
-  FILTER_LABEL, GRAIN_DEFAULTS, type Patch, soundAudioIds, TRIGGER_MODE_INFO,
+  FILTER_LABEL, FILTER_TYPES, GRAIN_DEFAULTS, type Patch, soundAudioIds, TRIGGER_MODE_INFO,
   TRIGGER_MODES, type Sound,
 } from '../types'
 import {
-  FM_AMOUNT_MAX, FM_FREQ_MAX, FM_FREQ_MIN, GRAIN_FREQ_MAX, grainFreqMin, SCAN_DIST_MIN, SCAN_TIME_MAX, SCAN_TIME_MIN,
-  SPRAY_MAX, SPRAY_SIGNS, SYMMETRIES,
+  DENSITY_MAX, DENSITY_MIN, DETUNE_MAX, FM_AMOUNT_MAX, FM_FREQ_MAX, FM_FREQ_MIN, GRAIN_FREQ_MAX, GRAIN_MODES,
+  grainFreqMin, NOTE_RND_MAX, SCAN_DIST_MIN, SCAN_TIME_MAX, SCAN_TIME_MIN, SPRAY_MAX, SPRAY_SIGNS, SYMMETRIES,
+  VAR_PITCH_MAX, VAR_POS_MAX, VAR_SIZE_MAX, VAR_VOL_MAX,
 } from '../audio/grainMath'
+import { isSvfType, SVF_TABLE } from '../audio/svfMath'
+import { capture, CAPTURE_SECONDS } from '../audio/capture'
 import Knob from './Knob.vue'
 import Waveform from './Waveform.vue'
 import KeyMap from './KeyMap.vue'
@@ -47,6 +50,8 @@ const grainMin = () =>
   grainFreqMin(Math.max(0, ...soundAudioIds(props.sound).map((id) => buffers.get(id)?.duration ?? 0)))
 /** the value after `v` in `list`, round again at the end (the chips that cycle) */
 const next = <T,>(list: readonly T[], v: T): T => list[(list.indexOf(v) + 1) % list.length]
+/** a count (DENSITY) */
+const fmtCount = (v: number) => `${Math.round(v)}`
 
 function savePreset() {
   board.savePreset(props.sound.id, presetName.value || s.value.name)
@@ -54,6 +59,23 @@ function savePreset() {
 }
 const modeInfo = computed(() => TRIGGER_MODE_INFO[s.value.mode])
 const learning = computed(() => board.midi.learning === props.sound.id)
+
+// CAPTURE (Granulator III's): the input's last seconds into a new pad with this one's settings (hidden for now)
+const SHOW_CAPTURE = false
+const capSeconds = ref(2)
+const capBusy = ref(false)
+const nextCapLen = () => (capSeconds.value = CAPTURE_SECONDS[(CAPTURE_SECONDS.indexOf(capSeconds.value) + 1) % CAPTURE_SECONDS.length])
+const toggleInput = () => (capture.on.value ? capture.stop() : void capture.start())
+async function doCapture() {
+  capBusy.value = true
+  try {
+    const got = await capture.grab(capSeconds.value)
+    if (got) await board.addCapture(props.sound.id, got.channels, got.rate)
+    else board.toast = 'Nothing on the input yet'
+  } finally {
+    capBusy.value = false
+  }
+}
 
 function doReset() {
   board.resetSettings(props.sound.id)
@@ -95,6 +117,7 @@ function doReset() {
         <div class="row">
           <Knob v-model="s.volume" label="VOL" :max="1.5" :default="1" :format="fmtPct" />
           <Knob v-model="s.pan" label="PAN" :min="-1" :max="1" :default="0" bipolar :format="fmtPan" />
+          <Knob v-model="s.volKey" label="K>VOL" :min="-3" :max="3" :step="0.1" :default="0" bipolar :format="fmtDbOct" title="Level by key: dB an octave from ROOT" />
           <Knob v-model="s.repeat" label="RPT" :min="0" :max="16" :step="1" :default="1" :format="fmtRepeat" />
           <Knob v-model="s.choke" label="CHOKE" :min="0" :max="8" :step="1" :default="0" :format="fmtChoke" />
         </div>
@@ -143,6 +166,34 @@ function doReset() {
         </div>
       </section>
 
+      <section v-if="SHOW_CAPTURE" class="module" :class="{ folded: isFolded('capture') }">
+        <h4>CAPTURE
+          <button
+            class="chip"
+            :class="{ on: capture.on.value }"
+            title="INPUT: record the audio input (a rolling 16 s) so CAPTURE can take its last seconds"
+            @click="toggleInput"
+          >
+            {{ capture.starting.value ? '…' : 'INPUT' }}
+          </button>
+          <button class="fold" :title="isFolded('capture') ? 'Show' : 'Fold'" @click="toggleFold('capture')"><i /></button>
+        </h4>
+        <div class="row cap">
+          <div class="cap-meter" title="Input level"><i :style="{ width: `${Math.round(capture.level.value * 100)}%` }" /></div>
+          <button class="chip on" title="How much: the last 1 / 2 / 4 / 8 seconds" @click="nextCapLen">{{ capSeconds }}s</button>
+          <button
+            class="hw-btn"
+            :disabled="!capture.on.value || capBusy"
+            title="CAPTURE: the input's last seconds (peak-normalised) as a new pad with this pad's settings"
+            @click="doCapture"
+          >
+            <v-icon size="14" icon="mdi-record-circle" />
+            <span class="lbl">CAPTURE</span>
+          </button>
+        </div>
+        <p v-if="capture.error.value" class="cap-err">{{ capture.error.value }}</p>
+      </section>
+
       <section class="module" :class="{ folded: isFolded('adsr') }">
         <h4>ADSR
           <button class="fold" :title="isFolded('adsr') ? 'Show' : 'Fold'" @click="toggleFold('adsr')"><i /></button>
@@ -152,20 +203,48 @@ function doReset() {
           <Knob v-model="s.decay" label="D" :min="0.001" :max="5" curve="log" :default="0.2" :format="fmtSec" />
           <Knob v-model="s.sustain" label="S" :default="1" :format="fmtPct" />
           <Knob v-model="s.release" label="R" :min="0.001" :max="10" curve="log" :default="0.02" :format="fmtSec" />
+          <Knob v-model="s.envKey" label="KEY" :default="0" :format="fmtPct" title="Higher notes run the ADSR faster: at 100 % twice as fast an octave up" />
         </div>
       </section>
 
       <section class="module" :class="{ folded: isFolded('filter') }">
         <h4>
           FILTER
-          <button class="chip on" title="Filter type — click to cycle LP / HP / BP" @click="board.cycleFilter(sound.id)">
-            {{ FILTER_LABEL[s.filterType] }}
-          </button>
+          <v-menu location="bottom start">
+            <template #activator="{ props: act }">
+              <button class="chip on" v-bind="act" title="Filter type: SSB's LP / HP / BP, or Granulator III's (two state-variable stages, WIDTH apart)">
+                {{ FILTER_LABEL[s.filterType] }}
+              </button>
+            </template>
+            <div class="type-menu">
+              <button
+                v-for="ft in FILTER_TYPES"
+                :key="ft"
+                :class="{ on: ft === s.filterType, g3: isSvfType(ft) }"
+                @click="s.filterType = ft"
+              >
+                {{ FILTER_LABEL[ft] }}
+              </button>
+            </div>
+          </v-menu>
           <button class="fold" :title="isFolded('filter') ? 'Show' : 'Fold'" @click="toggleFold('filter')"><i /></button>
         </h4>
         <div class="row">
           <Knob v-model="s.cutoff" label="CUTOFF" :min="20" :max="20000" curve="log" :default="20000" :format="fmtHz" color="secondary" />
           <Knob v-model="s.resonance" label="RES" :min="0.1" :max="20" curve="log" :default="0.7" :format="fmtQ" color="secondary" />
+          <Knob
+            v-model="s.filterWidth"
+            label="WIDTH"
+            :min="-48"
+            :max="48"
+            :step="1"
+            :default="-12"
+            bipolar
+            :format="fmtSemis"
+            color="secondary"
+            :class="{ dim: !(isSvfType(s.filterType) && SVF_TABLE[s.filterType][2]) }"
+          />
+          <Knob v-model="s.filterKey" label="KEY" :default="0" :format="fmtPct" color="secondary" />
         </div>
       </section>
 
@@ -179,6 +258,7 @@ function doReset() {
           <Knob v-model="s.fDecay" label="D" :min="0.001" :max="5" curve="log" :default="0.3" :format="fmtSec" color="secondary" />
           <Knob v-model="s.fSustain" label="S" :default="0" :format="fmtPct" color="secondary" />
           <Knob v-model="s.fRelease" label="R" :min="0.001" :max="10" curve="log" :default="0.2" :format="fmtSec" color="secondary" />
+          <Knob v-model="s.fEnvKey" label="KEY" :default="0" :format="fmtPct" color="secondary" title="Higher notes run the filter ADSR faster: at 100 % twice as fast an octave up" />
         </div>
       </section>
 
@@ -203,6 +283,13 @@ function doReset() {
           >
             {{ s.grain ? 'ON' : 'OFF' }}
           </button>
+          <button
+            class="chip on"
+            title="Granulator III's modes. CLASSIC: Granulator II, two overlapping grains a side. LOOP: plays a segment one grain long and crossfades into the next (XFADE), backwards as often as REVERSE says. CLOUD: DENSITY grains a side, each a little longer than the last, drifting apart — click for the next"
+            @click="s.grainMode = next(GRAIN_MODES, s.grainMode)"
+          >
+            {{ s.grainMode.toUpperCase() }}
+          </button>
           <button class="chip on" title="Window: STD (a sine), FALL (its falling half), RISE (its rising half), NOIZ (noise) — click for the next" @click="s.grainSymmetry = next(SYMMETRIES, s.grainSymmetry)">
             {{ s.grainSymmetry.toUpperCase() }}
           </button>
@@ -214,6 +301,8 @@ function doReset() {
           </button>
           <button class="chip" :class="{ on: s.grainFm }" title="FM: a sine swings where the grains read, at FM HZ (following the keys by FM<KEY)" @click="s.grainFm = !s.grainFm">FM</button>
           <button class="chip" :class="{ on: s.grainScanOn }" title="SCAN: from each note, POS travels S.DIST of the clip; S.TIME 100 % is real time, 200 % half speed" @click="s.grainScanOn = !s.grainScanOn">SCAN</button>
+          <button class="chip" :class="{ on: s.grainScanLoop, dim: !s.grainScanOn }" title="S.LOOP: SCAN starts over each time it has travelled S.DIST, instead of stopping there" @click="s.grainScanLoop = !s.grainScanLoop">S.LOOP</button>
+          <button class="chip" :class="{ on: s.grainScanKey, dim: !s.grainScanOn }" title="S.KEY: SCAN goes faster for higher notes (an octave up, twice as fast)" @click="s.grainScanKey = !s.grainScanKey">S.KEY</button>
           <button class="fold" :title="isFolded('grain') ? 'Show' : 'Fold'" @click="toggleFold('grain')"><i /></button>
         </h4>
         <div class="row">
@@ -238,6 +327,19 @@ function doReset() {
           <Knob v-model="s.grainScanTime" label="S.TIME" :min="SCAN_TIME_MIN" :max="SCAN_TIME_MAX" curve="pow4" :default="GRAIN_DEFAULTS.grainScanTime" :format="fmtWholePct" color="accent" :class="{ dim: !s.grainScanOn }" />
           <Knob v-model="s.grainScanDist" label="S.DIST" :min="SCAN_DIST_MIN" :max="1" curve="pow4" :default="GRAIN_DEFAULTS.grainScanDist" :format="fmtFinePct" color="accent" :class="{ dim: !s.grainScanOn }" />
           <Knob v-model="s.grainScanCurve" label="CURVE" :min="0.5" :max="2" curve="pow2" :default="1" :format="fmtFix2" color="accent" :class="{ dim: !s.grainScanOn }" />
+        </div>
+        <!-- Granulator III -->
+        <div class="row">
+          <Knob v-model="s.grainSkew" :label="s.grainMode === 'loop' ? 'XFADE' : 'SKEW'" :default="GRAIN_DEFAULTS.grainSkew" :format="fmtPct" color="accent" :class="{ dim: s.grainMode === 'cloud' }" />
+          <Knob v-model="s.grainDensity" label="DENSITY" :min="DENSITY_MIN" :max="DENSITY_MAX" :step="1" :default="GRAIN_DEFAULTS.grainDensity" :format="fmtCount" color="accent" :class="{ dim: s.grainMode !== 'cloud' }" />
+          <Knob v-model="s.grainReverse" label="REVERSE" :default="0" :format="fmtPct" color="accent" :class="{ dim: s.grainMode !== 'loop' }" />
+          <Knob v-model="s.grainVariation" label="VARIATION" curve="pow2" :default="0" :format="fmtPct" color="accent" />
+          <Knob v-model="s.grainVarPos" label="V.POS" :max="VAR_POS_MAX" curve="pow2" :default="GRAIN_DEFAULTS.grainVarPos" :format="fmtMs" color="accent" :class="{ dim: !s.grainVariation }" />
+          <Knob v-model="s.grainVarSize" label="V.SIZE" :max="VAR_SIZE_MAX" :default="0" :format="fmtSemisJitter" color="accent" :class="{ dim: !s.grainVariation }" />
+          <Knob v-model="s.grainVarPitch" label="V.PITCH" :max="VAR_PITCH_MAX" :default="0" :format="fmtSemisJitter" color="accent" :class="{ dim: !s.grainVariation || s.grainMode !== 'cloud' }" />
+          <Knob v-model="s.grainVarVol" label="V.VOL" :max="VAR_VOL_MAX" curve="pow2" :default="0" :format="fmtFix1" color="accent" :class="{ dim: !s.grainVariation }" />
+          <Knob v-model="s.grainDetune" label="DETUNE" :max="DETUNE_MAX" curve="pow4" :default="0" :format="fmtSemisSpread" color="accent" />
+          <Knob v-model="s.grainNoteRnd" label="N<RND" :max="NOTE_RND_MAX" curve="pow2" :default="0" :format="fmtSemisJitter" color="accent" />
         </div>
       </section>
 
@@ -605,6 +707,58 @@ function doReset() {
   line-height: 13px;
   color: #111;
   background: var(--c-primary);
+}
+.cap {
+  align-items: center;
+  gap: 6px;
+  min-height: 52px;
+}
+.cap-meter {
+  width: 64px;
+  height: 8px;
+  border-radius: 2px;
+  background: #0a0a0a;
+  border: 1px solid #000;
+  overflow: hidden;
+}
+.cap-meter i {
+  display: block;
+  height: 100%;
+  background: var(--c-secondary);
+  box-shadow: 0 0 6px var(--c-secondary);
+  transition: width 60ms linear;
+}
+.cap-err {
+  margin: 4px 0 0;
+  font-family: 'VT323', monospace;
+  font-size: 13px;
+  color: var(--c-error, #f55);
+}
+.type-menu {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 4px;
+  padding: 6px;
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--panel-hi), var(--panel-lo));
+  border: 1px solid #000;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+}
+.type-menu button {
+  padding: 2px 8px;
+  border-radius: 2px;
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  color: var(--ink-mute);
+  background: #111;
+  border: 1px solid #000;
+}
+.type-menu button.g3 {
+  color: var(--text);
+}
+.type-menu button.on {
+  color: var(--c-secondary);
+  text-shadow: 0 0 4px color-mix(in srgb, var(--c-secondary) 70%, transparent);
 }
 .preset-menu {
   width: 260px;

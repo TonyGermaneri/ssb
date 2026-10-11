@@ -1,27 +1,7 @@
-import type { LfoShape, ModDest, ModRoute, ModSource } from '../types'
+import type { ModDest, ModRoute, ModSource } from '../types'
 import { MOD_DESTS } from '../types'
 
-/**
- * LFO value (-1..1) at `phase` cycles since start, matching OscillatorNode's
- * waveforms (sine/triangle/sawtooth start at 0 rising, square starts high).
- */
-export function lfoValue(shape: LfoShape, phase: number): number {
-  const p = phase - Math.floor(phase)
-  switch (shape) {
-    case 'sine':
-      return Math.sin(2 * Math.PI * p)
-    case 'triangle':
-      return p < 0.25 ? 4 * p : p < 0.75 ? 2 - 4 * p : 4 * p - 4
-    case 'square':
-      return p < 0.5 ? 1 : -1
-    case 'sawtooth':
-      return p < 0.5 ? 2 * p : 2 * p - 2
-    case 'rampDown':
-      return p < 0.5 ? -2 * p : 2 - 2 * p
-    default:
-      return 0 // random shapes are stateful: see LfoSource
-  }
-}
+export { lfoValue } from '../audio/lfoMath'
 
 /** Sum of routes into a JS-evaluated destination, in destination units. */
 export function modSum(routes: ModRoute[], dest: ModDest, valueOf: (src: ModSource) => number): number {

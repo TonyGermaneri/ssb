@@ -25,6 +25,8 @@ export const fmtCents = (v: number) => `${v > 0 ? '+' : ''}${Math.round(v)}c`
 export const fmtRatio = (v: number) => `×${v.toFixed(2)}`
 export const fmtOct = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(1)}oc`
 export const fmtSemisJitter = (v: number) => (v <= 0 ? 'OFF' : `±${v.toFixed(1)}`)
+/** A ± spread of semitones, fine near zero (DETUNE chorus is a fraction of one). */
+export const fmtSemisSpread = (v: number) => (v <= 0 ? 'OFF' : `±${v < 1 ? v.toFixed(2) : v.toFixed(1)}`)
 export const fmtScale = (v: number) => `${Math.round(v * 100)}%`
 export const fmtRate = (v: number) => `${v < 1 ? v.toFixed(2) : v.toFixed(1)}Hz`
 /** GRAIN: Hz, as Granulator II shows it; below 1 Hz, how long each grain lasts */
@@ -44,3 +46,5 @@ export const fmtWholePct = (v: number) => `${Math.round(v)}%`
 export const fmtFinePct = (v: number) => (v < 0.01 ? (v * 100).toFixed(2) : v < 0.1 ? (v * 100).toFixed(1) : `${Math.round(v * 100)}`)
 export const fmtFix2 = (v: number) => v.toFixed(2)
 export const fmtFix1 = (v: number) => v.toFixed(1)
+/** dB an octave (K>VOL) */
+export const fmtDbOct = (v: number) => (Math.abs(v) < 0.05 ? '0dB' : `${v > 0 ? '+' : ''}${v.toFixed(1)}dB`)

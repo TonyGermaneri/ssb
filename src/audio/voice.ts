@@ -1,7 +1,9 @@
 import {
-  lfoHz, MOD_DESTS, type ModDest, type ModMatrix, type ModSource, type SoundSettings, type ZoneCcMod, type ZoneLfo,
+  MOD_DESTS, type ModDest, type ModMatrix, type ModSource, type SoundSettings, type ZoneCcMod, type ZoneLfo,
 } from '../types'
-import { LfoSource } from './lfo'
+import { lfoConfig, LfoSource } from './lfo'
+import { isSvfType, type SvfType } from './svfMath'
+import type { ToSvf } from './grains.worklet'
 import { scheduleAttack, scheduleRelease, type Env } from './envelope'
 import { getImpulse } from './impulse'
 import { grainNode, grainsLoaded, loadGrains, type GrainNode } from './grains'
@@ -87,8 +89,25 @@ type Scope = 'global' | 'pad'
 const LFO_INDEX = { lfo1: 0, lfo2: 1 } as const
 /** matrix units → AudioParam units */
 const PARAM_UNIT: Partial<Record<ModDest, number>> = { pitch: 100, cutoff: 1200 }
-const BIPOLAR = new Set<ModSource>(['lfo1', 'lfo2', 'bend', 'vco1', 'vco2', 'vco3'])
+const BIPOLAR = new Set<ModSource>(['lfo1', 'lfo2', 'bend', 'random', 'vco1', 'vco2', 'vco3'])
 const VCO_INDEX = { vco1: 0, vco2: 1, vco3: 2 } as const
+/** KEY on an envelope: its times ÷ 2^(key × semis / 12), so higher notes run it faster (Granulator III's Key > Env) */
+const keyEnv = (e: Env, key: number | undefined, semis: number): Env => {
+  if (!key) return e
+  const kr = Math.pow(2, (key * semis) / 12)
+  return { ...e, a: e.a / kr, d: e.d / kr, r: e.r / kr }
+}
+/** Granulator III's filter types as the nearest biquad, for the moment before its worklet has loaded */
+const NEAREST_BIQUAD: Record<SvfType, BiquadFilterType> = {
+  lp12: 'lowpass', lp24: 'lowpass', lphp: 'bandpass', lpnotch: 'lowpass', notch: 'notch', notch2: 'notch', hpnotch: 'highpass',
+  hp12: 'highpass', hp24: 'highpass',
+}
+/** the grain processor's parameter for each grain destination (its right side's is this + 'R') */
+const GRAIN_PARAM: Partial<Record<ModDest, string>> = {
+  grainPos: 'posMod', grainSize: 'freqMod', grainSkew: 'skewMod', grainVar: 'varMod', grainDetune: 'detuneMod', grainScan: 'scanMod',
+}
+/** the pad LFO each LFO destination drives */
+const LFO_DEST: Partial<Record<ModDest, 'lfo1' | 'lfo2'>> = { lfo1Rate: 'lfo1', lfo1Amt: 'lfo1', lfo2Rate: 'lfo2', lfo2Amt: 'lfo2' }
 
 const zoneBounds = (z: ZonePlay, duration: number): ClipBounds => {
   const clipIn = Math.min(Math.max(0, z.start), Math.max(0, duration - 0.005))
@@ -134,9 +153,19 @@ export class Voice {
   private ampEnv: Env
   private filtEnv: Env
   private filtPeak: number // cents
+  /** semitones from ROOT (the note, or a legato slide's target) */
+  private keySemis = 0
 
   private env: GainNode
   private filter: BiquadFilterNode
+  /** Granulator III's filter (svfMath.ts), before the biquad (then a pass-through) while one of its types is chosen */
+  private svf?: AudioWorkletNode
+  /** every cutoff modulation but the matrix's (filter envelope, F.KEY, CCs, SFZ LFOs), cents, into whichever filter */
+  private cutBus: GainNode
+  /** the filter envelope (fenvSrc) × its AMT */
+  private fenvCut: GainNode
+  /** F.KEY: KEY × 1200 × it */
+  private keyCut: GainNode
   private lo: BiquadFilterNode
   private mid: BiquadFilterNode
   private hi: BiquadFilterNode
@@ -157,6 +186,12 @@ export class Voice {
   private velSrc: ConstantSourceNode
   private noteBendSrc: ConstantSourceNode
   private timbreSrc: ConstantSourceNode
+  /** the filter's ADSR, 0..1: FILTER ENV in the matrix */
+  private fenvSrc: ConstantSourceNode
+  /** octaves from ROOT: KEY in the matrix */
+  private keySrc: ConstantSourceNode
+  /** -1..1, drawn for the note: RANDOM in the matrix */
+  private rndSrc: ConstantSourceNode
   private timbreValue = 0
   private zoneLfoNodes: OscillatorNode[] = []
   private zoneLfoGains: GainNode[] = []
@@ -166,6 +201,8 @@ export class Voice {
   private ccPan = 0
   private ccRes = 0
   private padLfos: (LfoSource | null)[] = [null, null]
+  /** RATIO mode: KEY into a pad LFO's rate, 12 semitones an octave */
+  private lfoKeyLinks: (GainNode | null)[] = [null, null]
   private links: { from: AudioNode; gain: GainNode }[] = []
   private routeSig = ''
   private atValue = 0
@@ -194,6 +231,10 @@ export class Voice {
     const s = settings
     this.env = c.createGain()
     this.filter = c.createBiquadFilter()
+    this.cutBus = c.createGain()
+    this.fenvCut = c.createGain()
+    this.keyCut = c.createGain()
+    this.cutBus.connect(this.filter.detune)
     this.lo = c.createBiquadFilter()
     this.lo.type = 'lowshelf'
     this.lo.frequency.value = 120
@@ -220,6 +261,14 @@ export class Voice {
     this.velSrc = c.createConstantSource()
     this.noteBendSrc = c.createConstantSource()
     this.timbreSrc = c.createConstantSource()
+    this.fenvSrc = c.createConstantSource()
+    this.keySrc = c.createConstantSource()
+    this.rndSrc = c.createConstantSource()
+    this.rndSrc.offset.value = 2 * Math.random() - 1
+    this.fenvCut.gain.value = 0
+    this.keyCut.gain.value = 0
+    this.fenvSrc.connect(this.fenvCut).connect(this.cutBus)
+    this.keySrc.connect(this.keyCut).connect(this.cutBus)
 
     this.env.connect(this.filter).connect(this.lo).connect(this.mid).connect(this.hi)
     this.hi.connect(this.dry).connect(this.out)
@@ -248,13 +297,14 @@ export class Voice {
     this.kRate = knobRate(s)
     this.speed = s.speed
     // an SFZ region's own envelope wins over the pad's ADSR, field by field
-    this.ampEnv = { a: s.attack, d: s.decay, s: s.sustain, r: s.release, ...this.zone?.env }
-    this.filtEnv = { a: s.fAttack, d: s.fDecay, s: s.fSustain, r: s.fRelease }
+    this.keySemis = (opts.note ?? 0) + (opts.detune ?? 0) / 100
+    this.ampEnv = keyEnv({ a: s.attack, d: s.decay, s: s.sustain, r: s.release, ...this.zone?.env }, s.envKey, this.keySemis)
+    this.filtEnv = keyEnv({ a: s.fAttack, d: s.fDecay, s: s.fSustain, r: s.fRelease }, s.fEnvKey, this.keySemis)
     this.filtPeak = s.fEnvAmount * 1200
     // an SFZ filter EG replaces the pad's filter envelope
     const zf = this.zone?.filter?.env
     if (zf) {
-      this.filtEnv = { a: zf.a, d: zf.d, s: zf.s, r: zf.r }
+      this.filtEnv = keyEnv({ a: zf.a, d: zf.d, s: zf.s, r: zf.r }, s.fEnvKey, this.keySemis)
       this.filtPeak = zf.depth
     }
 
@@ -262,18 +312,22 @@ export class Voice {
     this.apply(true)
 
     this.t0 = c.currentTime + 0.005
-    for (const k of [this.atSrc, this.bendSrc, this.velSrc, this.noteBendSrc, this.timbreSrc]) k.start(this.t0)
+    for (const k of [this.atSrc, this.bendSrc, this.velSrc, this.noteBendSrc, this.timbreSrc, this.fenvSrc, this.keySrc, this.rndSrc]) k.start(this.t0)
     this.wireRoutes()
     this.startZoneLfos()
     this.applyCC()
     const detune = (opts.detune ?? 0) / 100
     const note = (opts.note ?? 0) + detune
     this.glide = { from: (opts.glideFrom ?? opts.note ?? 0) + detune, to: note, start: this.t0, dur: opts.glideTime ?? 0 }
+    this.keySrc.offset.setValueAtTime(this.glide.from / 12, this.t0)
+    if (this.glide.dur > 0) this.keySrc.offset.linearRampToValueAtTime(note / 12, this.t0 + this.glide.dur)
+    else this.keySrc.offset.setValueAtTime(note / 12, this.t0)
     this.endTime = this.t0 + (this.zone ? this.zoneSeconds(note) : playSeconds(s, this.clip.clipLen, this.kind === 'cloud', note))
 
     if (this.kind === 'sample') this.startSource()
     scheduleAttack(this.env.gain, this.t0, this.ampEnv, 1)
-    if (this.filtPeak) scheduleAttack(this.filter.detune, this.t0, this.filtEnv, this.filtPeak)
+    this.fenvCut.gain.value = this.filtPeak
+    scheduleAttack(this.fenvSrc.offset, this.t0, this.filtEnv, 1)
     if (Number.isFinite(this.endTime)) this.releaseAt(Math.max(this.t0, this.endTime - this.ampEnv.r))
     if (this.kind !== 'sample') this.startGrains()
   }
@@ -358,6 +412,11 @@ export class Voice {
     const now = this.ctx.currentTime
     const cur = this.semisAt(now)
     this.glide = { from: cur, to: semis, start: now, dur }
+    this.keySemis = semis
+    this.keySrc.offset.cancelScheduledValues(now)
+    this.keySrc.offset.setValueAtTime(cur / 12, now)
+    if (dur > 0) this.keySrc.offset.linearRampToValueAtTime(semis / 12, now + dur)
+    else this.keySrc.offset.setValueAtTime(semis / 12, now)
     this.midiNote = midiNote
     if (this.src) {
       const p = this.src.playbackRate
@@ -367,6 +426,7 @@ export class Voice {
       else p.setValueAtTime(this.tapeRate(semis), now)
     }
     this.regrain()
+    if (this.settings.volKey) this.apply() // K>VOL follows the new note
   }
 
   // ── grains ───────────────────────────────────────────────────────────────
@@ -401,6 +461,19 @@ export class Voice {
       scanTime: s.grainScanTime,
       scanDist: s.grainScanDist,
       scanCurve: s.grainScanCurve,
+      scanLoop: s.grainScanLoop,
+      scanKey: s.grainScanKey,
+      mode: s.grainMode,
+      skew: s.grainSkew,
+      density: s.grainDensity,
+      reverse: s.grainReverse,
+      variation: s.grainVariation,
+      varPos: s.grainVarPos,
+      varSize: s.grainVarSize,
+      varPitch: s.grainVarPitch,
+      varVol: s.grainVarVol,
+      detune: s.grainDetune,
+      noteRnd: s.grainNoteRnd,
       speed: s.speed,
       kRate: this.kRate,
       glide: { ...this.glide },
@@ -438,6 +511,46 @@ export class Voice {
     this.grainVoice?.configure(this.grainConfig())
   }
 
+  // ── Granulator III's filter ──────────────────────────────────────────────
+  /** Put Granulator III's filter in (as `type`) or take it out (null); rewires the routes when that changes. */
+  private setSvf(type: SvfType | null): AudioWorkletNode | undefined {
+    const send = (m: ToSvf) => this.svf?.port.postMessage(m)
+    if (type && this.svf) {
+      if (type !== this.svfType) send({ type: 'set', svf: type })
+      this.svfType = type
+      return this.svf
+    }
+    if (type) {
+      if (!grainsLoaded()) return undefined
+      const node = new AudioWorkletNode(this.ctx, 'ssb-svf', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [2],
+        channelCount: 2,
+        channelCountMode: 'explicit',
+        channelInterpretation: 'speakers',
+        processorOptions: { svf: type },
+      })
+      this.env.disconnect(this.filter)
+      this.env.connect(node).connect(this.filter)
+      this.cutBus.connect(node.parameters.get('detune')!)
+      this.cutBus.connect(node.parameters.get('detuneR')!)
+      this.svf = node
+      this.svfType = type
+    } else if (this.svf) {
+      send({ type: 'stop' })
+      this.env.disconnect(this.svf)
+      this.svf.disconnect()
+      this.cutBus.disconnect(this.svf.parameters.get('detune')!)
+      this.cutBus.disconnect(this.svf.parameters.get('detuneR')!)
+      this.env.connect(this.filter)
+      this.svf = undefined
+    } else return undefined
+    if (this.routeSig) this.wireRoutes()
+    return this.svf
+  }
+  private svfType?: SvfType
+
   // ── live knobs ───────────────────────────────────────────────────────────
   /** Push current knob values into the graph. */
   apply(immediate = false) {
@@ -445,7 +558,9 @@ export class Voice {
     const s = this.settings
     const now = this.ctx.currentTime
     const set = (p: AudioParam, v: number) => (immediate ? (p.value = v) : p.setTargetAtTime(v, now, RAMP))
-    set(this.out.gain, s.volume * (1 - s.velAmount + s.velAmount * this.velocity) * (this.zone?.gain ?? 1) * this.ccGain * this.level)
+    // K>VOL: dB an octave from ROOT
+    const keyGain = Math.pow(10, ((s.volKey ?? 0) * this.keySemis) / 12 / 20)
+    set(this.out.gain, s.volume * keyGain * (1 - s.velAmount + s.velAmount * this.velocity) * (this.zone?.gain ?? 1) * this.ccGain * this.level)
     set(this.panner.pan, Math.min(1, Math.max(-1, s.pan + (this.zone?.pan ?? 0) + this.ccPan)))
     const zf = this.zone?.filter
     if (zf) {
@@ -454,10 +569,22 @@ export class Voice {
       set(this.filter.frequency, Math.min(20000, Math.max(10, zf.freq)))
       set(this.filter.Q, Math.max(0.1, 0.707 * Math.pow(10, (zf.resonance + this.ccRes) / 20)))
     } else {
-      this.filter.type = s.filterType
-      set(this.filter.frequency, s.cutoff)
-      set(this.filter.Q, Math.max(0.1, s.resonance * Math.pow(10, this.ccRes / 20)))
+      const q = Math.max(0.1, s.resonance * Math.pow(10, this.ccRes / 20))
+      const svf = isSvfType(s.filterType) ? this.setSvf(s.filterType) : this.setSvf(null)
+      if (svf) {
+        this.filter.type = 'peaking' // at 0 dB: passes everything as it is
+        this.filter.gain.value = 0
+        set(svf.parameters.get('freq')!, s.cutoff)
+        set(svf.parameters.get('q')!, q)
+        set(svf.parameters.get('width')!, s.filterWidth ?? -12)
+      } else {
+        // (Granulator III's types before the worklet has loaded: the nearest biquad)
+        this.filter.type = isSvfType(s.filterType) ? NEAREST_BIQUAD[s.filterType] : (s.filterType as BiquadFilterType)
+        set(this.filter.frequency, s.cutoff)
+        set(this.filter.Q, q)
+      }
     }
+    set(this.keyCut.gain, zf ? 0 : 1200 * (s.filterKey ?? 0))
     set(this.lo.gain, s.eqLow)
     set(this.mid.gain, s.eqMid)
     set(this.hi.gain, s.eqHigh)
@@ -502,22 +629,54 @@ export class Voice {
     ]
   }
 
-  /** Pad LFOs are created on first use and restart with every note. */
+  private lfoCfg(i: 0 | 1) {
+    return i ? this.settings.mod.lfo2 : this.settings.mod.lfo1
+  }
+
+  /** Pad LFOs are created on first use and start with every note at their PHASE (FREE: where one running all along
+   *  would be). */
   private padLfo(i: 0 | 1): LfoSource {
     let lfo = this.padLfos[i]
     if (!lfo) {
-      const cfg = i ? this.settings.mod.lfo2 : this.settings.mod.lfo1
-      lfo = new LfoSource(this.ctx, cfg.shape, lfoHz(cfg, this.hub.bpm()), Math.max(this.t0, this.ctx.currentTime))
+      const cfg = this.lfoCfg(i)
+      const phase = cfg.phase < 0 ? null : cfg.phase / 360
+      lfo = new LfoSource(this.ctx, lfoConfig(cfg, this.hub.bpm()), Math.max(this.t0, this.ctx.currentTime), phase)
       this.padLfos[i] = lfo
+      this.followNote(i)
     }
     return lfo
   }
 
+  /** RATIO mode: a pad LFO follows the note, KEY (gliding with it) into its rate at 12 semitones an octave. */
+  private followNote(i: 0 | 1) {
+    const lfo = this.padLfos[i]
+    if (!lfo) return
+    const want = this.lfoCfg(i).ratioMode
+    const link = this.lfoKeyLinks[i]
+    if (want && !link) {
+      const g = this.ctx.createGain()
+      g.gain.value = 12
+      this.keySrc.connect(g).connect(lfo.rateIn)
+      this.lfoKeyLinks[i] = g
+    } else if (!want && link) {
+      this.keySrc.disconnect(link)
+      link.disconnect()
+      this.lfoKeyLinks[i] = null
+    }
+  }
+
   private updatePadLfos() {
-    this.padLfos.forEach((lfo, i) => {
-      const cfg = i ? this.settings.mod.lfo2 : this.settings.mod.lfo1
-      lfo?.set(cfg.shape, lfoHz(cfg, this.hub.bpm()))
-    })
+    for (const i of [0, 1] as const) {
+      this.padLfos[i]?.set(lfoConfig(this.lfoCfg(i), this.hub.bpm()))
+      this.followNote(i)
+    }
+  }
+
+  /** A source's right side: an LFO's own (STEREO), anything else the same as its left. */
+  private sourceNodeR(scope: Scope, src: ModSource): AudioNode {
+    if (src === 'lfo1' || src === 'lfo2')
+      return scope === 'global' ? this.hub.globalLfos[LFO_INDEX[src]].outputR : this.padLfo(LFO_INDEX[src]).outputR
+    return this.sourceNode(scope, src)
   }
 
   private sourceNode(scope: Scope, src: ModSource): AudioNode {
@@ -535,6 +694,12 @@ export class Voice {
         return this.bendSrc
       case 'timbre':
         return this.timbreSrc
+      case 'fenv':
+        return this.fenvSrc
+      case 'key':
+        return this.keySrc
+      case 'random':
+        return this.rndSrc
       case 'vco1':
       case 'vco2':
       case 'vco3':
@@ -542,14 +707,21 @@ export class Voice {
     }
   }
 
+  /** A grain destination's right side (each side reads its own; an LFO's STEREO plays them apart). */
+  private destTargetR(dest: ModDest): AudioParam | null {
+    if (dest === 'cutoff') return this.svf?.parameters.get('detuneR') ?? null
+    const p = GRAIN_PARAM[dest]
+    return (p && this.grainVoice?.node.parameters.get(p + 'R')) || null
+  }
+
   private destTarget(dest: ModDest): AudioNode | AudioParam | null {
     switch (dest) {
       case 'pitch':
         return this.pitchBus
       case 'cutoff':
-        return this.filter.detune
+        return this.svf?.parameters.get('detune') ?? this.filter.detune
       case 'resonance':
-        return this.filter.Q
+        return this.svf?.parameters.get('q') ?? this.filter.Q
       case 'volume':
         return this.trem.gain
       case 'pan':
@@ -559,9 +731,20 @@ export class Voice {
       case 'reverbMix':
         return this.reverbWet.gain
       case 'grainPos':
-        return this.grainVoice?.node.parameters.get('posMod') ?? null
       case 'grainSize':
-        return this.grainVoice?.node.parameters.get('freqMod') ?? null
+      case 'grainSkew':
+      case 'grainVar':
+      case 'grainDetune':
+      case 'grainScan':
+        return this.grainVoice?.node.parameters.get(GRAIN_PARAM[dest]!) ?? null
+      case 'lfo1Rate':
+        return this.padLfo(0).rateIn
+      case 'lfo1Amt':
+        return this.padLfo(0).depthIn
+      case 'lfo2Rate':
+        return this.padLfo(1).rateIn
+      case 'lfo2Amt':
+        return this.padLfo(1).depthIn
     }
   }
 
@@ -578,21 +761,34 @@ export class Voice {
     // Volume is a multiplier, so two-sided sources (LFOs, bend) are mapped to 0..1 for it:
     // gain = 1 + amount·(x+1)/2. Negative amounts give true tremolo and never boost.
     let tremBase = 1
+    // the pad's LFOs into each other's RATE / AMOUNT: one way only (both ways would be a loop with no delay)
+    const lfoEdges = new Set<string>()
     for (const [scope, m] of this.scopes()) {
       for (const r of m.routes) {
+        if (!r.amount) continue
+        const into = LFO_DEST[r.dest]
+        if (into) {
+          if (scope !== 'pad' || r.source === into) continue
+          if (r.source === 'lfo1' || r.source === 'lfo2') {
+            if (lfoEdges.has(`${into}>${r.source}`)) continue
+            lfoEdges.add(`${r.source}>${into}`)
+          }
+        }
         const to = this.destTarget(r.dest)
-        if (!to || !r.amount) continue
+        if (!to) continue
         let gain = r.amount * MOD_DESTS[r.dest].scale * (PARAM_UNIT[r.dest] ?? 1)
         if (r.dest === 'volume' && BIPOLAR.has(r.source)) {
           gain /= 2
           tremBase += gain
         }
         wanted.push({ from: this.sourceNode(scope, r.source), to, gain, key: `${scope}:${r.source}>${r.dest}` })
+        const toR = this.destTargetR(r.dest)
+        if (toR) wanted.push({ from: this.sourceNodeR(scope, r.source), to: toR, gain, key: `${scope}:${r.source}>${r.dest}:R` })
       }
     }
     const now = this.ctx.currentTime
     this.trem.gain.setTargetAtTime(tremBase, now, RAMP)
-    const sig = wanted.map((w) => w.key).join('|')
+    const sig = (this.svf ? 'svf|' : 'bq|') + wanted.map((w) => w.key).join('|')
     if (sig === this.routeSig) {
       wanted.forEach((w, i) => this.links[i].gain.gain.setTargetAtTime(w.gain, now, RAMP))
       return
@@ -659,7 +855,7 @@ export class Voice {
           break
         case 'cutoff':
           g.gain.value = sign * l.depth // cents
-          osc.connect(g).connect(this.filter.detune)
+          osc.connect(g).connect(this.cutBus)
           break
         case 'volume':
           g.gain.value = sign * (Math.pow(10, Math.abs(l.depth) / 20) - 1) // ±dB → gain swing
@@ -712,7 +908,7 @@ export class Voice {
     if (mods.some((m) => m.target === 'cutoff')) {
       if (!this.ccCut) {
         this.ccCut = this.ctx.createConstantSource()
-        this.ccCut.connect(this.filter.detune)
+        this.ccCut.connect(this.cutBus)
         this.ccCut.start()
       }
       this.ccCut.offset.setTargetAtTime(cut, now, RAMP)
@@ -724,7 +920,7 @@ export class Voice {
   private releaseAt(tr: number) {
     this.releaseTime = tr
     const end = scheduleRelease(this.env.gain, this.t0, tr, this.ampEnv, 1)
-    if (this.filtPeak) scheduleRelease(this.filter.detune, this.t0, tr, this.filtEnv, this.filtPeak)
+    scheduleRelease(this.fenvSrc.offset, this.t0, tr, this.filtEnv, 1)
     this.endTime = Math.min(this.endTime, end)
     this.src?.stop(this.endTime)
     this.regrain()
@@ -777,15 +973,18 @@ export class Voice {
     clearTimeout(this.disposeTimer)
     if (this.src) this.src.onended = null
     this.unwire()
-    const consts = [this.atSrc, this.bendSrc, this.velSrc, this.noteBendSrc, this.timbreSrc]
+    const consts = [this.atSrc, this.bendSrc, this.velSrc, this.noteBendSrc, this.timbreSrc, this.fenvSrc, this.keySrc, this.rndSrc]
     for (const n of consts) n.stop()
     for (const n of this.padLfos) n?.stop()
+    for (const n of this.lfoKeyLinks) n?.disconnect()
     for (const n of [...this.zoneLfoNodes, this.ccPitch, this.ccCut]) {
       n?.stop()
       n?.disconnect()
     }
     for (const g of this.zoneLfoGains) g.disconnect()
     for (const n of [this.pitchBus, this.trem, ...consts]) n.disconnect()
+    this.svf?.port.postMessage({ type: 'stop' } satisfies ToSvf)
+    for (const n of [this.svf, this.cutBus, this.fenvCut, this.keyCut]) n?.disconnect()
     for (const n of [this.env, this.filter, this.lo, this.mid, this.hi, this.dry, this.delay, this.feedback,
       this.delayWet, this.convolver, this.reverbWet, this.out, this.panner, this.kill]) n.disconnect()
     this.src?.disconnect()

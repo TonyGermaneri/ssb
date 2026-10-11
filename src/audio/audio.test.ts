@@ -107,8 +107,10 @@ describe('migrateSettings', () => {
     expect(cloud.grainWindow).toBe(0)
     expect(cloud.grainStereo).toBe(0)
     expect(cloud.grainScanOn).toBe(false)
-    for (const k of ['grainSize', 'grainDensity', 'grainWidth', 'grainScatter', 'grainKey', 'grainScan', 'grainShape', 'grainSpread', 'grainStreams'])
+    for (const k of ['grainSize', 'grainWidth', 'grainScatter', 'grainKey', 'grainScan', 'grainShape', 'grainSpread', 'grainStreams'])
       expect(k in cloud).toBe(false)
+    // DENSITY is CLOUD's now: the old one's value doesn't carry over
+    expect(cloud.grainDensity).toBe(GRAIN_DEFAULTS.grainDensity)
     // lengths beyond GRAIN's range land on its ends
     expect(migrateSettings(old({ grain: true, grainSize: 1 })).grainFreq).toBe(150)
     expect(migrateSettings(old({ grain: true, grainSize: 9000 })).grainFreq).toBeCloseTo(1 / 9) // a 9 s grain stays 9 s

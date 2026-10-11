@@ -138,14 +138,24 @@ function onImport(e: Event) {
         <v-icon size="16" icon="mdi-piano" />
       </button>
       <div class="stack">
-        <button
-          class="chip"
-          :class="{ on: board.master.mono }"
-          title="MONO: one voice, legato glide between held notes. POLY: every note its own voice."
-          @click="board.master.mono = !board.master.mono"
-        >
-          {{ board.master.mono ? 'MONO' : 'POLY' }}
-        </button>
+        <div class="pair">
+          <button
+            class="chip"
+            :class="{ on: board.master.mono }"
+            title="MONO: one voice, legato glide between held notes. POLY: every note its own voice."
+            @click="board.master.mono = !board.master.mono"
+          >
+            {{ board.master.mono ? 'MONO' : 'POLY' }}
+          </button>
+          <button
+            class="chip"
+            :class="{ on: board.master.hold }"
+            title="HOLD: released keys keep sounding; the next note played with no key down lets them go (notes added while keys are down join in)"
+            @click="board.master.hold = !board.master.hold"
+          >
+            HLD
+          </button>
+        </div>
         <button
           class="chip"
           :class="{ on: board.master.mpe }"
@@ -494,6 +504,10 @@ function onImport(e: Event) {
 .stack {
   display: flex;
   flex-direction: column;
+  gap: 2px;
+}
+.pair {
+  display: flex;
   gap: 2px;
 }
 .chip {

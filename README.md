@@ -91,20 +91,33 @@ rows on screen exist in the DOM; grid mode (canvas-datagrid) handles very large 
 
 ### Per-pad panel
 
-PLAY (vol, pan, repeat, choke) · TUNE (pitch, fine, speed + TAPE/STRETCH) · KEYS (root note, velocity amount,
-bend range) · CLIP · ADSR · FILTER (LP/HP/BP) ·
-FILTER ADSR · EQ · GRAIN (Granulator II: grain rate and key tracking, pos, spray, scan, window, spread, random pitch / rate, flux / void, FM) · DELAY · REVERB ·
+PLAY (vol, pan, level by key, repeat, choke) · TUNE (pitch, fine, speed + TAPE/STRETCH) · KEYS (root note, velocity
+amount, bend range) · CLIP · ADSR (+ key scaling) · FILTER (LP/HP/BP, and Granulator III's nine types with
+WIDTH; key tracking) · FILTER ADSR (+ key scaling) · EQ · GRAIN (Granulator II: grain rate and key tracking, pos, spray, scan, window, spread, random pitch / rate, flux / void, FM;
+Granulator III: CLASSIC / LOOP / CLOUD modes, skew, density, reverse, variation, detune, per-note random pitch) · DELAY · REVERB ·
 MODE (STOP / RESTART / STACK / HOLD) · MIDI LEARN · MATRIX · PRESETS (save / load / copy / paste) · RESET ·
 duplicate · delete.
 
 - **RPT**: `1` = once, `N` = N times, `0` = loop forever.
 - **TAPE**: pitch and speed both change playback rate, like a sampler. **STRETCH**: granular; speed changes length, pitch stays put.
 - STOP re-press, HOLD release and MIDI note-off run the ADSR release and let FX tails ring. PANIC / choke / RESTART cut instantly.
+- **K>VOL**: level by key, dB an octave from ROOT (±3). **KEY** on the ADSR and the FILTER ADSR: higher notes run them
+  faster (at 100 %, twice as fast an octave up), as Granulator III's Key > Env.
+- **FILTER**'s type menu has SSB's LP / HP / BP (Web Audio's biquads) and **Granulator III's filter**: two 12 dB
+  state-variable stages, as LP 12, LP 24, LP+HP, LP+NO, NOTCH, NO+NO, HP+NO, HP 12 and HP 24. **WIDTH** puts the second
+  stage that many semitones from the first (LP+HP, LP+NO, NO+NO, HP+NO); its NOTCH is Granulator III's own, a true notch
+  at RES 1 that takes the lows down a little below that and turns into a resonant bump above it. Its left and right
+  sides follow an LFO's STEREO apart. **KEY**: the cutoff follows the note from ROOT (100 %: an octave an octave).
 
 ### Modulation matrix
 
-Sources: LFO 1, LFO 2, MOD WHEEL (CC1), AFTERTOUCH (poly + channel pressure), VELOCITY, PITCH BEND, TIMBRE (CC74).
-Destinations: pitch, cutoff, resonance, volume, pan, grain pos, grain size, delay mix, reverb mix.
+Sources: LFO 1, LFO 2, MOD WHEEL (CC1), AFTERTOUCH (poly + channel pressure), VELOCITY, KEY (octaves from the pad's
+ROOT, so KEY → PITCH at 100 % adds an octave per octave), RANDOM (−1…1, drawn for each note), PITCH BEND, TIMBRE (CC74),
+FILTER ENV (the pad's filter ADSR, 0–1, whatever its AMOUNT: a second envelope), VCO 1–3.
+Destinations: pitch, cutoff, resonance, volume, pan, grain pos, grain size, skew / xfade, variation, detune, scan speed
+(× 1 + the route: up to three times as fast, and backwards below −100 %), the pad's LFO 1 / 2 RATE (±36 semitones) and
+AMOUNT (added to its AMOUNT knob; a pad matrix only — an LFO doesn't drive itself, and two LFOs only one way),
+delay mix, reverb mix.
 The **GLOBAL** matrix (header MATRIX button) applies to every sound and its LFOs run freely; each pad's matrix
 (panel MATRIX button) applies to that pad and its LFOs restart per note. Pitch bend always bends pitch by the
 pad's BEND range. Negative volume modulation from an LFO is a tremolo that never boosts.
@@ -113,8 +126,16 @@ pad's BEND range. Negative volume modulation from an LFO is a tremolo that never
 
 LFOs can **SYNC** to note divisions (4 bars … 1/32, dotted, triplets) and the global delay has a **SYNC** switch.
 Tempo comes from the **BPM** knob (INT) or incoming **MIDI clock** (EXT); MIDI Start restarts the global LFOs.
-LFO shapes: sine, triangle, square, saw up, saw down, sample & hold, smooth random. **SUS** / MIDI CC64 is a
-sustain pedal for keyboard play and HOLD pads.
+LFO shapes: sine, triangle, square, saw up, saw down, sample & hold, smooth random, and Granulator III's **RAND**
+(random steps four times a cycle, glided). **SUS** / MIDI CC64 is a sustain pedal for keyboard play and HOLD pads.
+
+Granulator III's LFO additions: **HZ / SYNC / RATIO** (RATIO runs it at a multiple of the note's frequency, from
+middle C at the pad's ROOT; it is audio rate, so try it on GRAIN POS or the cutoff), **AMOUNT**, **STEREO** (0–180°
+between its left and right: the grains' and Granulator III's filter's two sides each follow their own), **QUANT**
+(steps), and, for a pad's LFOs, the **PHASE** each note starts them at (0° / 90° / 180°, or FREE).
+
+**HLD** (header, by POLY / MONO) is Granulator III's latch for keyboard play: released keys keep sounding; the next
+note played with no key down lets the latched ones go, and notes added while keys are down join them.
 
 ### MIDI pad mapping
 
@@ -183,14 +204,36 @@ sample's tone stays put like a formant.
 - **FM** (switch) swings where the grains read with a sine at **FM HZ** (following the keys by **FM<KEY**), by up to
   ± **FM AMT** × 0.02 ms.
 
+**MODE** adds the engines of Robert Henke's **Granulator III**. **CLASSIC** is Granulator II's, as above. **LOOP** plays
+a segment one grain long, then the next from wherever POS (with SCAN, SPRAY and VARIATION) has got to: **XFADE**
+crossfades each into the next (0 cuts hard), **REVERSE** is the chance a segment plays backwards. **CLOUD** layers
+**DENSITY** grains a side (2–20, fixed when the note starts), the i-th 1 + √i grains long, so they start staggered and
+drift apart; CLOUD sums its grains, so more of them is louder.
+
+- **SKEW** leans CLASSIC's window: below 50 % a grain peaks at once and dies away, above it swells to an abrupt end.
+- **VARIATION** scales four random amounts, drawn per grain: **V.POS** starts it up to that many ms later (× VARIATION²),
+  **V.SIZE** changes its length by up to ± that many semitones, **V.PITCH** its pitch (CLOUD only), **V.VOL** its level
+  (from 1.75 × that many dB quieter to a quarter of it louder).
+- **DETUNE** pitches the left grains down and the right ones up; **N<RND** gives each note its own random pitch.
+- **S.LOOP** starts SCAN over at S.DIST instead of stopping; **S.KEY** makes it faster for higher notes (an octave up,
+  twice as fast).
+
 Everything random is off to start with, as in Granulator II: SPRAY and the random amounts are what turn short grains
-into noise. The mod matrix reaches GRAIN POS and GRAIN (in semitones, like Granulator II's Grain<LFO). Grains render
-sample by sample, an AudioWorklet in the page and the same code in the plugin's engine.
+into noise. The mod matrix reaches GRAIN POS and GRAIN (in semitones, like Granulator II's Grain<LFO), and SKEW / XFADE,
+VARIATION and DETUNE (Granulator III's SHAPE, VARIATION and SPREAD targets), each read as a grain starts. Grains
+render sample by sample, an AudioWorklet in the page and the same code in the plugin's engine.
 
 The waveform follows what you hear (the output's timestamp, not the scheduler's clock) and shows every playing
 instance in its own colour (hue by note, brightness by velocity) with a label: a playhead for tape / stretch / SFZ
 voices, and for clouds each grain over the part of the sample it plays, at its pan (left up, right down), as tall as
 it is loud, hue-shifted by its pitch, notched when reversed, fading out after it ends.
+
+Its **2D / ISO** switch (top right; the header's VCO scopes follow it) turns it **isometric**: the wave stands as a wall
+on a floor — a stereo sample's left at the back and its right at the front — the clip and the grain lie on the floor,
+grains stand where they play at their side's depth, and the playhead is a lit curtain across it. In either view, with
+GRAIN on, dragging edits the grain: the highlight is the stretch one grain plays from POS; drag its middle to move
+POS, its sides to set its length (GRAIN), or anywhere else to put it there. Shift-drag moves the clip (in 2D the clip
+markers' flags along the top still grab them too).
 
 ### Grid mode
 
@@ -231,7 +274,7 @@ included in exports.
 
 ### Header
 
-OUTPUT + vertical VU · PATCH (◀ selected ▶, PLAY, POLY/MONO, octave, GLIDE) · PERFORM (MOD, spring-loaded BEND, global MATRIX) ·
+OUTPUT + vertical VU · PATCH (◀ selected ▶, PLAY, POLY/MONO, HLD, octave, GLIDE) · PERFORM (MOD, spring-loaded BEND, global MATRIX) ·
 global CHORUS / DELAY / REVERB · TAGS filter · BOARD (pad SCALE, scanlines, undo, redo, add, MIDI, export, import). Wraps into rows on narrow windows.
 
 - **Select a patch** in the Patches tab, or with ◀ ▶ in the header.

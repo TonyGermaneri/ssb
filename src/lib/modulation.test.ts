@@ -88,7 +88,7 @@ describe('presets & migration', () => {
 })
 
 import { ClockTracker } from './midiClock'
-import { divisionBeats, lfoHz } from '../types'
+import { defaultMatrix, divisionBeats, lfoHz } from '../types'
 
 describe('tempo', () => {
   it('derives BPM from 24 ppqn clock', () => {
@@ -100,8 +100,11 @@ describe('tempo', () => {
   })
   it('syncs LFO rate to divisions', () => {
     expect(divisionBeats('1/8')).toBe(0.5)
-    expect(lfoHz({ shape: 'sine', rate: 3, sync: true, division: '1/4' }, 120)).toBe(2)
-    expect(lfoHz({ shape: 'sine', rate: 3, sync: false, division: '1/4' }, 120)).toBe(3)
+    const lfo = { ...defaultMatrix().lfo1, rate: 3, division: '1/4' }
+    expect(lfoHz({ ...lfo, sync: true }, 120)).toBe(2)
+    expect(lfoHz({ ...lfo, sync: false }, 120)).toBe(3)
+    // RATIO: × middle C, whatever SYNC says
+    expect(lfoHz({ ...lfo, sync: true, ratioMode: true, ratio: 2 }, 120)).toBeCloseTo(523.26)
   })
   it('parses realtime clock messages', () => {
     expect(parseMidi([0xf8])).toEqual({ type: 'clock' })
