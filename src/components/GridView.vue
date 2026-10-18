@@ -12,8 +12,12 @@ const board = useBoard()
 interface Row {
   [k: string]: unknown
   id: string
+  grip: string
   fav: string
   play: string
+  v1: string
+  v2: string
+  v3: string
   n: number
   key: string
   name: string
@@ -32,10 +36,18 @@ interface Row {
   mod: number
 }
 
+/** a row dragged by its grip carries the sound as the pads do: the rack's slots (and the header's VCOs) take it */
+const SOUND_TYPE = 'application/x-ssb-sound'
+
 const SCHEMA = [
   { name: 'id', hidden: true },
+  { name: 'grip', title: ' ', width: 26 }, // ⠿, drawn by DataGrid (a blank title would show the name)
   { name: 'fav', title: '♥', width: 34 },
   { name: 'play', title: '▶', width: 38 },
+  // the selected patch's VCO slots: lit where this sound is, a click puts it in or takes it out
+  { name: 'v1', title: '1', width: 30 },
+  { name: 'v2', title: '2', width: 30 },
+  { name: 'v3', title: '3', width: 30 },
   { name: 'n', title: '#', type: 'number', width: 44 },
   { name: 'key', title: 'KEY', width: 52 },
   { name: 'name', title: 'NAME', width: 170 },
@@ -97,6 +109,11 @@ const EDIT: Record<string, (s: SoundSettings, v: string) => void> = {
 }
 
 const playing = computed(() => new Set(activeVoices.value.map((v) => v.soundId)))
+/** the sound in each VCO slot of the selected patch, as DataGrid's toggles: like ◉, drawn without touching the rows */
+const vcos = computed(() => {
+  const slots = board.selectedPatch?.slots ?? []
+  return Object.fromEntries([0, 1, 2].map((i) => [`v${i + 1}`, new Set(slots[i] ? [slots[i]!.layer.soundId] : [])]))
+})
 
 /**
  * Each sound's row, kept until something it shows changes: with every AKWF wave a board has thousands of rows, and a
@@ -125,8 +142,12 @@ function makeRow(snd: Sound): Row {
   const dur = audioDuration(snd.audioId)
   return {
     id: snd.id,
+    grip: '',
     fav: snd.fav ? '♥' : '♡',
     play: '▷',
+    v1: '',
+    v2: '',
+    v3: '',
     n: 0,
     key: (board.keyFor.get(snd.id) ?? '').toUpperCase(),
     name: s.name,
@@ -154,11 +175,14 @@ function onPlay(id: string) {
   board.press(id)
   setTimeout(() => board.release(id), 150)
 }
+/** 1 / 2 / 3: this sound into that VCO slot of the selected patch, or out of it if it's there (as on a pad) */
+const onToggle = (id: string, column: string) => board.toggleSlot(Number(column.slice(1)) - 1, id)
 </script>
 
 <template>
+  <!-- (stored as ssb-sounds since the grip and VCO columns: 'ssb-grid' remembered widths by column position) -->
   <DataGrid
-    name="ssb-grid"
+    name="ssb-sounds"
     :schema="SCHEMA"
     :rows="rows"
     :editable="Object.keys(EDIT)"
@@ -166,12 +190,15 @@ function onPlay(id: string) {
     :selected-id="board.master.selectedId"
     :noun="['clip', 'clips']"
     :accent="['key', 'midi']"
-    hint="▷ / double-click = play · select a row to edit it in the rack · ⇧ / ⌘-click to pick several, Delete to remove them · double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type · click a column title to sort"
+    :drag-type="SOUND_TYPE"
+    :toggles="vcos"
+    hint="▷ / double-click = play · drag ⠿ into a VCO slot · 1 2 3 = put in that VCO of the patch (again = take out) · select a row to edit it in the rack · ⇧ / ⌘-click to pick several, Delete to remove them · double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type · click a column title to sort"
     @edit="onEdit"
     @play="onPlay"
     @select="board.select"
     @delete="board.removeSounds"
     @fav="(id: string) => board.toggleFav('sound', id)"
+    @toggle="onToggle"
   >
     <!-- the rack shows the patch; with the list full width the selected sound is edited here -->
     <aside v-if="board.selected && !board.master.rack" class="side">

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import canvasDatagrid, { type CanvasDatagrid } from 'canvas-datagrid'
+import canvasDatagrid, { type CanvasDatagrid, type GridCell } from 'canvas-datagrid'
 import { useBoard } from '../stores/board'
 import { gridStyle, mix } from '../theme/gridStyle'
 
 /**
  * Themed canvas-datagrid for a catalog (sounds or patches). Rows need a hidden \`id\` and a 1-based \`n\` (the row's
  * place in \`rows\`, shown as #). ↑ / ↓ move the selection; ⇧ / ⌘ gather rows for Delete, which asks first.
+ * With \`dragType\`, a \`grip\` column (⠿) drags its row out; \`toggles\` columns are buttons, one per row.
  */
 export interface GridRow {
   id: string
@@ -28,19 +29,36 @@ const props = defineProps<{
   hint: string
   /** what a row is, singular and plural, for the delete prompt */
   noun: [string, string]
+  /** dragging a row by its \`grip\` cell carries the row's id as this type (pressing anywhere else still drag-selects) */
+  dragType?: string
+  /** click-to-toggle columns, drawn as buttons labelled with the column's title: lit for the row ids in its set */
+  toggles?: Record<string, ReadonlySet<string>>
 }>()
 const emit = defineEmits<{
   edit: [id: string, column: string, value: string]
   play: [id: string]
   select: [id: string]
   fav: [id: string]
+  toggle: [id: string, column: string]
   /** confirmed: delete these rows */
   delete: [ids: string[]]
 }>()
 
 const board = useBoard()
 const host = ref<HTMLDivElement>()
+/** what a dragged row looks like under the pointer (off screen until then) */
+const ghost = ref<HTMLDivElement>()
 let grid: CanvasDatagrid | null = null
+
+const GRIP = 'grip'
+/** a column this draws itself: the grip or a toggle */
+const special = (column: string) => (column === GRIP && !!props.dragType) || !!props.toggles?.[column]
+/** what a cell under the pointer does: 'grip', 'toggle', or '' for the grid's own clicks and drags */
+function kindOf(cell: GridCell | undefined) {
+  const column = cell?.header?.name ?? ''
+  if (!cell?.data || cell.isHeader || cell.isColumnHeader || !special(column)) return ''
+  return column === GRIP ? 'grip' : 'toggle'
+}
 
 /** rows Delete / Backspace asked to remove (kept while the prompt fades out, so its count doesn't change) */
 const doomed = ref<string[]>([])
@@ -125,6 +143,46 @@ onMounted(() => {
   )
   const idOf = (cell: { data?: GridRow } | undefined) => cell?.data?.id
   const col = (e: { cell: { header?: { name: string } } }) => e.cell.header?.name ?? ''
+
+  // ⠿ drags its row out (into a VCO slot). A press there mustn't start the grid's drag-select, which a press anywhere
+  // else still does, so the grid never sees it; the canvas is draggable only while the pointer is over a grip.
+  const canvas = g.canvas
+  let dragRow: GridRow | null = null
+  g.addEventListener('mousedown', (e) => {
+    const kind = kindOf(e.cell)
+    dragRow = kind === 'grip' ? (e.cell.data as GridRow) : null
+    canvas.draggable = !!dragRow
+    if (kind) e.preventDefault() // (nor does pressing a toggle move the selection)
+  })
+  canvas.addEventListener('dragstart', (e) => {
+    if (!dragRow || !props.dragType || !e.dataTransfer) return e.preventDefault()
+    e.dataTransfer.setData(props.dragType, dragRow.id)
+    e.dataTransfer.effectAllowed = 'copyMove'
+    ghost.value!.textContent = `⠿ ${String(dragRow.name ?? dragRow.id)}`
+    e.dataTransfer.setDragImage(ghost.value!, 12, 14)
+  })
+  canvas.addEventListener('dragend', () => {
+    dragRow = null
+    canvas.draggable = false
+  })
+  /** the cursor this put on the canvas ('' while the grid's own shows), and the grid's from under it */
+  let ours = ''
+  let theirs = ''
+  // runs after the grid's own window mousemove (added first), which has found the cell under the pointer
+  const onHover = () => {
+    const kind = kindOf(g.currentCell)
+    canvas.draggable = kind === 'grip'
+    const want = kind === 'grip' ? 'grab' : kind ? 'pointer' : ''
+    if (canvas.style.cursor !== ours) theirs = canvas.style.cursor // the grid has changed it since
+    if (want) canvas.style.cursor = ours = want
+    else if (ours) {
+      canvas.style.cursor = theirs
+      ours = ''
+    }
+  }
+  window.addEventListener('mousemove', onHover)
+  unhover = () => window.removeEventListener('mousemove', onHover)
+
   g.addEventListener('beforebeginedit', (e) => {
     if (!props.editable.includes(col(e))) e.preventDefault()
   })
@@ -141,13 +199,23 @@ onMounted(() => {
   g.addEventListener('click', (e) => {
     const id = idOf(e.cell)
     const y = e.cell.rowIndex ?? -1
+    if ((e.cell.isHeader || e.cell.isColumnHeader) && special(col(e))) return e.preventDefault() // nothing to sort by
     if (!id || e.cell.isHeader || y < 0) return
     if (col(e) === 'fav') return emit('fav', id) // ♥ column toggles without selecting
+    if (kindOf(e.cell) === 'toggle') {
+      e.preventDefault()
+      return emit('toggle', id, col(e))
+    }
     if (e.NativeEvent?.shiftKey) {
       e.preventDefault()
       return rowTo(y, true)
     }
     if (e.NativeEvent?.metaKey || e.NativeEvent?.ctrlKey) return
+    if (kindOf(e.cell) === 'grip') {
+      // the press never reached the grid, so it selects the row here
+      e.preventDefault()
+      return rowTo(y, false)
+    }
     anchor = y
     if (id !== props.selectedId) emit('select', id)
     if (col(e) === 'play') emit('play', id)
@@ -195,12 +263,54 @@ onMounted(() => {
   // double-click a read-only cell to play too
   g.addEventListener('dblclick', (e) => {
     const id = idOf(e.cell)
-    if (id && !e.cell.isHeader && !props.editable.includes(col(e))) emit('play', id)
+    if (id && !e.cell.isHeader && !props.editable.includes(col(e)) && !special(col(e))) emit('play', id)
   })
   // ▷ turns ◉ while a row plays: drawn from `playing`, not kept in the rows, which needn't change as voices come and go
   g.addEventListener('formattext', (e) => {
     const row = e.row as GridRow | undefined
-    if (row && !e.cell.isHeader && e.cell.header?.name === 'play' && props.playing.has(row.id)) e.cell.formattedValue = '◉'
+    if (!row || e.cell.isHeader || e.cell.isColumnHeader) return
+    if (special(col(e))) e.cell.formattedValue = '' // drawn below
+    else if (col(e) === 'play' && props.playing.has(row.id)) e.cell.formattedValue = '◉'
+  })
+  // the grip's dots, and each toggle as a button with its column's title on it, lit when its set has the row
+  g.addEventListener('afterrendercell', (e) => {
+    const row = e.row as GridRow | undefined
+    const column = col(e)
+    if (!row || e.cell.isHeader || e.cell.isColumnHeader || !special(column)) return
+    const { ctx, cell } = e
+    const t = board.theme
+    ctx.save()
+    if (column === GRIP) {
+      // two columns of three dots
+      const cx = Math.round(cell.x + cell.width / 2)
+      const cy = Math.round(cell.y + cell.height / 2)
+      ctx.fillStyle = t.text[3]
+      for (let i = 0; i < 6; i++) ctx.fillRect(cx - 3 + (i % 2) * 5, cy - 6 + (i >> 1) * 5, 2, 2)
+    } else {
+      const on = props.toggles![column].has(row.id)
+      const s = 17
+      const x = Math.round(cell.x + (cell.width - s) / 2) + 0.5
+      const y = Math.round(cell.y + (cell.height - s) / 2) + 0.5
+      ctx.beginPath()
+      ctx.roundRect(x, y, s, s, 3)
+      if (on) {
+        ctx.shadowColor = t.primary
+        ctx.shadowBlur = 8
+      }
+      ctx.fillStyle = on ? t.primary : 'rgba(0, 0, 0, 0.28)'
+      ctx.fill()
+      ctx.shadowBlur = 0
+      if (!on) {
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)'
+        ctx.stroke()
+      }
+      ctx.font = '16px VT323, monospace'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillStyle = on ? '#1a1200' : t.text[3]
+      ctx.fillText(cell.header?.title ?? '', x + s / 2, y + s / 2 + 1)
+    }
+    ctx.restore()
   })
   // playing rows light up; the selected row gets a tint
   g.addEventListener('rendercell', (e) => {
@@ -225,11 +335,14 @@ onMounted(() => {
 watch(() => props.rows, sync)
 watch(() => board.theme, applyTheme)
 watch(
-  () => [props.selectedId, props.playing],
+  () => [props.selectedId, props.playing, props.toggles],
   () => grid?.draw(),
 )
 
+/** stops following the pointer for the grip's cursor */
+let unhover = () => {}
 onBeforeUnmount(() => {
+  unhover()
   grid?.dispose?.()
   grid = null
 })
@@ -241,6 +354,7 @@ onBeforeUnmount(() => {
       <div ref="host" class="grid-host" />
       <p class="hint">{{ hint }}</p>
     </div>
+    <div ref="ghost" class="drag-ghost" aria-hidden="true" />
     <slot />
     <v-dialog v-model="asking" max-width="420">
       <div class="ask" tabindex="-1" @keydown.stop @keydown.enter="onEnter" @keydown.esc="asking = false">
@@ -313,6 +427,21 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 12px;
+}
+/* a dragged row's label: the browser draws the drag from it, so it's rendered, just off screen */
+.drag-ghost {
+  position: fixed;
+  top: -100px;
+  left: 0;
+  padding: 1px 10px;
+  border: 1px solid #000;
+  border-radius: 4px;
+  font-family: 'VT323', monospace;
+  font-size: 18px;
+  white-space: nowrap;
+  color: var(--c-primary);
+  background: var(--panel-hi);
+  pointer-events: none;
 }
 .hint {
   margin: 0;

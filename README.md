@@ -78,8 +78,10 @@ AKWF waves.
 ### VCO slots + rack
 
 The **rack** under the header shows the selected patch's three slots side by side, each with its sound's full panel.
-- **Fill a slot** by dragging a sound card by its ⋮⋮ grip into it, or pressing **1 / 2 / 3** on the card (the number
-  lights while the sound sits in that slot; the previous sound is replaced). With no patch selected this starts one.
+- **Fill a slot** by dragging a sound card by its ⋮⋮ grip (or a grid row by its ⠿) into it, or onto that VCO in the
+  header, or pressing **1 / 2 / 3** on the card or in the grid's 1 2 3 columns (the number lights while the sound
+  sits in that slot, and pressing it again takes it out; the previous sound is replaced). With no patch selected this
+  starts one.
 - **REMOVE** empties a slot.
 - **VCO 1** is the main voice. VCOs 2–3 have **MIX / MOD** (heard, or a silent modulator only), **TRACK / FIXED**
   (follow the played key keeping TRANS / FINE, or always play NOTE) and **LEVEL**.
@@ -269,7 +271,9 @@ markers' flags along the top still grab them too).
 The table button in the header's BOARD group switches to a spreadsheet view (canvas-datagrid, loaded on first use).
 Click a row to select that patch (its full control panel opens on the right), click **▷** or double-click a read-only
 cell to play, double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type a
-value, and click a column title to sort. Playing rows light up; the grid follows the current theme.
+value, and click a column title to sort. Drag a row by its **⠿** into a VCO slot (dragging anywhere else selects
+rows), and **1 2 3** put the sound into that VCO of the patch or take it out, as on the cards. Playing rows light up;
+the grid follows the current theme.
 
 ### Themes
 

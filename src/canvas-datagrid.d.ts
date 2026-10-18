@@ -3,6 +3,7 @@
 declare module 'canvas-datagrid' {
   export interface GridHeader {
     name: string
+    title?: string
   }
   export interface GridCell {
     data?: any
@@ -12,6 +13,11 @@ declare module 'canvas-datagrid' {
     selected?: boolean
     formattedValue?: string
     rowIndex?: number
+    /** where it's drawn, in CSS pixels */
+    x: number
+    y: number
+    width: number
+    height: number
   }
   export interface GridEvent {
     cell: GridCell
@@ -25,6 +31,9 @@ declare module 'canvas-datagrid' {
   }
   export interface CanvasDatagrid {
     data: unknown[]
+    canvas: HTMLCanvasElement
+    /** the cell under the pointer */
+    currentCell?: GridCell
     /** rows in their current sort / filter order */
     viewData: any[]
     /** the selected rows (whole row objects, hidden columns included), sparse by view index */

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { activeVoices } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { padHue } from '../lib/format'
@@ -8,7 +8,8 @@ import Waveform from './Waveform.vue'
 
 /**
  * The selected patch's three VCO slots in the header: what's in each and, as it plays, its transport and grains
- * (the rack's own scopes, small). A slot's LED lights while it sounds; a click shows the rack.
+ * (the rack's own scopes, small). A slot's LED lights while it sounds; a click shows the rack. A sound dragged onto one
+ * (a pad's grip, a grid row's ⠿) goes into that slot, with the rack shown or not.
  */
 const board = useBoard()
 const W = 104
@@ -23,6 +24,23 @@ const slots = computed(() => {
     return { i, x, sound, name }
   })
 })
+// ── drop sounds into slots (as the rack's do) ──
+const SOUND_TYPE = 'application/x-ssb-sound'
+const dropTarget = ref(-1)
+function onDragOver(e: DragEvent, i: number) {
+  if (!e.dataTransfer?.types.includes(SOUND_TYPE)) return
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'copy'
+  dropTarget.value = i
+}
+function onDrop(e: DragEvent, i: number) {
+  dropTarget.value = -1
+  const id = e.dataTransfer?.getData(SOUND_TYPE)
+  if (!id) return
+  e.preventDefault()
+  board.assignSlot(i, id)
+}
+
 const sounding = computed(() => new Set(activeVoices.value.map((v) => v.soundId)))
 const hue = (s: Sound) => padHue(s.settings.tag, s.settings.name, board.theme.padHues)
 
@@ -38,9 +56,12 @@ function tip(i: number, x: PatchSlot | null, name: string) {
       v-for="{ i, x, sound, name } in slots"
       :key="i"
       class="vco"
-      :class="{ empty: !sound, live: sound && sounding.has(sound.id) }"
+      :class="{ empty: !sound, live: sound && sounding.has(sound.id), target: dropTarget === i }"
       :title="tip(i, x, name)"
       @click="board.master.rack = true"
+      @dragover="(e) => onDragOver(e, i)"
+      @dragleave="dropTarget = -1"
+      @drop="(e) => onDrop(e, i)"
     >
       <Waveform v-if="sound" :sound="sound" :hue="hue(sound)" :width="W" :height="H" readonly />
       <span class="tag">
@@ -75,6 +96,10 @@ function tip(i: number, x: PatchSlot | null, name: string) {
 }
 .vco:hover {
   outline: 1px solid color-mix(in srgb, var(--c-primary) 55%, transparent);
+}
+.vco.target {
+  outline: 2px solid var(--c-primary);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--c-primary) 60%, transparent);
 }
 /* the slot's LED, number and sound along the scope's bottom edge (notes are labelled along its top) */
 .tag {

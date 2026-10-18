@@ -17,7 +17,8 @@ const hue = computed(() => padHue(props.sound.settings.tag, props.sound.settings
 function onDragStart(e: DragEvent) {
   if (!e.dataTransfer) return
   e.dataTransfer.setData(REORDER_TYPE, props.sound.id)
-  e.dataTransfer.effectAllowed = 'move'
+  // move among the pads, copy into a VCO slot: a drag allowing only one is refused by targets asking for the other
+  e.dataTransfer.effectAllowed = 'copyMove'
   const pad = el.value?.querySelector('.pad')
   if (pad) e.dataTransfer.setDragImage(pad, 76, 52)
 }
