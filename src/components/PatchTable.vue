@@ -49,7 +49,7 @@ const rows = computed<GridRow[]>(() =>
     return {
       id: p.id,
       fav: p.fav ? '♥' : '♡',
-      play: playing.value.has(p.id) ? '◉' : '▷',
+      play: '▷', // ◉ while it plays: DataGrid draws it from `playing`
       n: i + 1,
       name: p.name,
       tag: p.tag,

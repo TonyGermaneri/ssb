@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, effectScope, onBeforeUnmount, type ComputedRef } from 'vue'
 import { activeVoices, audioDuration } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { midiNoteName, padHue } from '../lib/format'
 import DataGrid from './DataGrid.vue'
 import ControlPanel from './ControlPanel.vue'
-import { TRIGGER_MODES, type SoundSettings, type TriggerMode } from '../types'
+import { TRIGGER_MODES, type Sound, type SoundSettings, type TriggerMode } from '../types'
 
 const board = useBoard()
 
@@ -98,34 +98,53 @@ const EDIT: Record<string, (s: SoundSettings, v: string) => void> = {
 
 const playing = computed(() => new Set(activeVoices.value.map((v) => v.soundId)))
 
+/**
+ * Each sound's row, kept until something it shows changes: with every AKWF wave a board has thousands of rows, and a
+ * knob turned on one sound should rebuild that one (DataGrid copies only the rows that are new objects). # is set as
+ * the rows are listed; ◉ for a playing row is drawn by DataGrid from `playing`, so voices don't touch the rows.
+ */
+const scope = effectScope()
+onBeforeUnmount(() => scope.stop())
+const rowCache = new WeakMap<Sound, ComputedRef<Row>>()
+function rowOf(snd: Sound): Row {
+  let c = rowCache.get(snd)
+  if (!c) rowCache.set(snd, (c = scope.run(() => computed(() => makeRow(snd)))!))
+  return c.value
+}
 const rows = computed<Row[]>(() =>
   board.visible.map((snd, i) => {
-    const s = snd.settings
-    const note = board.noteFor.get(snd.id)
-    const dur = audioDuration(snd.audioId)
-    return {
-      id: snd.id,
-      fav: snd.fav ? '♥' : '♡',
-      play: playing.value.has(snd.id) ? '◉' : '▷',
-      n: i + 1,
-      key: (board.keyFor.get(snd.id) ?? '').toUpperCase(),
-      name: s.name,
-      tag: s.tag,
-      file: snd.zones?.length ? `${snd.fileName} · ${snd.zones.length} zones` : snd.fileName,
-      length: `${dur.toFixed(2)}s`,
-      mode: s.mode.toUpperCase(),
-      repeat: s.repeat === 0 ? '∞' : String(s.repeat),
-      volume: Math.round(s.volume * 100),
-      pan: Math.round(s.pan * 100),
-      pitch: s.pitch,
-      speed: Math.round(s.speed * 100) / 100,
-      cutoff: Math.round(s.cutoff),
-      choke: s.choke,
-      midi: note === undefined ? '' : midiNoteName(note),
-      mod: s.mod.routes.length,
-    }
+    const r = rowOf(snd)
+    r.n = i + 1
+    return r
   }),
 )
+
+function makeRow(snd: Sound): Row {
+  const s = snd.settings
+  const note = board.noteFor.get(snd.id)
+  const dur = audioDuration(snd.audioId)
+  return {
+    id: snd.id,
+    fav: snd.fav ? '♥' : '♡',
+    play: '▷',
+    n: 0,
+    key: (board.keyFor.get(snd.id) ?? '').toUpperCase(),
+    name: s.name,
+    tag: s.tag,
+    file: snd.zones?.length ? `${snd.fileName} · ${snd.zones.length} zones` : snd.fileName,
+    length: `${dur.toFixed(2)}s`,
+    mode: s.mode.toUpperCase(),
+    repeat: s.repeat === 0 ? '∞' : String(s.repeat),
+    volume: Math.round(s.volume * 100),
+    pan: Math.round(s.pan * 100),
+    pitch: s.pitch,
+    speed: Math.round(s.speed * 100) / 100,
+    cutoff: Math.round(s.cutoff),
+    choke: s.choke,
+    midi: note === undefined ? '' : midiNoteName(note),
+    mod: s.mod.routes.length,
+  }
+}
 
 function onEdit(id: string, column: string, value: string) {
   const s = board.byId(id)?.settings

@@ -58,17 +58,31 @@ function onEnter(e: KeyboardEvent) {
 const deleteButton = ref<HTMLButtonElement>()
 watch(asking, (open) => setTimeout(() => (open ? deleteButton.value?.focus() : grid?.focus()), 60))
 
-/** Push rows in place when the row set is unchanged (keeps sort, scroll and selection). */
+/** the source row each grid row was last copied from: rows a parent keeps (unchanged) aren't copied again */
+const pushed = new Map<string, GridRow>()
+/**
+ * Push rows in place when the row set is unchanged (keeps sort, scroll and selection), copying only the rows that
+ * changed. Everything here is linear in the rows: a board has thousands, and this runs whenever one of them changes.
+ */
 function sync(next: GridRow[]) {
   if (!grid) return
   const cur = grid.data as GridRow[] | undefined
-  if (cur && cur.length === next.length && cur.every((r) => next.some((n) => n.id === r.id))) {
-    const byId = new Map(next.map((r) => [r.id, r]))
-    for (const r of cur) Object.assign(r, byId.get(r.id))
-    grid.draw()
+  const byId = new Map(next.map((r) => [r.id, r]))
+  if (cur && cur.length === next.length && cur.every((r) => byId.has(r.id))) {
+    let changed = false
+    for (const r of cur) {
+      const src = byId.get(r.id)!
+      if (pushed.get(r.id) === src && r.n === src.n) continue
+      Object.assign(r, src)
+      pushed.set(r.id, src)
+      changed = true
+    }
+    if (changed) grid.draw()
   } else {
     grid.selectNone(true) // a selection is row indexes, which now point elsewhere
     grid.data = next.map((r) => ({ ...r }))
+    pushed.clear()
+    for (const r of next) pushed.set(r.id, r)
   }
 }
 
@@ -183,6 +197,11 @@ onMounted(() => {
     const id = idOf(e.cell)
     if (id && !e.cell.isHeader && !props.editable.includes(col(e))) emit('play', id)
   })
+  // ▷ turns ◉ while a row plays: drawn from `playing`, not kept in the rows, which needn't change as voices come and go
+  g.addEventListener('formattext', (e) => {
+    const row = e.row as GridRow | undefined
+    if (row && !e.cell.isHeader && e.cell.header?.name === 'play' && props.playing.has(row.id)) e.cell.formattedValue = '◉'
+  })
   // playing rows light up; the selected row gets a tint
   g.addEventListener('rendercell', (e) => {
     const row = e.row as GridRow | undefined
@@ -202,7 +221,8 @@ onMounted(() => {
   })
 })
 
-watch(() => props.rows, sync, { deep: true })
+// a new array whenever a row changes (the parents' computeds): no need to walk every row's fields to notice
+watch(() => props.rows, sync)
 watch(() => board.theme, applyTheme)
 watch(
   () => [props.selectedId, props.playing],
