@@ -351,7 +351,7 @@ function onImport(e: Event) {
           <button @click="emit('addFolder')"><v-icon size="16" icon="mdi-folder-music" /> ADD FOLDER… <small>SFZ instrument + samples</small></button>
           <button @click="emit('waves')"><v-icon size="16" icon="mdi-sine-wave" /> BROWSE WAVES… <small>AKWF · 4,358 single cycles</small></button>
           <button @click="emit('library')"><v-icon size="16" icon="mdi-music-box-multiple" /> BROWSE LIBRARY… <small>SFZ · GM · drums · URL</small></button>
-          <button @click="board.installFactory()"><v-icon size="16" icon="mdi-factory" /> ADD FACTORY PATCHES <small>made of AKWF waves</small></button>
+          <button @click="board.installFactory()"><v-icon size="16" icon="mdi-factory" /> RESTORE BUILT-INS <small>any AKWF wave or factory patch deleted</small></button>
         </div>
       </v-menu>
       <button class="hw-btn icon" title="Export board (.zip)" @click="board.exportBoard()">

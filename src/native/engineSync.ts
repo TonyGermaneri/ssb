@@ -3,8 +3,11 @@
  *
  * In the AU / VST3 the page is the editor and the engine makes the sound, so the engine needs,
  * and keeps up to date:
- * - every sound and patch layer: settings, SFZ zones, VCO links (`ssbSync` sounds, only the ones
- *   whose JSON changed);
+ * - the sounds it may be asked to play: what the keyboard plays, the pads MIDI notes reach, and
+ *   what was clicked lately, each with the VCOs it layers -- not the whole library, whose thousands
+ *   of AKWF waves would make every sync, and the DAW session, megabytes. Settings, SFZ zones, VCO
+ *   links (`ssbSync` sounds, only the ones whose JSON changed); a click on a sound the engine
+ *   hasn't got waits for it to arrive (the board's engine gate);
  * - the performance: master volume / FX / mod matrix, keyboard mode, what the keyboard plays, which
  *   pads answer which MIDI notes (`ssbSync` meta);
  * - the audio itself, decoded, once per sample (`ssbAudio`) -- the engine keeps a disk cache, so
@@ -16,7 +19,7 @@
 import { computed, effectScope, watch, type ComputedRef, type EffectScope } from 'vue'
 import type { useBoard } from '../stores/board'
 import * as engine from '../audio/engine'
-import { divisionBeats, type ModMatrix, type Sound } from '../types'
+import { divisionBeats, soundAudioIds, type ModMatrix, type Sound } from '../types'
 import { callNative, onNative } from './bridge'
 
 type Board = ReturnType<typeof useBoard>
@@ -59,15 +62,24 @@ function soundJson(board: Board, sound: Sound) {
   }
 }
 
-/** Every sound the engine may be asked to play: the pads, and every patch's layers. */
-function allSounds(board: Board): Sound[] {
-  const out = [...board.sounds]
-  for (const p of board.patches)
-    for (const x of p.slots) {
-      const layer = x && board.layerSound(x.layer)
-      if (layer) out.push(layer)
-    }
-  return out
+/** how many clicked sounds the engine keeps besides the ones it always needs */
+const RECENT = 24
+
+/**
+ * The sounds the engine may be asked to play: what the keyboard plays, the pads MIDI notes reach (pad mode), and
+ * `extra` (sounds or patch layers clicked lately), each with the VCOs it layers.
+ */
+function engineSounds(board: Board, extra: Iterable<string>): Sound[] {
+  const out = new Map<string, Sound>()
+  const add = (s: Sound | null | undefined) => {
+    if (!s || out.has(s.id)) return
+    out.set(s.id, s)
+    for (const { osc } of board.vcoLinks(s)) add(osc)
+  }
+  add(board.playable)
+  if (!board.master.play) for (const id of board.noteFor.keys()) add(board.byId(id))
+  for (const id of extra) add(board.resolveSound(id))
+  return [...out.values()]
 }
 
 function metaJson(board: Board, ids: string[]) {
@@ -92,8 +104,9 @@ function metaJson(board: Board, ids: string[]) {
     },
     mod: matrix(m.mod),
     playable: board.playable?.id ?? null,
-    padNotes: [...board.noteFor].map(([id, note]) => [note, id]),
-    pads: board.sounds.map((s) => s.id),
+    padNotes: board.master.play ? [] : [...board.noteFor].map(([id, note]) => [note, id]),
+    // (the engine's pads are the ones it has: choke groups act among those)
+    pads: ids.filter((id) => board.byId(id)),
     ids,
   }
 }
@@ -112,28 +125,32 @@ export function startEngineSync(board: Board) {
   const sent = new Map<string, string>()
   let sentMeta = ''
   let timer: ReturnType<typeof setTimeout> | undefined
-  let uploading = false
-  const uploaded = new Set<string>()
+  /** sounds and patch layers clicked lately, newest last */
+  const recent = new Set<string>()
 
-  async function upload(missing: string[]) {
-    if (uploading) return
-    uploading = true
-    try {
-      for (const id of missing) {
-        if (uploaded.has(id)) continue
-        const buffer = engine.getBuffer(id)
-        if (!buffer) continue
-        uploaded.add(id)
-        await callNative('ssbAudio', id, buffer.sampleRate, Math.min(2, buffer.numberOfChannels), encode(buffer))
-      }
-    } finally {
-      uploading = false
+  // samples go one at a time, in the order the engine asked; a click waits for its own
+  const uploaded = new Set<string>()
+  const uploads = new Map<string, Promise<void>>()
+  let uploadChain: Promise<void> = Promise.resolve()
+  function upload(missing: string[]) {
+    for (const id of missing) {
+      if (uploaded.has(id) || uploads.has(id)) continue
+      const done = (uploadChain = uploadChain
+        .then(async () => {
+          const buffer = engine.getBuffer(id)
+          if (!buffer) return
+          await callNative('ssbAudio', id, buffer.sampleRate, Math.min(2, buffer.numberOfChannels), encode(buffer))
+          uploaded.add(id)
+        })
+        .catch((e) => console.warn('engine upload failed', id, e))
+        .finally(() => uploads.delete(id)))
+      uploads.set(id, done)
     }
   }
 
   /**
    * Each sound's JSON, cached by Vue until something it reads changes: a knob turned while syncing at frame
-   * rate re-serialises the one sound it belongs to, not the whole library (~6 ms for 160 sounds).
+   * rate re-serialises the one sound it belongs to, not every sound the engine has.
    */
   const texts = new Map<Sound, { text: ComputedRef<string>; scope: EffectScope }>()
   function textOf(s: Sound): string {
@@ -147,7 +164,7 @@ export function startEngineSync(board: Board) {
   }
 
   async function sync() {
-    const sounds = allSounds(board)
+    const sounds = engineSounds(board, [...board.pressed, ...recent])
     const changed: string[] = []
     const ids: string[] = []
     for (const s of sounds) {
@@ -170,7 +187,7 @@ export function startEngineSync(board: Board) {
     if (!changed.length && metaText === sentMeta) return
     sentMeta = metaText
     const missing = await callNative<string[]>('ssbSync', `{"sounds":[${changed.join(',')}],"meta":${metaText}}`)
-    if (missing?.length) void upload(missing)
+    if (missing?.length) upload(missing)
   }
 
   /**
@@ -178,31 +195,41 @@ export function startEngineSync(board: Board) {
    * streaming (one sync per ~frame, never two at once), so the engine follows the knob as it moves. A
    * debounce here held every change back until the knob had been still for a moment.
    */
-  let inFlight = false
-  let dirty = false
-  const run = async () => {
+  let running: Promise<void> = Promise.resolve()
+  let queued = false
+  const kick = () => {
+    clearTimeout(timer)
     timer = undefined
-    if (inFlight) return void (dirty = true)
-    inFlight = true
-    try {
-      await sync()
-    } catch (e) {
-      console.warn('engine sync failed', e)
-    } finally {
-      inFlight = false
-      if (dirty) {
-        dirty = false
-        schedule()
-      }
-    }
+    if (queued) return running
+    queued = true
+    running = running
+      .then(() => {
+        queued = false
+        return sync()
+      })
+      .catch((e) => console.warn('engine sync failed', e))
+    return running
   }
   const schedule = () => {
-    timer ??= setTimeout(() => void run(), SYNC_EVERY_MS)
+    timer ??= setTimeout(() => void kick(), SYNC_EVERY_MS)
   }
 
-  // anything that changes what a note sounds like, or which note plays what
+  /** Before a command reaches the engine: the sound it names is there (with its audio), and no sync is pending. */
+  board.setEngineGate(async (id) => {
+    if (id) {
+      recent.delete(id)
+      recent.add(id)
+      while (recent.size > RECENT) recent.delete(recent.values().next().value!)
+    }
+    if (timer !== undefined || queued || (id && !sent.has(id))) await kick()
+    const s = id ? board.resolveSound(id) : undefined
+    if (s) await Promise.all([...board.vcoLinks(s).map((l) => l.osc), s].flatMap(soundAudioIds).map((a) => uploads.get(a)))
+  })
+
+  // anything that changes what a note sounds like, or which note plays what: a write to any sound or patch
+  // (board.changes), the header, the tempo, what the keyboard plays, which pads MIDI notes reach
   watch(
-    () => [board.sounds, board.patches, board.master, board.bpm, board.playable?.id, board.noteFor],
+    () => [board.changes, board.master, board.bpm, board.playable?.id, board.noteFor],
     schedule,
     { deep: true, immediate: true },
   )

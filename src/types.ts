@@ -551,7 +551,8 @@ export interface MasterState {
   favPatches: boolean
   /** factory sounds + patches have been installed once */
   factory: boolean
-  /** which factory content the board has: 0/1 = the generated SAW WAVE … NOISE, 2 = AKWF waves (FACTORY_VERSION) */
+  /** which factory content the board has: 0/1 = the generated SAW WAVE … NOISE, 2 = AKWF waves, 3 = every AKWF wave and
+   *  the built-in patches (FACTORY_VERSION) */
   factoryVersion: number
   /** show the selected patch (+ its VCOs) panels under the header */
   rack: boolean
@@ -663,6 +664,8 @@ export interface Patch {
   name: string
   tag: string
   fav?: boolean
+  /** a built-in patch's id in lib/factory.ts (the one it was made from), so it is known whatever it's called now */
+  factoryId?: string
   /** always PATCH_SLOTS long; null = empty slot */
   slots: (PatchSlot | null)[]
   header: PatchHeader

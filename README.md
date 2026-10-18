@@ -40,18 +40,37 @@ patch. **♥** marks favourites on sound cards, patch cards, the rack and in the
 strip shows only those.
 
 **AKWF waves**: all 4,358 of [Adventure Kid's single-cycle waveforms](https://github.com/KristofferKarlAxelEkstrand/AKWF-FREE)
-(Kristoffer Ekstrand, CC0) ship with SSB, in AKWF's own 65 categories (its folders: AKWF_0001 … AKWF_0020, AKWF_epiano,
-AKWF_fmsynth, AKWF_hvoice, …). **+ → BROWSE WAVES** (the library's first tab) shows each category's waves as outlines:
-click one to hear it, **+** adds it to the board, **1 / 2 / 3** put it straight into that VCO slot of the patch; ← → step
-through the waves, ↑ ↓ through the categories, **ADD ALL** takes a whole category. An added wave is a sound tagged
-**akwf** and its category (`akwf_epiano`), so the tag strip filters by category; it loops while held, with its root
-note at C2 (each 600-frame cycle is stored at the rate that makes it exactly C2, with a WAV `smpl` loop, and played
-at that rate so the loop is sample-exact). `scripts/akwf.mjs` rebuilds `public/akwf` from an AKWF-FREE checkout.
+(Kristoffer Ekstrand, CC0) ship with SSB, and on the first load every one becomes a **sound of the board**, in AKWF's own
+65 categories: the perfect waves first, then AKWF's other basic shapes, its named sets (AKWF_epiano, AKWF_fmsynth,
+AKWF_hvoice, …) and the numbered mixed folders. Each is tagged **akwf** and its category (`akwf_epiano`), so the tag
+strip filters by category; it loops while held, with its root note at C2 (each 600-frame cycle plays at the rate that
+makes it exactly C2, so the loop is sample-exact), centred on zero (some AKWF cycles sit well off it, which as an
+oscillator is only a thump). The waves take no storage of their own: their audio is made from the files that ship with
+SSB when a wave is first played or drawn, and the board stores only the settings you've changed. **+ → BROWSE WAVES**
+shows each category's waves as outlines: click one to hear it, **+** selects its pad (and puts it back if you deleted
+it), **1 / 2 / 3** put it straight into that VCO slot of the patch; ← → step through the waves, ↑ ↓ through the
+categories, **PUT BACK** restores the deleted ones of what's shown. `scripts/akwf.mjs` rebuilds `public/akwf` from an
+AKWF-FREE checkout.
 
-**Factory patches** made of AKWF waves (the perfect saw, square, sine and triangle, and a human-voice wave) are
-installed on a new board: POLY SAW, PURE SINE, FM PIANO, SQUARE LEAD, WARM PAD, SUB BASS, BRASS STAB, VOX PAD, RING BELL.
-**+ → ADD FACTORY PATCHES** adds them again. Boards made before the AKWF waves lose the old generated SAW WAVE … NOISE sounds: their
-patches move to the AKWF waves (WIND, made of NOISE, gives way to VOX PAD).
+**Built-in patches**: 127 of them, made of AKWF waves, installed right after the waves and tagged **factory** plus what
+they are (bass, lead, pad, keys, pluck, bell, mallet, strings, brass, winds, choir, organ, chip, fx, drone, texture) and
+how (vco, fm, ring, grain, sync, cloud, loop, lfo, wheel, velocity, aftertouch, mono, glide, …). There are the classic
+VCO workflows — detuned unison, octave and fifth stacks, sub oscillators, PWM by crossfading two pulse widths, FM and
+ring modulation between slots, an LFO at audio rate in RATIO mode — and Granulator III on single cycles:
+- **grain sync**: GRAIN at half of C2, following the keys, puts two grains in every period of the note, so it plays in
+  tune and PITCH moves a formant instead of the note; a PITCH route with an opposite GRAIN route sweeps it (SYNC
+  SCREAMER LEAD, VOCODER VAGABOND LEAD, FORMANT SURFER LEAD, TALKBOX BASS);
+- **CLOUD** choruses one wave into an ensemble or scatters it (GLACIER SHEET PAD, OCTAVE SHIMMER PAD, WIND CHIMES
+  CLOUD); **LOOP** stutters (TAPE STUTTER LOOP, NEBULA DRIFT PAD); grain **FM** rings (GRAIN FM BELLWORKS); **VOID**
+  crackles (GEIGER COUNTER FX); SPREAD and SPRAY widen (SUPERSAW FROM ONE).
+
+Most answer the mod wheel (vibrato, a formant, a wobble's rate), velocity and aftertouch. They were played one note at a
+time in the page, measured (K-weighted loudness, BS.1770) and level-matched to about −16 LUFS with peaks under −4 dBFS
+(`src/lib/factoryLevels.ts`). Once installed they're ordinary patches: edit, rename or delete them. **+ → RESTORE
+BUILT-INS** puts back any AKWF wave or built-in patch you've deleted. A board from 0.5 keeps its nine factory patches as
+they are, under their new names (POLY SAW is SUPERSAW SUNRISE, FM PIANO is TINE MACHINE EP, …), and gains the rest;
+boards from before the AKWF waves first lose the old generated SAW WAVE … NOISE sounds, their patches moving to the
+AKWF waves.
 
 ### VCO slots + rack
 
@@ -88,6 +107,13 @@ they came from: `dropped, <folder>`, `sfzinstruments, <repo>`, `gm, <set>, <fami
 
 The card view is virtualised (Vuetify `v-virtual-scroll` over rows sized to the window and pad scale), so only the
 rows on screen exist in the DOM; grid mode (canvas-datagrid) handles very large lists natively.
+
+With every AKWF wave on it a board has some 4,400 sounds, so nothing walks all of them on an edit. Each sound and patch
+sits under a small proxy of its own (`src/lib/tracked.ts`) that reports writes anywhere inside it: a knob turn marks
+that one sound changed, and saving and undo re-serialise only what changed (undo's snapshots share every unchanged
+sound's JSON). In the AU / VST3 the native engine holds only the sounds it may be asked to play — what the keyboard
+plays, the pads MIDI notes reach, and what was clicked lately, with the VCOs each layers — so a sync, and the DAW
+session, stay small; clicking a sound the engine hasn't got waits for it to arrive.
 
 ### Per-pad panel
 

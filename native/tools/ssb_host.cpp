@@ -144,8 +144,14 @@ int main (int argc, char** argv)
                         inner.fromBase64Encoding (component->getAllSubText());
                 return juce::ValueTree::readFromData (inner.getData(), inner.getSize());
             }(); tree.isValid())
+        {
             std::printf ("state page: %s\nstate board key: %s\n", tree.getProperty ("page").toString().toRawUTF8(),
                          tree.getProperty ("board").toString().toRawUTF8());
+            // the engine keeps only the sounds it may play (see src/native/engineSync.ts), not the whole library
+            const auto engineState = tree.getProperty ("engine").toString();
+            std::printf ("state: %d bytes; engine: %d sounds, %d bytes\n", (int) state.getSize(),
+                         juce::JSON::parse (engineState).getProperty ("sounds", {}).size(), engineState.length());
+        }
     plugin->releaseResources();
     plugin.reset();
 

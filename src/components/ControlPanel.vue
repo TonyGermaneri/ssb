@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useBoard } from '../stores/board'
-import { buffers } from '../audio/engine'
+import { audioDuration } from '../audio/engine'
 import {
   fmtCents, fmtChoke, fmtDb, fmtFinePct, fmtFix1, fmtFix2, fmtGrainHz, fmtHz, fmtMs, fmtNum, fmtOct, fmtPan, fmtPct, fmtQ,
   fmtSignedPct, fmtWholePct, fmtDbOct,
@@ -47,7 +47,7 @@ function toggleFold(key: string) {
 const fmtBend = (v: number) => `±${Math.round(v)}st`
 /** GRAIN's long end is one grain as long as the sample (the longest zone's, for SFZ); 0.25 Hz until it's decoded */
 const grainMin = () =>
-  grainFreqMin(Math.max(0, ...soundAudioIds(props.sound).map((id) => buffers.get(id)?.duration ?? 0)))
+  grainFreqMin(Math.max(0, ...soundAudioIds(props.sound).map((id) => audioDuration(id))))
 /** the value after `v` in `list`, round again at the end (the chips that cycle) */
 const next = <T,>(list: readonly T[], v: T): T => list[(list.indexOf(v) + 1) % list.length]
 /** a count (DENSITY) */

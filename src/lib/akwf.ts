@@ -5,7 +5,10 @@
  * A wave added to the board is tagged "akwf" + its folder (akwf_epiano) and plays from a one-cycle WAV whose
  * loop and root note travel with it.
  */
+import { shallowRef } from 'vue'
 import { encodeCycleWav } from './wav'
+import { addTags } from './tags'
+import { defaultSettings, type SoundSettings } from '../types'
 
 export interface AkwfCategory {
   folder: string
@@ -96,6 +99,9 @@ export const waveLabel = (name: string) => {
 }
 /** wave names are unique across AKWF, so the name is the audio's id (adding a wave twice shares its audio) */
 export const waveAudioId = (name: string) => `akwf-${name}`
+export const isWaveAudioId = (audioId: string) => audioId.startsWith('akwf-')
+/** the wave an audio id names */
+export const waveNameOf = (audioId: string) => audioId.slice('akwf-'.length)
 
 let index: Promise<AkwfIndex> | null = null
 /** The categories and their waves' names (fetched once). */
@@ -110,40 +116,117 @@ export function akwfIndex(): Promise<AkwfIndex> {
   return index
 }
 
-const packs = new Map<string, Promise<AkwfWave[]>>()
-/** Every wave in a category (its .bin fetched once). */
-export function akwfCategory(folder: string): Promise<AkwfWave[]> {
-  let p = packs.get(folder)
-  if (!p) {
-    p = (async () => {
+/**
+ * Every wave in memory: each category's .bin as it ships (5.4 MB of int16), and where each wave sits in it. Once
+ * it is here a wave's audio is made on the spot (waveChannels), so the board's 4,000-odd waves need no storage
+ * of their own and nothing is decoded until a wave is played or drawn.
+ */
+interface Packs {
+  index: AkwfIndex
+  waves: Map<string, { folder: string; channels: number; at: number }>
+  pcm: Map<string, Int16Array>
+}
+let packs: Packs | null = null
+let packsLoading: Promise<Packs> | null = null
+/** true once every wave is in memory */
+export const akwfReady = shallowRef(false)
+
+/** Fetch every category (once); resolves when all the waves are in memory. */
+export function loadAkwf(): Promise<Packs> {
+  if (!packsLoading) {
+    packsLoading = (async () => {
       const idx = await akwfIndex()
-      const cat = idx.categories.find((c) => c.folder === folder)
-      if (!cat) throw new Error(`No AKWF category ${folder}`)
-      const r = await fetch(`akwf/${folder}.bin`)
-      if (!r.ok) throw new Error(`AKWF ${folder}: HTTP ${r.status}`)
-      const pcm = new Int16Array(await r.arrayBuffer())
-      let at = 0
-      return cat.waves.map((name, i) => {
-        const channels = Array.from({ length: cat.channels?.[i] ?? 1 }, () => {
-          const ch = new Float32Array(idx.frames)
-          for (let k = 0; k < idx.frames; k++) ch[k] = pcm[at + k] / 32768
-          at += idx.frames
-          return ch
+      const bins = await Promise.all(
+        idx.categories.map(async (c) => {
+          const r = await fetch(`akwf/${c.folder}.bin`)
+          if (!r.ok) throw new Error(`AKWF ${c.folder}: HTTP ${r.status}`)
+          return new Int16Array(await r.arrayBuffer())
+        }),
+      )
+      const waves: Packs['waves'] = new Map()
+      const pcm: Packs['pcm'] = new Map()
+      idx.categories.forEach((c, i) => {
+        pcm.set(c.folder, bins[i])
+        let at = 0
+        c.waves.forEach((name, j) => {
+          const channels = c.channels?.[j] ?? 1
+          waves.set(name, { folder: c.folder, channels, at })
+          at += channels * idx.frames
         })
-        return { folder, name, channels }
       })
+      packs = { index: idx, waves, pcm }
+      akwfReady.value = true
+      return packs
     })()
-    p.catch(() => packs.delete(folder))
-    packs.set(folder, p)
+    packsLoading.catch(() => (packsLoading = null)) // try again next time
   }
-  return p
+  return packsLoading
 }
 
-/** One wave by its folder and name. */
-export async function akwfWave(folder: string, name: string): Promise<AkwfWave> {
-  const w = (await akwfCategory(folder)).find((x) => x.name === name)
-  if (!w) throw new Error(`No AKWF wave ${folder}/${name}`)
-  return w
+/**
+ * A wave's channels, at once (null until loadAkwf has finished, or for a name AKWF hasn't got). Each is centred on
+ * zero: some of AKWF's cycles sit well off it (c604_0016 averages 0.97), which as an oscillator is only a thump at
+ * every note's start and end, and lost headroom.
+ */
+export function waveChannels(name: string): Float32Array[] | null {
+  const w = packs?.waves.get(name)
+  if (!packs || !w) return null
+  const pcm = packs.pcm.get(w.folder)!
+  const n = packs.index.frames
+  return Array.from({ length: w.channels }, (_, c) => {
+    const ch = new Float32Array(n)
+    const o = w.at + c * n
+    let dc = 0
+    for (let k = 0; k < n; k++) dc += pcm[o + k]
+    dc /= n
+    for (let k = 0; k < n; k++) ch[k] = (pcm[o + k] - dc) / 32768
+    return ch
+  })
+}
+
+/** the category a wave is in (once loadAkwf has finished) */
+export const waveFolder = (name: string) => packs?.waves.get(name)?.folder
+
+/** Every wave in a category. */
+export async function akwfCategory(folder: string): Promise<AkwfWave[]> {
+  const p = await loadAkwf()
+  const cat = p.index.categories.find((c) => c.folder === folder)
+  if (!cat) throw new Error(`No AKWF category ${folder}`)
+  return cat.waves.map((name) => ({ folder, name, channels: waveChannels(name)! }))
+}
+
+/** One wave by its name (its folder is found from the index). */
+export async function akwfWave(name: string): Promise<AkwfWave> {
+  const p = await loadAkwf()
+  const folder = p.waves.get(name)?.folder
+  if (!folder) throw new Error(`No AKWF wave ${name}`)
+  return { folder, name, channels: waveChannels(name)! }
+}
+
+/** The categories in the order the board lists them: the perfect waves, AKWF's other basic shapes, the named sets, then
+ *  the numbered mixed folders. */
+export function boardOrder(idx: AkwfIndex): AkwfCategory[] {
+  const rank = (f: string) => (f === 'AKWF_bw_perfectwaves' ? 0 : f.startsWith('AKWF_bw_') ? 1 : /^AKWF_\d+$/.test(f) ? 3 : 2)
+  return idx.categories.map((c, i) => ({ c, i })).sort((a, b) => rank(a.c.folder) - rank(b.c.folder) || a.i - b.i).map((x) => x.c)
+}
+
+/** a wave as a playable sound: loops while held, gentle release */
+export const waveSettings = (): Partial<SoundSettings> => ({
+  repeat: 0,
+  mode: 'hold',
+  attack: 0.005,
+  decay: 0.2,
+  sustain: 1,
+  release: 0.3,
+  volume: 0.8,
+})
+
+/** What every wave's sound starts from, but its name and tag. The board stores a wave's settings as changes from this. */
+export const waveBaseSettings = (): SoundSettings => ({ ...defaultSettings(''), ...waveSettings(), rootNote: CYCLE_ROOT })
+
+/** The settings a wave's sound starts with: named after it, tagged akwf + its category, root C2. */
+export function waveSoundSettings(name: string, folder: string): SoundSettings {
+  return { ...waveBaseSettings(), name: waveLabel(name), tag: addTags('', ['akwf', categoryTag(folder)]) }
 }
 
 /** The wave as the audio of a sound: one cycle, root C2, looped (see encodeCycleWav). */

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { activeVoices, buffers } from '../audio/engine'
+import { activeVoices, audioDuration } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { midiNoteName, padHue } from '../lib/format'
 import DataGrid from './DataGrid.vue'
@@ -102,7 +102,7 @@ const rows = computed<Row[]>(() =>
   board.visible.map((snd, i) => {
     const s = snd.settings
     const note = board.noteFor.get(snd.id)
-    const dur = buffers.get(snd.audioId)?.duration ?? 0
+    const dur = audioDuration(snd.audioId)
     return {
       id: snd.id,
       fav: snd.fav ? '♥' : '♡',

@@ -47,6 +47,12 @@ export interface VoiceOptions {
   detune?: number
   /** VCO 1–3 signals for this voice's mod matrix (audio-rate FM / AM) */
   modTaps?: (AudioNode | null)[]
+  /**
+   * When the note starts (context time). A note's voices -- its VCOs, layered SFZ zones -- share it, so layers at one
+   * pitch keep one phase: built one after another, each reading the clock, they could straddle a render quantum
+   * (three quarters of a cycle at middle C) and add up or cancel by chance.
+   */
+  at?: number
 }
 
 /** A zone, resolved for playback. Times in seconds of the zone's buffer. */
@@ -311,7 +317,7 @@ export class Voice {
     this.setImpulse()
     this.apply(true)
 
-    this.t0 = c.currentTime + 0.005
+    this.t0 = opts.at !== undefined ? Math.max(opts.at, c.currentTime) : c.currentTime + 0.005
     for (const k of [this.atSrc, this.bendSrc, this.velSrc, this.noteBendSrc, this.timbreSrc, this.fenvSrc, this.keySrc, this.rndSrc]) k.start(this.t0)
     this.wireRoutes()
     this.startZoneLfos()

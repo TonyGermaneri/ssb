@@ -17,7 +17,12 @@ const pressed = computed(() => {
   const c = carrierSlot(props.patch)
   return !!c && board.pressed.has(c.layer.id)
 })
-const tagList = computed(() => splitTags(props.patch.tag))
+/** the card's tags: "factory" goes unsaid (every built-in has it; the tag strip still lists it) */
+const tagList = computed(() => {
+  const all = splitTags(props.patch.tag)
+  const rest = all.filter((t) => t.toLowerCase() !== 'factory')
+  return rest.length ? rest : all
+})
 const lastVoice = computed(() =>
   activeVoices.value.filter((v) => board.patchIdOfLayer(v.soundId) === props.patch.id).reduce((m, v) => Math.max(m, v.id), 0),
 )
@@ -65,7 +70,7 @@ function onUp() {
     <div class="backlight" />
     <div v-if="lastVoice" :key="lastVoice" class="flash" />
     <div class="led" />
-    <div class="name">{{ patch.name }}</div>
+    <div class="name" :title="patch.name">{{ patch.name }}</div>
     <div class="sub">{{ mainName }}<span v-if="layers.length > 1"> +{{ layers.length - 1 }} VCO</span></div>
     <div v-if="tagList.length" class="tag" :title="tagList.join(', ')">
       {{ tagList.slice(0, 2).join(' · ') }}<span v-if="tagList.length > 2"> +{{ tagList.length - 2 }}</span>
@@ -186,13 +191,21 @@ function onUp() {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* names say what a patch is (TEA KETTLE WHISTLE LEAD): two lines before they're cut */
 .name {
   font-family: 'Orbitron', sans-serif;
   font-weight: 900;
-  font-size: 12px;
-  letter-spacing: 0.06em;
+  font-size: 11px;
+  line-height: 1.12;
+  letter-spacing: 0.05em;
+  text-align: center;
   text-transform: uppercase;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 .sub {
   font-family: 'VT323', monospace;
@@ -200,7 +213,10 @@ function onUp() {
   line-height: 1;
   opacity: 0.85;
 }
+/* left, clear of the ♥ and keyboard buttons in the corner (a two-line name pushes it down to them) */
 .tag {
+  align-self: flex-start;
+  max-width: calc(100% - 46px);
   font-family: 'VT323', monospace;
   font-size: 12px;
   line-height: 1;

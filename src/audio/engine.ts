@@ -6,6 +6,7 @@ import { MasterFx } from './masterFx'
 import { Voice, type GrainMark, type ModHub, type VoiceOptions } from './voice'
 import { forgetGrainSample, loadGrains } from './grains'
 import { nativeEngine } from '../native/bridge'
+import { cycleRate, isWaveAudioId, waveChannels, waveNameOf } from '../lib/akwf'
 
 /**
  * In the AU / VST3 the native engine makes the sound (native/engine) and this one stays silent:
@@ -178,9 +179,10 @@ const CYCLE_FILL = 0.25
  * A single cycle (an AKWF wave, or any one-cycle WAV with a whole-file loop) at its own rate, repeated to fill
  * a quarter second: never resampled, so the loop stays exact, and grains / STRETCH have room to move.
  */
+const cycleTimes = (n: number, rate: number) => Math.max(1, Math.round((rate * CYCLE_FILL) / n))
 export function cycleBuffer(channels: Float32Array[], rate: number): AudioBuffer {
   const n = channels[0].length
-  const times = Math.max(1, Math.round((rate * CYCLE_FILL) / n))
+  const times = cycleTimes(n, rate)
   const buf = new AudioBuffer({ numberOfChannels: channels.length, length: n * times, sampleRate: rate })
   channels.forEach((ch, c) => {
     const d = buf.getChannelData(c)
@@ -229,14 +231,35 @@ export function stopPreview() {
   previewing = null
 }
 
-/** Buffer for an audio id; SFZ generators ("synth:sine" …) are built on first use. */
+/**
+ * Buffer for an audio id. SFZ generators ("synth:sine" …) and AKWF waves ("akwf-…", once lib/akwf has them in memory)
+ * are built on first use: the board holds thousands of waves, and a wave nobody plays or draws needs no buffer.
+ */
 export function getBuffer(audioId: string): AudioBuffer | undefined {
   let b = buffers.get(audioId)
   if (!b && isSynthAudioId(audioId)) {
     b = makeSynthBuffer(getCtx(), audioId.slice(6) as SynthWave)
     buffers.set(audioId, b)
   }
+  if (!b && isWaveAudioId(audioId)) {
+    const ch = waveChannels(waveNameOf(audioId))
+    if (ch) buffers.set(audioId, (b = cycleBuffer(ch, cycleRate(ch[0].length))))
+  }
   return b
+}
+
+/** Whether an id's audio is here, or is made on demand (generators, AKWF waves). */
+export const hasAudio = (audioId: string) => buffers.has(audioId) || isSynthAudioId(audioId) || isWaveAudioId(audioId)
+
+/** AKWF's cycles are all this long */
+const WAVE_FRAMES = 600
+/** Seconds of audio an id plays, without building a wave's buffer to find out (0 if unknown). */
+export function audioDuration(audioId: string): number {
+  const b = buffers.get(audioId)
+  if (b) return b.duration
+  if (!isWaveAudioId(audioId)) return 0
+  const rate = cycleRate(WAVE_FRAMES)
+  return (cycleTimes(WAVE_FRAMES, rate) * WAVE_FRAMES) / rate
 }
 
 /** Current CC values (0..1), shared with voices for SFZ CC opcodes. */
@@ -272,6 +295,9 @@ export function publish() {
     .filter((v) => v.playing)
     .map((v) => ({ id: v.id, soundId: v.soundId, name: v.settings.name, midiNote: v.midiNote, voice: markRaw(v) }))
 }
+
+/** A start time for a note about to be played: its voices all start then (VoiceOptions.at). */
+export const noteStart = () => getCtx().currentTime + 0.005
 
 export function startVoice(sound: Sound, opts: VoiceOptions & { silent?: boolean } = {}): Voice | null {
   if (external) return null

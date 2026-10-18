@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
-import { activeVoices, buffers, clock, type VoiceInfo } from '../audio/engine'
+import { activeVoices, clock, getBuffer, type VoiceInfo } from '../audio/engine'
 import { clipBounds, knobRate } from '../audio/timing'
 import { GRAIN_FREQ_MAX, grainFreqMin, type GrainEvent } from '../audio/grainMath'
 import { computePeaks } from '../audio/peaks'
@@ -36,7 +36,7 @@ const H = props.height ?? 52
 /** ISO: the waveform as a wall standing on a floor, the stereo field in depth (left at the back) */
 const iso = computed(() => board.master.waveView === 'iso')
 
-const peaks = computed(() => board.peaks.get(props.sound.audioId))
+const peaks = computed(() => board.peaksOf(props.sound.audioId))
 const voices = computed(() => activeVoices.value.filter((v) => v.soundId === props.sound.id))
 
 /**
@@ -65,7 +65,7 @@ function isoAxes(W: number, Hh: number) {
  */
 function grainSpan() {
   const s = props.sound.settings
-  const dur = buffers.get(props.sound.audioId)?.duration ?? 0
+  const dur = getBuffer(props.sound.audioId)?.duration ?? 0
   if (!s.grain || !(dur > 0)) return null
   const { clipIn, clipLen } = clipBounds(s, dur)
   const a = (clipIn + s.grainPos * clipLen) / dur
@@ -75,7 +75,7 @@ function grainSpan() {
 /** SPRAY's reach either side of POS, as fractions of the sample */
 function sprayReach(at: number) {
   const s = props.sound.settings
-  const seconds = buffers.get(props.sound.audioId)?.duration ?? 0
+  const seconds = getBuffer(props.sound.audioId)?.duration ?? 0
   const half = seconds > 0 ? s.grainSpray / 1000 / seconds : 0
   return { from: s.grainSpraySign === 'right' ? at : at - half, to: s.grainSpraySign === 'left' ? at : at + half }
 }
@@ -83,7 +83,7 @@ function sprayReach(at: number) {
 /** each channel's own peaks, per buffer: the ISO view stands a stereo sample's left and right apart */
 const sidePeaks = new WeakMap<AudioBuffer, Float32Array[]>()
 function channelPeaks(p: Float32Array): Float32Array[] {
-  const buf = buffers.get(props.sound.audioId)
+  const buf = getBuffer(props.sound.audioId)
   if (!buf || buf.numberOfChannels < 2) return [p]
   let got = sidePeaks.get(buf)
   if (!got) {

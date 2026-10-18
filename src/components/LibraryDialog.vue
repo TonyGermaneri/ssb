@@ -186,20 +186,32 @@ function audition(w: AkwfWave) {
   const frames = w.channels[0].length
   engine.preview(engine.cycleBuffer(w.channels, cycleRate(frames)), 2 ** ((48 - CYCLE_ROOT) / 12))
 }
+/**
+ * Every wave is a sound of the board from the first load: + on one selects its pad, and puts it back if it was
+ * deleted; ADD ALL puts back the deleted ones of what's shown.
+ */
 async function addAkwf(list: AkwfWave[]) {
+  const missing = list.filter((w) => !onBoard.value.has(waveAudioId(w.name)))
+  if (list.length === 1 && !missing.length) {
+    const [snd] = await board.addWaves(list)
+    board.select(snd.id)
+    board.toast = `${waveLabel(list[0].name)} is on the board — selected`
+    return
+  }
   await guard(async () => {
-    busy.value = { label: 'ADDING', done: 0, total: list.length }
+    busy.value = { label: 'ADDING', done: 0, total: missing.length }
     try {
-      for (const [i, w] of list.entries()) {
+      for (const [i, w] of missing.entries()) {
         await board.addWaves([w])
-        busy.value = { label: 'ADDING', done: i + 1, total: list.length }
+        busy.value = { label: 'ADDING', done: i + 1, total: missing.length }
       }
-      board.toast = list.length === 1 ? `Added ${waveLabel(list[0].name)} (${categoryTag(list[0].folder)})` : `Added ${list.length} waves (${categoryTag(list[0].folder)})`
+      board.toast = missing.length === 1 ? `Put back ${waveLabel(missing[0].name)} (${categoryTag(missing[0].folder)})` : `Put back ${missing.length} waves`
     } finally {
       busy.value = null
     }
   })
 }
+const missingShown = computed(() => shownWaves.value.filter((w) => !onBoard.value.has(waveAudioId(w.name))))
 /** put a wave in VCO slot `i` of the selected patch (a new patch if none) */
 async function toSlot(w: AkwfWave, i: number) {
   await guard(async () => {
@@ -253,8 +265,9 @@ const TABS: { id: Tab; label: string }[] = [
       <p class="hint">
         <template v-if="tab === 'akwf'">
           {{ akwf ? akwf.count.toLocaleString() : '…' }} single-cycle waveforms by <b>Adventure Kid</b> (Kristoffer Ekstrand),
-          public domain, in AKWF's own categories. Click to hear (C3) · <b>+</b> adds it to the board, tagged
-          <b>akwf</b> and its category · <b>1 2 3</b> put it in that VCO slot · ← → step · ↑ ↓ category · ENTER adds.
+          public domain, in AKWF's own categories — every one a sound of the board, tagged <b>akwf</b> and its category.
+          Click to hear (C3) · <b>+</b> selects its pad (puts it back if deleted) · <b>1 2 3</b> put it in that VCO slot ·
+          ← → step · ↑ ↓ category · ENTER selects.
         </template>
         <template v-else-if="tab === 'sfz'">
           Free SFZ instruments from <b>github.com/sfzinstruments</b>. Only the samples an .sfz uses are fetched.
@@ -308,7 +321,7 @@ const TABS: { id: Tab; label: string }[] = [
             </svg>
             <div class="wname">
               <span>{{ tileLabel(w) }}</span>
-              <button title="Add to the board (Enter)" :disabled="!!busy" @click.stop="addAkwf([w])">+</button>
+              <button :title="onBoard.has(waveAudioId(w.name)) ? 'Select its pad on the board (Enter)' : 'Put it back on the board (Enter)'" :disabled="!!busy" @click.stop="addAkwf([w])">+</button>
               <button v-for="i in 3" :key="i" :title="`Put in VCO ${i} of the patch (${i})`" :disabled="!!busy" @click.stop="toSlot(w, i - 1)">
                 {{ i }}
               </button>
@@ -381,10 +394,10 @@ const TABS: { id: Tab; label: string }[] = [
         </div>
         <div v-else-if="error" class="warn">{{ error }}</div>
         <template v-else-if="tab === 'akwf'">
-          <span class="dim">{{ current ? `${current.name} · ${categoryTag(current.folder)}` : 'Added waves loop while a key is held; their root note is C2.' }}</span>
+          <span class="dim">{{ current ? `${current.name} · ${categoryTag(current.folder)}` : 'Every wave is a sound of the board: + selects its pad. They loop while a key is held; root C2.' }}</span>
           <v-spacer />
-          <button class="hw-btn" :disabled="!shownWaves.length" @click="addAkwf(shownWaves)">
-            ADD ALL {{ shownWaves.length }}{{ q ? ' SHOWN' : '' }}
+          <button class="hw-btn" :disabled="!missingShown.length" :title="missingShown.length ? 'Put the deleted ones back on the board' : ''" @click="addAkwf(missingShown)">
+            {{ missingShown.length ? `PUT BACK ${missingShown.length}` : 'ALL ON THE BOARD' }}
           </button>
         </template>
         <div v-else class="dim">Loaded sounds are saved with the board like dropped files.</div>
