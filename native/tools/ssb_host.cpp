@@ -2,7 +2,8 @@
 // the board to the engine), play MIDI into it from a real-time-paced "audio thread", and record
 // what comes out.
 //
-//   ssb-host <SSB.vst3 | SSB.component> <out.wav> [--note 69] [--wait 6] [--hold 1.5] [--bpm 120] [--reload]
+//   ssb-host <SSB.vst3 | SSB.component> <out.wav> [--note 69 | --chord 60,64,67] [--velocity 100] [--wait 6] [--hold 1.5]
+//            [--bpm 120] [--reload]
 //
 // Prints the output's RMS and pitch, and exits non-zero if it was silent. --reload then does what
 // reopening a DAW session does: saves the plugin's state, destroys it, loads a new instance with
@@ -72,6 +73,13 @@ int main (int argc, char** argv)
     const juce::File pluginFile (juce::File::getCurrentWorkingDirectory().getChildFile (args[0]));
     const juce::File outFile (juce::File::getCurrentWorkingDirectory().getChildFile (args[1]));
     const int note = (int) argDouble (args, "--note", 69);
+    // --chord 60,64,67: those notes at once instead of --note
+    juce::Array<int> notes;
+    if (const auto c = args.indexOf ("--chord"); c >= 0 && c + 1 < args.size())
+        for (const auto& n : juce::StringArray::fromTokens (args[c + 1], ",", ""))
+            notes.add (n.getIntValue());
+    if (notes.isEmpty()) notes.add (note);
+    const auto velocity = (juce::uint8) juce::jlimit (1, 127, (int) argDouble (args, "--velocity", 100));
     const double wait = argDouble (args, "--wait", 6), hold = argDouble (args, "--hold", 1.5);
     constexpr double rate = 48000;
     constexpr int block = 480;   // 10 ms
@@ -116,8 +124,11 @@ int main (int argc, char** argv)
         {
             juce::MidiBuffer midi;
             const auto on = (int) (wait * rate), off = (int) ((wait + hold) * rate);
-            if (on >= pos && on < pos + block) midi.addEvent (juce::MidiMessage::noteOn (1, note, (juce::uint8) 100), on - pos);
-            if (off >= pos && off < pos + block) midi.addEvent (juce::MidiMessage::noteOff (1, note), off - pos);
+            for (const auto n : notes)
+            {
+                if (on >= pos && on < pos + block) midi.addEvent (juce::MidiMessage::noteOn (1, n, velocity), on - pos);
+                if (off >= pos && off < pos + block) midi.addEvent (juce::MidiMessage::noteOff (1, n), off - pos);
+            }
             buffer.clear();
             plugin->processBlock (buffer, midi);
             transport.samples += block;
@@ -175,7 +186,12 @@ int main (int argc, char** argv)
         }
         const double r = std::sqrt (sum / std::max (1, to - from));
         const double f = crossings > 1 ? (crossings - 1) / (last - first) : 0.0;
-        std::printf ("%s rms %.4f  zero-crossing pitch %.1f Hz\n", label, r, f);
+        // the loudest sample of either channel, from the note to the end (release and effects tails too)
+        float peak = 0;
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+            peak = std::max (peak, buffer.getMagnitude (ch, (int) (noteOn * rate), buffer.getNumSamples() - (int) (noteOn * rate)));
+        std::printf ("%s rms %.4f (%.1f dBFS)  peak %.1f dBFS  zero-crossing pitch %.1f Hz\n", label, r,
+                     juce::Decibels::gainToDecibels (r, -120.0), juce::Decibels::gainToDecibels ((double) peak, -120.0), f);
         return r;
     };
     const double rms = measure (recorded, wait, "");
@@ -196,8 +212,11 @@ int main (int argc, char** argv)
         {
             juce::MidiBuffer midi;
             const auto on = (int) (0.5 * rate), off = (int) ((0.5 + hold) * rate);
-            if (on >= pos && on < pos + block) midi.addEvent (juce::MidiMessage::noteOn (1, note, (juce::uint8) 100), on - pos);
-            if (off >= pos && off < pos + block) midi.addEvent (juce::MidiMessage::noteOff (1, note), off - pos);
+            for (const auto n : notes)
+            {
+                if (on >= pos && on < pos + block) midi.addEvent (juce::MidiMessage::noteOn (1, n, velocity), on - pos);
+                if (off >= pos && off < pos + block) midi.addEvent (juce::MidiMessage::noteOff (1, n), off - pos);
+            }
             buffer.clear();
             again->processBlock (buffer, midi);
             for (int ch = 0; ch < 2; ++ch) out.copyFrom (ch, pos, buffer, ch, 0, block);

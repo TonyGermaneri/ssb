@@ -18,8 +18,8 @@ import { normalisePath, parseSfz } from '../lib/sfz'
 import { sniffSampleRate } from '../lib/sampleRate'
 import { filterPlayable, nearestZone, pickZones, regionToZone, zoneSemis } from '../lib/zones'
 import { isSynthAudioId, synthAudioId, synthWave } from '../audio/synthWaves'
-import { FACTORY_PATCHES, LEGACY_FACTORY_NAMES, type FactoryPatch } from '../lib/factory'
-import { FACTORY_LEVELS } from '../lib/factoryLevels'
+import { FACTORY_PATCHES, LAYER_VOLUME, LEGACY_FACTORY_NAMES, type FactoryPatch } from '../lib/factory'
+import { FACTORY_LEVELS, FACTORY_LEVELS_V3 } from '../lib/factoryLevels'
 import {
   akwfReady, boardOrder, CYCLE_ROOT, isWaveAudioId, loadAkwf, waveAudioId, waveFolder, waveSoundSettings,
   type AkwfWave,
@@ -67,9 +67,9 @@ interface SavedBoard {
 }
 
 const uid = () => crypto.randomUUID()
-/** 2: the factory patches are made of AKWF waves; 3: every AKWF wave is a sound, and the built-in patches (see
- *  upgradeFactory) */
-const FACTORY_VERSION = 3
+/** 2: the factory patches are made of AKWF waves; 3: every AKWF wave is a sound, and the built-in patches; 4: those
+ *  patches with headroom for chords (see upgradeFactory) */
+const FACTORY_VERSION = 4
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(toRaw(v)))
 const cycle = <T>(list: readonly T[], cur: T) => list[(list.indexOf(cur) + 1) % list.length]
 
@@ -1144,7 +1144,25 @@ export const useBoard = defineStore('board', () => {
   function playNoteOff(note: number, channel?: number) {
     heldNotes.value = heldNotes.value.filter((n) => n !== note)
     if (engine.external) return toEngine({ type: 'noteOff', note, channel: channel ?? 0 })
-    if (master.mono && !isMember(channel)) {
+    // MONO can change while keys are down (another patch selected): what a note started under the other mode ends
+    // with it too, or it would sound on with nothing left to release it (the plugin's engine does the same)
+    const monoNow = master.mono && !isMember(channel)
+    const held = voiceKey(note, channel)
+    if (monoNow && polyVoices.has(held)) {
+      if (perform.sustain) sustainedKeys.add(held)
+      else {
+        releaseAll(polyVoices.get(held))
+        polyVoices.delete(held)
+      }
+    }
+    if (!monoNow && monoVoices.length && (!heldNotes.value.length || monoVoices[0].midiNote === note)) {
+      if (perform.sustain) monoSustained = true
+      else {
+        releaseAll(monoVoices)
+        monoVoices = []
+      }
+    }
+    if (monoNow) {
       if (!monoVoices.length) return
       const top = heldNotes.value.at(-1)
       const sound = playable.value
@@ -1423,7 +1441,8 @@ export const useBoard = defineStore('board', () => {
       m.routes.push(...clone(x.routes ?? []))
       const s = { ...newSlot(layer), ...x.slot }
       // the patch's level trim (lib/factoryLevels.ts) on what is heard: a silent layer's level is its depth as a modulator
-      if (s.audible) layer.settings.volume = Math.min(1.5, layer.settings.volume * 10 ** ((FACTORY_LEVELS[fp.id] ?? 0) / 20))
+      const volume = x.settings?.volume ?? LAYER_VOLUME
+      layer.settings.volume = s.audible ? Math.min(1.5, volume * 10 ** ((FACTORY_LEVELS[fp.id] ?? 0) / 20)) : volume
       return s
     })
     while (slots.length < PATCH_SLOTS) slots.push(null)
@@ -1434,7 +1453,7 @@ export const useBoard = defineStore('board', () => {
     Object.assign(mod.lfo2, h.mod?.lfo2)
     mod.routes.push(...clone(h.mod?.routes ?? []))
     const header = headerOf({ ...d, ...h, fx: { ...d.fx, ...h.fx }, mod } as MasterState)
-    return { id: uid(), name: fp.name, tag: fp.tag, factoryId: fp.id, slots, header }
+    return { id: uid(), name: fp.name, tag: fp.tag, factoryId: fp.id, factoryLevel: FACTORY_LEVELS[fp.id] ?? 0, slots, header }
   }
 
   /** The built-in patches the board hasn't got (by their factory id), after the others. Returns how many. */
@@ -1459,16 +1478,14 @@ export const useBoard = defineStore('board', () => {
    * First run: every AKWF wave becomes a sound of the board (4,358, in AKWF's categories), then the built-in patches
    * made of them. Also the menu's RESTORE: puts back whatever of either has been deleted.
    */
-  async function installFactory() {
+  async function installFactory(nothingAdded = 'Every AKWF wave and built-in patch is here') {
     try {
       const waves = await importWaves()
       const added = await addFactoryPatches()
       if (!master.patchId && patches.value.length) selectPatch(patches.value[0].id)
       Object.assign(master, { factory: true, factoryVersion: FACTORY_VERSION })
       const n = (k: number, one: string, many: string) => `${k.toLocaleString()} ${k === 1 ? one : many}`
-      toast.value = waves || added
-        ? `Added ${n(waves, 'AKWF wave', 'AKWF waves')} and ${n(added, 'patch', 'patches')}`
-        : 'Every AKWF wave and built-in patch is here'
+      toast.value = waves || added ? `Added ${n(waves, 'AKWF wave', 'AKWF waves')} and ${n(added, 'patch', 'patches')}` : nothingAdded
     } catch (e) {
       console.error(e) // try again next launch
       toast.value = 'Couldn\'t load the AKWF waves'
@@ -1535,7 +1552,42 @@ export const useBoard = defineStore('board', () => {
       p.name = fp.name
       p.tag = fp.tag
     }
-    await installFactory()
+    // 0.5 installed its nine untrimmed and 0.6's first build matched each built-in to one note, which left a chord no
+    // headroom: all of them to the current levels (after the renaming, so 0.5's are included)
+    const relevelled = master.factoryVersion < 4 ? relevelFactory() : 0
+    await installFactory(relevelled ? `Built-in patches turned down for headroom (${relevelled})` : undefined)
+  }
+
+  /**
+   * Built-in patches go to the current level trims (lib/factoryLevels.ts) from the ones they were installed with: what
+   * is heard scales by the difference, so a layer you turned up or down keeps its place. Returns how many changed.
+   */
+  function relevelFactory(): number {
+    let changed = 0
+    for (const p of patches.value) {
+      const fp = p.factoryId ? FACTORY_PATCHES.find((x) => x.id === p.factoryId) : undefined
+      if (!fp) continue
+      const now = FACTORY_LEVELS[fp.id] ?? 0
+      const was = p.factoryLevel ?? installedLevel(p, fp)
+      if (was !== now) {
+        const g = 10 ** ((now - was) / 20)
+        for (const x of p.slots) if (x?.audible) x.layer.settings.volume = Math.min(1.5, x.layer.settings.volume * g)
+        changed++
+      }
+      p.factoryLevel = now
+    }
+    return changed
+  }
+  /**
+   * The trim a built-in from before factoryLevel was installed with: 0.6's first build trimmed them all (V3), but 0.5's
+   * nine (renamed since) went in untrimmed -- their main layer's level tells which.
+   */
+  function installedLevel(p: Patch, fp: FactoryPatch): number {
+    const v3 = FACTORY_LEVELS_V3[fp.id] ?? 0
+    if (!Object.values(LEGACY_FACTORY_NAMES).includes(fp.id)) return v3
+    const main = p.slots[0]?.layer.settings.volume ?? 0
+    const trimmed = Math.min(1.5, (fp.slots[0]?.settings?.volume ?? LAYER_VOLUME) * 10 ** (v3 / 20))
+    return Math.abs(main - trimmed) < 0.005 ? v3 : 0
   }
 
   // ── favourites ──

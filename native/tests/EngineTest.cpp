@@ -1468,6 +1468,33 @@ TEST ("engine: KEY on the ADSR runs it faster for higher notes; K>VOL is dB an o
     CHECK_NEAR (20 * std::log10 (loud[1] / flat[1]), 3.0, 0.05);
 }
 
+TEST ("engine: a note held while another patch is chosen still ends -- whether MONO changed under it or not")
+{
+    auto sounding = [] (Rig& rig) { return rig.engine.activeVoices(); };
+    for (const bool fromMono : { true, false })
+    {
+        Rig rig;
+        rig.add ("a", sine (440, 4), [] (auto& s) { s.release = 0.01f; });
+        rig.add ("b", sine (330, 4), [] (auto& s) { s.release = 0.01f; });
+        rig.set ("play", true);
+        rig.set ("playable", "a");
+        rig.set ("mono", fromMono);
+        rig.commit();
+        rig.render (0.2, { on (0.0, 60) });
+        CHECK (sounding (rig) == 1);
+        // the other patch, with the other MONO, while the key is still down
+        rig.set ("playable", "b");
+        rig.set ("mono", ! fromMono);
+        rig.commit();
+        rig.render (0.3, { off (0.05, 60) });
+        CHECK (sounding (rig) == 0);
+        // and the new patch plays and ends as usual
+        rig.render (0.3, { on (0.0, 62), off (0.1, 62) });
+        CHECK (sounding (rig) == 0);
+        CHECK (rig.rms (0.0, 0.1) > 0.01);
+    }
+}
+
 TEST ("engine: HOLD latches released keys until a note comes with none down; notes played over held keys join in")
 {
     auto sounding = [] (Rig& rig) { return rig.engine.activeVoices(); };

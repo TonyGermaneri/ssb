@@ -1105,7 +1105,29 @@ struct Engine::Impl
     {
         dropNote (note);
         if (! perf) return;
-        if (perf->mono && ! isMember (channel))
+        // MONO can change while keys are down (another patch selected): what a note started under the other mode
+        // ends with it too, or it would sound on with nothing left to release it
+        const int key = voiceKey (note, channel);
+        const bool monoNow = perf->mono && ! isMember (channel);
+        if (monoNow && poly[(size_t) key].count > 0)
+        {
+            if (sustain) sustainedKeys[(size_t) key] = true;
+            else
+            {
+                releaseSet (poly[(size_t) key]);
+                poly[(size_t) key].clear();
+            }
+        }
+        if (! monoNow && mono.count > 0 && (heldCount == 0 || voices[(size_t) mono.refs[0].index].midiNote == note))
+        {
+            if (sustain) monoSustained = true;
+            else
+            {
+                releaseSet (mono);
+                mono.clear();
+            }
+        }
+        if (monoNow)
         {
             if (mono.count == 0) return;
             const auto& sound = perf->playable;
@@ -1150,7 +1172,6 @@ struct Engine::Impl
         }
         else
         {
-            const int key = voiceKey (note, channel);
             if (sustain) { sustainedKeys[(size_t) key] = true; return; }
             releaseSet (poly[(size_t) key]);
             poly[(size_t) key].clear();

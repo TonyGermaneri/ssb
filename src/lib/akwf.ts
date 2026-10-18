@@ -210,7 +210,10 @@ export function boardOrder(idx: AkwfIndex): AkwfCategory[] {
   return idx.categories.map((c, i) => ({ c, i })).sort((a, b) => rank(a.c.folder) - rank(b.c.folder) || a.i - b.i).map((x) => x.c)
 }
 
-/** a wave as a playable sound: loops while held, gentle release */
+/**
+ * a wave as a playable sound: loops while held, gentle release, at a level that leaves a chord of them room under 0 dBFS
+ * (a full-scale cycle at 0.8 is near it with one note). Waves you haven't changed are stored without it, so they follow.
+ */
 export const waveSettings = (): Partial<SoundSettings> => ({
   repeat: 0,
   mode: 'hold',
@@ -218,7 +221,7 @@ export const waveSettings = (): Partial<SoundSettings> => ({
   decay: 0.2,
   sustain: 1,
   release: 0.3,
-  volume: 0.8,
+  volume: 0.4,
 })
 
 /** What every wave's sound starts from, but its name and tag. The board stores a wave's settings as changes from this. */

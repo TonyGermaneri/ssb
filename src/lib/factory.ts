@@ -36,6 +36,12 @@ export interface FactoryPatch {
   }
 }
 
+/**
+ * The level a built-in layer starts from before its trim (lib/factoryLevels.ts was measured from it): the AKWF waves'
+ * own, but fixed here, so a wave sound turned up or down on the board doesn't change the patches made of it.
+ */
+export const LAYER_VOLUME = 0.8
+
 /** The perfect waves and a voice: what 0.5's factory patches were made of. */
 export const W = {
   saw: 'AKWF_saw',

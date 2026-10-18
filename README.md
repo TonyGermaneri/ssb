@@ -64,9 +64,12 @@ ring modulation between slots, an LFO at audio rate in RATIO mode — and Granul
   CLOUD); **LOOP** stutters (TAPE STUTTER LOOP, NEBULA DRIFT PAD); grain **FM** rings (GRAIN FM BELLWORKS); **VOID**
   crackles (GEIGER COUNTER FX); SPREAD and SPRAY widen (SUPERSAW FROM ONE).
 
-Most answer the mod wheel (vibrato, a formant, a wobble's rate), velocity and aftertouch. They were played one note at a
-time in the page, measured (K-weighted loudness, BS.1770) and level-matched to about −16 LUFS with peaks under −4 dBFS
-(`src/lib/factoryLevels.ts`). Once installed they're ordinary patches: edit, rename or delete them. **+ → RESTORE
+Most answer the mod wheel (vibrato, a formant, a wobble's rate), velocity and aftertouch. They were played as they're
+played — a poly patch as a four-note chord, a mono one a note at a time, at full velocity, effects on — measured in the
+page (K-weighted loudness, BS.1770) and level-matched to about −16 LUFS with peaks under −7 dBFS
+(`src/lib/factoryLevels.ts`), so at the default levels a chord stays well clear of clipping (the plugin's engine
+measures the same within a dB). Boards that installed them louder are brought down once, keeping any layer you changed
+in proportion. AKWF waves start at volume 0.4 for the same reason. Once installed they're ordinary patches: edit, rename or delete them. **+ → RESTORE
 BUILT-INS** puts back any AKWF wave or built-in patch you've deleted. A board from 0.5 keeps its nine factory patches as
 they are, under their new names (POLY SAW is SUPERSAW SUNRISE, FM PIANO is TINE MACHINE EP, …), and gains the rest;
 boards from before the AKWF waves first lose the old generated SAW WAVE … NOISE sounds, their patches moving to the

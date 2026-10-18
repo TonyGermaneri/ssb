@@ -552,7 +552,7 @@ export interface MasterState {
   /** factory sounds + patches have been installed once */
   factory: boolean
   /** which factory content the board has: 0/1 = the generated SAW WAVE … NOISE, 2 = AKWF waves, 3 = every AKWF wave and
-   *  the built-in patches (FACTORY_VERSION) */
+   *  the built-in patches, 4 = those patches with headroom for chords (FACTORY_VERSION) */
   factoryVersion: number
   /** show the selected patch (+ its VCOs) panels under the header */
   rack: boolean
@@ -666,6 +666,8 @@ export interface Patch {
   fav?: boolean
   /** a built-in patch's id in lib/factory.ts (the one it was made from), so it is known whatever it's called now */
   factoryId?: string
+  /** the level trim (dB, lib/factoryLevels.ts) a built-in patch was installed with, so a re-levelling knows where it starts */
+  factoryLevel?: number
   /** always PATCH_SLOTS long; null = empty slot */
   slots: (PatchSlot | null)[]
   header: PatchHeader
