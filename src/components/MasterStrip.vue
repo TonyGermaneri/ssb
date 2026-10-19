@@ -22,19 +22,19 @@ const K = 28 // header knob size
 const patchLabel = computed(() =>
   board.selectedPatch ? `${String(board.patchNumber).padStart(2, '0')} ${board.selectedPatch.name}` : '-- NO PATCH',
 )
-const layoutTitle = computed(() =>
-  board.master.list
-    ? board.master.rack
-      ? 'Layout: rack + list — click for rack only'
-      : 'Layout: list only — click for rack + list'
-    : 'Layout: rack only — click for list only',
-)
-function cycleLayout() {
-  const m = board.master
-  if (m.rack && m.list) m.list = false
-  else if (!m.list) Object.assign(m, { list: true, rack: false })
-  else m.rack = true
-}
+// VIEW: what's under the header (the rack, the list, or both side by side) and how the list shows its items
+type Layout = 'rack' | 'both' | 'list'
+const LAYOUTS: { id: Layout; label: string; title: string }[] = [
+  { id: 'rack', label: 'RACK', title: "The rack only: the selected patch's three VCOs across the window" },
+  { id: 'both', label: 'BOTH', title: 'The rack with the sounds / patches list beside it (drag the divider to resize)' },
+  { id: 'list', label: 'LIST', title: 'The sounds / patches list only' },
+]
+const layout = computed<Layout>(() => (board.master.rack ? (board.master.list ? 'both' : 'rack') : 'list'))
+const setLayout = (l: Layout) => Object.assign(board.master, { rack: l !== 'list', list: l !== 'rack' })
+const VIEWS = [
+  { id: 'pads', label: 'CARDS', title: 'The list as cards' },
+  { id: 'grid', label: 'GRID', title: 'The list as a spreadsheet' },
+] as const
 
 /** new patch from the sound being edited (or the first sound) */
 function newPatch() {
@@ -87,7 +87,7 @@ function onImport(e: Event) {
   <header class="strip" @dblclick="onStripDoubleClick">
     <v-menu v-model="themeMenu" location="bottom start" :close-on-content-click="false" offset="6">
       <template #activator="{ props: act }">
-        <button class="brand" v-bind="act" :title="`SSB — Super Sound Board · theme: ${board.theme.name} — click for themes`">
+        <button class="brand" v-bind="act" :title="`SSB — Super Sound Board · theme: ${board.theme.name} — click for themes and scanlines`">
           <span class="logo">SSB</span>
           <span class="theme-name">{{ board.theme.name }} ▾</span>
         </button>
@@ -95,7 +95,7 @@ function onImport(e: Event) {
       <ThemePicker v-model="themeMenu" />
     </v-menu>
 
-    <StripSection id="output" title="OUTPUT">
+    <StripSection id="output" title="OUTPUT" fixed>
       <Knob v-model="board.master.volume" label="MASTER" :max="1.2" :default="0.8" :format="fmtPct" :size="K" />
       <button
         class="hw-btn icon"
@@ -111,7 +111,7 @@ function onImport(e: Event) {
       <VuMeter />
     </StripSection>
 
-    <StripSection id="patch" title="PATCH">
+    <StripSection id="patch" title="PATCH" fixed>
       <button class="hw-btn icon" title="Previous patch" @click="board.selectPatchStep(-1)">
         <v-icon size="18" icon="mdi-chevron-left" />
       </button>
@@ -169,8 +169,38 @@ function onImport(e: Event) {
       <Knob v-model="board.master.glide" label="GLIDE" :min="0" :max="2" :step="0.005" :default="0" :format="fmtSec" :size="K" />
     </StripSection>
 
-    <StripSection id="vco" title="VCO">
+    <StripSection id="vco" title="VCO" fixed>
       <VcoScopes />
+    </StripSection>
+
+    <StripSection id="view" title="VIEW" fixed>
+      <div class="stack">
+        <div class="pair">
+          <button
+            v-for="l in LAYOUTS"
+            :key="l.id"
+            class="chip"
+            :class="{ on: layout === l.id }"
+            :title="l.title"
+            @click="setLayout(l.id)"
+          >
+            {{ l.label }}
+          </button>
+        </div>
+        <div class="pair">
+          <button
+            v-for="v in VIEWS"
+            :key="v.id"
+            class="chip"
+            :class="{ on: board.master.view === v.id }"
+            :title="v.title"
+            @click="board.master.view = v.id"
+          >
+            {{ v.label }}
+          </button>
+        </div>
+      </div>
+      <Knob v-model="board.master.scale" label="SCALE" :min="0.5" :max="2" :step="0.05" :default="1" :format="fmtScale" :size="K" color="secondary" />
     </StripSection>
 
     <StripSection id="perform" title="PERFORM">
@@ -300,7 +330,7 @@ function onImport(e: Event) {
     </StripSection>
 
 
-    <StripSection id="board" title="BOARD">
+    <StripSection id="board" title="BOARD" fixed>
       <button
         v-if="inPlugin"
         class="hw-btn icon"
@@ -310,32 +340,6 @@ function onImport(e: Event) {
       >
         <v-icon size="16" :icon="zoomed ? 'mdi-arrow-collapse-all' : 'mdi-arrow-expand-all'" />
       </button>
-      <button
-        class="hw-btn icon"
-        :class="{ lit: board.master.view === 'grid' }"
-        :title="board.master.view === 'grid' ? 'Show pads' : 'Show grid (spreadsheet view)'"
-        @click="board.master.view = board.master.view === 'grid' ? 'pads' : 'grid'"
-      >
-        <v-icon size="16" :icon="board.master.view === 'grid' ? 'mdi-view-grid' : 'mdi-table'" />
-      </button>
-      <!-- layout: rack + list → rack only (fills the screen) → list only -->
-      <button
-        class="hw-btn icon"
-        :class="{ lit: board.master.rack }"
-        :title="layoutTitle"
-        @click="cycleLayout"
-      >
-        <v-icon size="16" :icon="board.master.list ? (board.master.rack ? 'mdi-view-split-horizontal' : 'mdi-format-list-bulleted-square') : 'mdi-view-column'" />
-      </button>
-      <Knob v-model="board.master.scale" label="SCALE" :min="0.5" :max="2" :step="0.05" :default="1" :format="fmtScale" :size="K" color="secondary" />
-      <button
-        class="hw-btn icon"
-        :class="{ lit: board.master.scanlines }"
-        title="CRT scanlines"
-        @click="board.master.scanlines = !board.master.scanlines"
-      >
-        <v-icon size="16" icon="mdi-television-classic" />
-      </button>
       <button class="hw-btn icon" title="Undo (⌘Z)" :disabled="!board.canUndo" @click="board.undo()">
         <v-icon size="16" icon="mdi-undo" />
       </button>
@@ -344,7 +348,7 @@ function onImport(e: Event) {
       </button>
       <v-menu location="bottom end">
         <template #activator="{ props: act }">
-          <button class="hw-btn icon" title="Add sounds" v-bind="act"><v-icon size="16" icon="mdi-plus" /></button>
+          <button class="hw-btn icon" title="Add sounds · browse · import / export the board" v-bind="act"><v-icon size="16" icon="mdi-plus" /></button>
         </template>
         <div class="add-menu">
           <button @click="emit('add')"><v-icon size="16" icon="mdi-file-music" /> ADD FILES… <small>audio · .sfz · .zip</small></button>
@@ -352,14 +356,11 @@ function onImport(e: Event) {
           <button @click="emit('waves')"><v-icon size="16" icon="mdi-sine-wave" /> BROWSE WAVES… <small>AKWF · 4,358 single cycles</small></button>
           <button @click="emit('library')"><v-icon size="16" icon="mdi-music-box-multiple" /> BROWSE LIBRARY… <small>SFZ · GM · drums · URL</small></button>
           <button @click="board.installFactory()"><v-icon size="16" icon="mdi-factory" /> RESTORE BUILT-INS <small>any AKWF wave or factory patch deleted</small></button>
+          <hr />
+          <button @click="board.exportBoard()"><v-icon size="16" icon="mdi-download" /> EXPORT BOARD <small>everything, as a .zip</small></button>
+          <button @click="importInput?.click()"><v-icon size="16" icon="mdi-upload" /> IMPORT BOARD… <small>a board's .zip</small></button>
         </div>
       </v-menu>
-      <button class="hw-btn icon" title="Export board (.zip)" @click="board.exportBoard()">
-        <v-icon size="16" icon="mdi-download" />
-      </button>
-      <button class="hw-btn icon" title="Import board (.zip)" @click="importInput?.click()">
-        <v-icon size="16" icon="mdi-upload" />
-      </button>
       <input ref="importInput" type="file" accept=".zip" hidden @change="onImport" />
     </StripSection>
   </header>
@@ -549,13 +550,20 @@ function onImport(e: Event) {
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
+  border: 0;
   border-radius: 4px;
+  background: none;
   font-family: 'Orbitron', sans-serif;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.1em;
   color: var(--text);
   text-align: left;
+}
+.add-menu hr {
+  margin: 4px 6px;
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 .add-menu button:hover {
   background: color-mix(in srgb, var(--c-primary) 18%, transparent);

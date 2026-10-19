@@ -4,9 +4,8 @@ import { useBoard } from '../stores/board'
 import { padHue } from '../lib/format'
 import type { Patch } from '../types'
 import PatchButton from './PatchButton.vue'
-import Rack from './Rack.vue'
 
-/** Patch catalog as cards, virtualised by rows (an open patch gets a full row showing its layers). */
+/** Patch catalog as cards, virtualised by rows. Patches are edited in the rack (☰ on a card shows it there). */
 const board = useBoard()
 const PAD_W = 152
 const PAD_H = 104
@@ -27,22 +26,12 @@ onBeforeUnmount(() => ro?.disconnect())
 const perRow = computed(() => Math.max(1, Math.floor((width.value - 16) / (PAD_W * board.master.scale + TILE))))
 const number = computed(() => new Map(board.patches.map((p, i) => [p.id, i + 1])))
 const rows = computed(() => {
-  const out: { key: string; patches: Patch[]; open: boolean }[] = []
-  let cur: Patch[] = []
-  const flush = () => {
-    if (cur.length) out.push({ key: cur.map((p) => p.id).join('|'), patches: cur, open: false })
-    cur = []
+  const out: { key: string; patches: Patch[] }[] = []
+  const list = board.visiblePatches
+  for (let i = 0; i < list.length; i += perRow.value) {
+    const patches = list.slice(i, i + perRow.value)
+    out.push({ key: patches.map((p) => p.id).join('|'), patches })
   }
-  for (const p of board.visiblePatches) {
-    if (board.openPanels.has(p.id)) {
-      flush()
-      out.push({ key: `open:${p.id}`, patches: [p], open: true })
-    } else {
-      cur.push(p)
-      if (cur.length >= perRow.value) flush()
-    }
-  }
-  flush()
   return out
 })
 const hue = (p: Patch) => padHue(p.tag, p.name, board.theme.padHues)
@@ -53,8 +42,8 @@ const hue = (p: Patch) => padHue(p.tag, p.name, board.theme.padHues)
     <div class="cart">
       <div class="big">NO PATCHES YET</div>
       <div class="small">
-        a patch = sounds as layers (main + up to 3 VCOs) + the header knobs. Open a sound's panel and press NEW PATCH, or
-        use + next to the header's patch selector.
+        a patch = up to 3 VCOs (sounds) + the header knobs. Press 1 / 2 / 3 on a sound, NEW PATCH in a sound's panel,
+        or + next to the header's patch selector.
       </div>
       <button v-if="board.sounds.length" class="hw-btn" @click="board.newPatch((board.selected ?? board.sounds[0]).id)">
         <v-icon size="14" icon="mdi-plus-box-multiple" /> NEW PATCH FROM "{{ (board.selected ?? board.sounds[0]).settings.name }}"
@@ -67,38 +56,9 @@ const hue = (p: Patch) => padHue(p.tag, p.name, board.theme.padHues)
   <div v-else ref="wrap" class="grid" :style="{ '--pad-scale': board.master.scale }">
     <v-virtual-scroll :items="rows" item-key="key" :item-height="Math.round(PAD_H * board.master.scale + 24)" height="100%">
       <template #default="{ item }">
-        <div class="row" :class="{ open: item.open }">
-          <div v-for="p in item.patches" :key="p.id" class="tile" :class="{ open: item.open }">
-            <div v-if="item.open" class="editor">
-              <div class="editor-bar">
-                <input
-                  :value="p.name"
-                  class="name"
-                  spellcheck="false"
-                  title="Patch name"
-                  @change="(e) => (p.name = (e.target as HTMLInputElement).value.trim() || p.name)"
-                  @keydown.stop
-                />
-                <input
-                  :value="p.tag"
-                  class="tags"
-                  spellcheck="false"
-                  placeholder="tags, comma, separated"
-                  title="Patch tags"
-                  @change="(e) => (p.tag = (e.target as HTMLInputElement).value)"
-                  @keydown.stop
-                />
-                <v-spacer />
-                <button class="hw-btn" title="Duplicate patch" @click="board.duplicatePatch(p.id)">
-                  <v-icon size="14" icon="mdi-content-copy" /> DUPLICATE
-                </button>
-                <button class="hw-btn danger" title="Delete patch" @click="board.removePatch(p.id)">
-                  <v-icon size="14" icon="mdi-delete" /> DELETE
-                </button>
-              </div>
-              <Rack :patch="p" inline />
-            </div>
-            <PatchButton :patch="p" :hue="hue(p)" :open="item.open" :number="number.get(p.id) ?? 0" @toggle="board.togglePanel(p.id)" />
+        <div class="row">
+          <div v-for="p in item.patches" :key="p.id" class="tile">
+            <PatchButton :patch="p" :hue="hue(p)" :number="number.get(p.id) ?? 0" />
           </div>
         </div>
       </template>
@@ -121,42 +81,6 @@ const hue = (p: Patch) => padHue(p.tag, p.name, board.theme.padHues)
   flex-direction: column;
   align-items: center;
   padding: 2px;
-}
-.tile.open {
-  flex-basis: 100%;
-  align-items: flex-start;
-  min-width: 0;
-}
-.editor {
-  width: 100%;
-  margin-bottom: 8px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: linear-gradient(180deg, var(--panel-hi), var(--panel-lo));
-  border: 1px solid #000;
-}
-.editor-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.editor-bar input {
-  height: 28px;
-  padding: 0 8px;
-  border-radius: 3px;
-  font-family: 'VT323', monospace;
-  font-size: 18px;
-  color: var(--c-primary);
-  background: var(--lcd-bg);
-  border: 1px solid #000;
-  outline: none;
-}
-.editor-bar .name {
-  width: 220px;
-}
-.editor-bar .tags {
-  width: 280px;
-  color: var(--c-secondary);
 }
 .empty {
   display: grid;

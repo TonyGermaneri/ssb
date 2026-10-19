@@ -5,14 +5,15 @@ import { useBoard } from '../stores/board'
 import { splitTags } from '../lib/tags'
 import { carrierSlot, patchLayers, type Patch } from '../types'
 
-/** A patch card: click to audition, ☰ opens its layers, the piano button makes it the keyboard patch. */
-const props = defineProps<{ patch: Patch; hue: number; open: boolean; number: number }>()
-const emit = defineEmits<{ toggle: [] }>()
+/** A patch card: a click loads the patch and plays it; ☰ (or right-click) loads it and shows it in the rack. */
+const props = defineProps<{ patch: Patch; hue: number; number: number }>()
 const board = useBoard()
 
 const layers = computed(() => patchLayers(props.patch))
 const playing = computed(() => activeVoices.value.some((v) => board.patchIdOfLayer(v.soundId) === props.patch.id || board.patchIdOfLayer(v.voice.groupId ?? '') === props.patch.id))
 const selected = computed(() => board.master.patchId === props.patch.id)
+/** in the rack right now */
+const editing = computed(() => selected.value && board.master.rack)
 const pressed = computed(() => {
   const c = carrierSlot(props.patch)
   return !!c && board.pressed.has(c.layer.id)
@@ -34,6 +35,8 @@ const mainName = computed(() => {
 function onDown(e: PointerEvent) {
   if (e.button !== 0) return
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  // load it first, so it plays with its own header (volume, glide, mono, effects)
+  if (!selected.value) board.selectPatch(props.patch.id)
   board.pressPatch(props.patch.id)
 }
 function onUp() {
@@ -44,25 +47,25 @@ function onUp() {
 <template>
   <div
     class="pad"
-    :class="{ playing, pressed, open, selected }"
+    :class="{ playing, pressed, selected }"
     :style="{ '--hue': hue }"
     role="button"
     tabindex="0"
-    :aria-label="`Audition ${patch.name}`"
+    :aria-label="`Load and play ${patch.name}`"
     @pointerdown="onDown"
     @pointerup="onUp"
     @pointercancel="onUp"
-    @contextmenu.prevent="emit('toggle')"
+    @contextmenu.prevent="board.editPatch(patch.id)"
   >
     <button
       class="corner burger"
-      :class="{ active: open }"
-      title="Layers"
+      :class="{ active: editing }"
+      :title="editing ? 'In the rack' : 'Edit in the rack'"
       @pointerdown.stop
       @pointerup.stop
       @mousedown.stop
       @keydown.stop
-      @click.stop="emit('toggle')"
+      @click.stop="board.editPatch(patch.id)"
     >
       <v-icon size="18" icon="mdi-menu" />
     </button>
@@ -85,17 +88,6 @@ function onUp() {
       @click.stop="board.toggleFav('patch', patch.id)"
     >
       <v-icon size="13" :icon="patch.fav ? 'mdi-heart' : 'mdi-heart-outline'" />
-    </button>
-    <button
-      class="select"
-      :class="{ on: selected }"
-      :title="selected ? 'The keyboard patch' : 'Make this the keyboard patch'"
-      @pointerdown.stop
-      @pointerup.stop
-      @mousedown.stop
-      @click.stop="board.selectPatch(patch.id)"
-    >
-      <v-icon size="13" icon="mdi-piano" />
     </button>
   </div>
 </template>
@@ -142,10 +134,6 @@ function onUp() {
 .pad.playing {
   filter: brightness(1.15) saturate(1.1);
   box-shadow: 0 6px 0 #0b0a0d, 0 0 22px var(--glow), inset 0 0 0 3px rgba(0, 0, 0, 0.25);
-}
-.pad.open {
-  outline: 2px solid color-mix(in srgb, var(--c-primary) 70%, transparent);
-  outline-offset: 3px;
 }
 .pad.selected::after {
   content: '';
@@ -268,7 +256,7 @@ function onUp() {
 }
 .heart {
   position: absolute;
-  right: 30px;
+  right: 5px;
   bottom: 8px;
   display: grid;
   place-items: center;
@@ -283,23 +271,5 @@ function onUp() {
 .heart.on {
   color: #ff3d6e;
   filter: drop-shadow(0 0 4px #ff3d6e);
-}
-.select {
-  position: absolute;
-  right: 5px;
-  bottom: 8px;
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 18px;
-  padding: 0;
-  border-radius: 3px;
-  color: rgba(255, 255, 255, 0.7);
-  background: rgba(0, 0, 0, 0.3);
-}
-.select.on {
-  color: #062a30;
-  background: var(--c-secondary);
-  box-shadow: 0 0 8px var(--c-secondary);
 }
 </style>

@@ -5,11 +5,11 @@ import { useBoard } from '../stores/board'
 /**
  * One of the header's groups. Folds sideways (◀) to a thin strip, its title turned to read upwards, like the control
  * panel's sections fold up to theirs; a folded group is one button that opens it again (▶). Which are folded is kept
- * in master.headerFolded.
+ * in master.headerFolded. A `fixed` group (the console's core: output, patch, VCOs, view, board) never folds.
  */
-const props = defineProps<{ id: string; title: string }>()
+const props = defineProps<{ id: string; title: string; fixed?: boolean }>()
 const board = useBoard()
-const folded = computed(() => board.master.headerFolded.includes(props.id))
+const folded = computed(() => !props.fixed && board.master.headerFolded.includes(props.id))
 function toggle() {
   const f = board.master.headerFolded
   board.master.headerFolded = folded.value ? f.filter((k) => k !== props.id) : [...f, props.id]
@@ -25,7 +25,7 @@ function toggle() {
     <h5>
       {{ title }}
       <slot name="title" />
-      <button class="fold" :title="`Fold ${title}`" @click="toggle"><i class="tri" /></button>
+      <button v-if="!fixed" class="fold" :title="`Fold ${title}`" @click="toggle"><i class="tri" /></button>
     </h5>
     <div class="controls"><slot /></div>
   </section>

@@ -30,6 +30,14 @@ watch(open, (v) => !v && restore())
         <v-icon size="18" icon="mdi-chevron-right" />
       </button>
       <span class="count">{{ THEMES.length }} THEMES · HOVER TO PREVIEW</span>
+      <button
+        class="hw-btn"
+        :class="{ lit: board.master.scanlines }"
+        title="CRT scanlines over the whole console"
+        @click="board.master.scanlines = !board.master.scanlines"
+      >
+        <v-icon size="16" icon="mdi-television-classic" /> SCANLINES
+      </button>
     </div>
     <div class="body" @mouseleave="restore">
       <section v-for="g in groups" :key="g.name">

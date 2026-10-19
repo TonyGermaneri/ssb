@@ -21,7 +21,8 @@ npm run build    # typecheck + production build
 - **Drop** mp3/wav/ogg/m4a/flac anywhere (or click **+**). The board, settings and header state save to IndexedDB.
 - **SFZ instruments**: drop a folder (or a .zip, or the .sfz together with its samples), or use **+ → Add folder…**.
   See [SFZ](#sfz) below.
-- **Click a pad** to play. **☰** (or right-click) opens its control panel above it; ☰ again closes it.
+- **Click a pad** to play it (it becomes the selected sound). **☰** (or right-click) opens its control panel above
+  it; ☰ again closes it.
 - **Keys** `1–0`, `Q–P`, `A–L`, `Z–M` trigger pads in grid order. **Space** = PANIC, **Esc** = close panels.
 - **Knobs**: drag up/down, scroll, arrow keys; **Shift** = fine; **double-click** = reset.
 - **Waveform**: drag to move clip in/out. Every playing voice and grain shows on it, in its own colour.
@@ -29,11 +30,14 @@ npm run build    # typecheck + production build
 ### Sounds and patches
 
 Two catalogs, as tabs under the header, each with card and grid views and its own tag filter:
-- **Sounds** — the audio you've loaded (pads). Clicking a pad plays it; the piano button edits it in the rack.
+- **Sounds** — the audio you've loaded (pads). Clicking a pad plays it and selects it: the selected sound is what
+  NEW PATCH starts from and what the keys play while no patch is selected.
 - **Patches** — playable instruments built from up to **3 VCO slots**, each holding a sound (as the patch's own
   copy of its settings, so editing a patch never changes the sound), plus the header knobs (volume, glide, mono/poly,
   MPE + bend range, BPM, chorus / delay / reverb, global mod matrix). Selecting a patch loads those header settings;
-  changing them while it's selected saves them into it.
+  changing them while it's selected saves them into it. Clicking a patch card loads it and plays it (so it sounds with
+  its own header); **☰** (or right-click) loads it and shows the rack, the one place a patch is edited — its title row
+  has the name, tags, ♥, **DUPLICATE** (the rack then shows the copy) and **DELETE** (then the next patch).
 
 The header **◀ ▶** step through patches (in the Patches tab's filtered order) and the keyboard (PLAY) plays the selected
 patch. **♥** marks favourites on sound cards, patch cards, the rack and in the grids (♥ column); **♥ FAV** in the tag
@@ -85,8 +89,10 @@ The **rack** under the header shows the selected patch's three slots side by sid
 - **REMOVE** empties a slot.
 - **VCO 1** is the main voice. VCOs 2–3 have **MIX / MOD** (heard, or a silent modulator only), **TRACK / FIXED**
   (follow the played key keeping TRANS / FINE, or always play NOTE) and **LEVEL**.
-- The header's **layout** button cycles rack + list → rack only → list only. Beside the rack the list starts at a
-  third of the window; drag the divider to resize it (double-click = 33%).
+- The header's **VIEW** group picks what's under the header — **RACK**, **BOTH** (the rack with the list beside it)
+  or **LIST** — and shows the list as **CARDS** or a **GRID** (SCALE sizes the cards). Clicking a VCO in the header
+  shows the rack too. Beside the rack the list starts at a third of the window; drag the divider to resize it
+  (double-click = 33%).
 - Each panel section has a **fold** triangle (top right) that shrinks it to its title. EQ, DELAY and REVERB start
   folded; folds are shared by every panel and saved.
 
@@ -96,8 +102,8 @@ and grain clouds work as oscillators too. Note-offs, STOP, choke and PANIC treat
 
 ### Starting up
 
-Every launch starts as a **soundboard**: the pads as cards, the VCO rack put away (the header's
-layout button brings it back).
+Every launch starts as a **soundboard**: the pads as cards, the VCO rack put away (**VIEW → RACK** or **BOTH**
+brings it back).
 
 ### Tags
 
@@ -268,17 +274,18 @@ markers' flags along the top still grab them too).
 
 ### Grid mode
 
-The table button in the header's BOARD group switches to a spreadsheet view (canvas-datagrid, loaded on first use).
-Click a row to select that patch (its full control panel opens on the right), click **▷** or double-click a read-only
-cell to play, double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type a
+**VIEW → GRID** in the header switches the list to a spreadsheet (canvas-datagrid, loaded on first use). Click a row
+to select that sound (in the LIST view its full control panel opens on the right), click **▷** or double-click a
+read-only cell to play, double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type a
 value, and click a column title to sort. Drag a row by its **⠿** into a VCO slot (dragging anywhere else selects
-rows), and **1 2 3** put the sound into that VCO of the patch or take it out, as on the cards. Playing rows light up;
-the grid follows the current theme.
+rows), and **1 2 3** put the sound into that VCO of the patch or take it out, as on the cards. In the Patches tab a
+row click (or ▷) loads the patch. Playing rows light up; the grid follows the current theme.
 
 ### Themes
 
 Click the **SSB** logo for the theme picker: 68 themes in five groups, each tile with its swatches. Hover a tile to
-preview it on the whole board, click to keep it; ◀ ▶ at the top step through them in order.
+preview it on the whole board, click to keep it; ◀ ▶ at the top step through them in order, and **SCANLINES** there
+turns the CRT lines on or off.
 - **ERAS** — Noir '49, Diner '55, Surf '62, Psych '67, Avocado '72, Funk '74, LED Calc '76, Disco '77, Punk '77,
   Roots '78, Cassette '79, Laserium '83, Console '85, Outrun '86, Mall '87, Metal '88, Boombox '88, 8-Bit '89,
   Rave '92, Grunge '93, Vapor '95
@@ -307,10 +314,13 @@ included in exports.
 
 ### Header
 
-OUTPUT + vertical VU · PATCH (◀ selected ▶, PLAY, POLY/MONO, HLD, octave, GLIDE) · PERFORM (MOD, spring-loaded BEND, global MATRIX) ·
-global CHORUS / DELAY / REVERB · TAGS filter · BOARD (pad SCALE, scanlines, undo, redo, add, MIDI, export, import). Wraps into rows on narrow windows.
+OUTPUT + vertical VU · PATCH (◀ selected ▶, new, PLAY, POLY/MONO, HLD, MPE, octave, GLIDE) · VCO (the patch's three
+slots) · VIEW (RACK / BOTH / LIST, CARDS / GRID, SCALE) · PERFORM (SUS, global MATRIX) · TEMPO · MIDI · global CHORUS /
+DELAY / REVERB · BOARD (undo, redo, and **+**: add files or a folder, browse waves or the library, restore built-ins,
+export / import the board). PERFORM, TEMPO · MIDI and the effects fold sideways (◀); the rest always show. Wraps into
+rows on narrow windows.
 
-- **Select a patch** in the Patches tab, or with ◀ ▶ in the header.
+- **Select a patch** by clicking its card in the Patches tab, or with ◀ ▶ in the header.
 - **PLAY** turns MIDI and the computer keyboard into a piano for the selected patch (C4 = original pitch).
   Computer keys: `Z` row = C3 octave, `Q` row = C4 octave, `-` / `=` = octave down/up.
 - **MONO** + **GLIDE** = legato portamento; **POLY** = each note its own voice (glide slides from the last note).

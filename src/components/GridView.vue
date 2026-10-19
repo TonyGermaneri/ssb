@@ -192,7 +192,7 @@ const onToggle = (id: string, column: string) => board.toggleSlot(Number(column.
     :accent="['key', 'midi']"
     :drag-type="SOUND_TYPE"
     :toggles="vcos"
-    hint="▷ / double-click = play · drag ⠿ into a VCO slot · 1 2 3 = put in that VCO of the patch (again = take out) · select a row to edit it in the rack · ⇧ / ⌘-click to pick several, Delete to remove them · double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type · click a column title to sort"
+    hint="▷ / double-click = play · drag ⠿ into a VCO slot · 1 2 3 = put in that VCO of the patch (again = take out) · select a row to edit it (its panel opens beside the grid in the LIST view) · ⇧ / ⌘-click to pick several, Delete to remove them · double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type · click a column title to sort"
     @edit="onEdit"
     @play="onPlay"
     @select="board.select"

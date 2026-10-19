@@ -31,10 +31,15 @@ const progress = computed(() => {
   return (elapsed % v.cycle) / v.cycle
 })
 
+/** a click (or Enter on the focused pad) plays it and makes it the selected sound; the 1–0 / Q–P keys only play */
+function play() {
+  board.press(props.sound.id)
+  board.select(props.sound.id)
+}
 function onDown(e: PointerEvent) {
   if (e.button !== 0) return
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-  board.press(props.sound.id)
+  play()
 }
 function onUp() {
   if (board.pressed.has(props.sound.id)) board.release(props.sound.id)
@@ -52,7 +57,7 @@ function onUp() {
     @pointerdown="onDown"
     @pointerup="onUp"
     @pointercancel="onUp"
-    @keydown.enter.prevent.stop="!$event.repeat && board.press(sound.id)"
+    @keydown.enter.prevent.stop="!$event.repeat && play()"
     @keyup.enter.stop="onUp"
     @contextmenu.prevent="emit('toggle')"
   >
@@ -122,19 +127,6 @@ function onUp() {
       @click.stop="board.toggleFav('sound', sound.id)"
     >
       <v-icon size="13" :icon="sound.fav ? 'mdi-heart' : 'mdi-heart-outline'" />
-    </button>
-    <button
-      class="select"
-      :class="{ on: selected }"
-      :aria-pressed="selected"
-      :title="selected ? 'Editing in the rack' : 'Edit in the rack (and play on the keyboard when there are no patches)'"
-      @pointerdown.stop
-      @pointerup.stop
-      @mousedown.stop
-      @keydown.stop
-      @click.stop="board.select(sound.id)"
-    >
-      <v-icon size="13" icon="mdi-piano" />
     </button>
     <div class="progress"><div :style="{ transform: `scaleX(${progress})` }" /></div>
   </div>
@@ -404,7 +396,7 @@ function onUp() {
 }
 .heart {
   position: absolute;
-  right: 30px;
+  right: 5px;
   bottom: 8px;
   display: grid;
   place-items: center;
@@ -419,30 +411,6 @@ function onUp() {
 .heart.on {
   color: #ff3d6e;
   filter: drop-shadow(0 0 4px #ff3d6e);
-}
-.select {
-  position: absolute;
-  right: 5px;
-  bottom: 8px;
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 18px;
-  padding: 0;
-  border-radius: 3px;
-  color: rgba(255, 255, 255, 0.7);
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(0, 0, 0, 0.35);
-  cursor: pointer;
-}
-.select:hover {
-  color: #fff;
-  background: rgba(0, 0, 0, 0.5);
-}
-.select.on {
-  color: #062a30;
-  background: var(--c-secondary);
-  box-shadow: 0 0 8px var(--c-secondary);
 }
 .pad.selected::after {
   content: '';

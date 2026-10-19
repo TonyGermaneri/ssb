@@ -72,7 +72,9 @@ function onEdit(id: string, column: string, value: string) {
   if (column === 'name' && value.trim()) p.name = value.trim()
   if (column === 'tag') p.tag = value
 }
+/** load it first, so it plays with its own header (volume, glide, mono, effects) */
 function onPlay(id: string) {
+  if (board.master.patchId !== id) board.selectPatch(id)
   board.pressPatch(id)
   setTimeout(() => board.releasePatch(id), 150)
 }
@@ -88,7 +90,7 @@ function onPlay(id: string) {
     :selected-id="board.master.patchId"
     :noun="['patch', 'patches']"
     :accent="['root', 'vco1']"
-    hint="▷ / double-click = audition · click a row to select the patch (its layers open in the rack) · ⇧ / ⌘-click to pick several, Delete to remove them · double-click name or tags to edit · click a column title to sort"
+    hint="▷ / double-click = load and play · click a row to load the patch (edit it in the rack) · ⇧ / ⌘-click to pick several, Delete to remove them · double-click name or tags to edit · click a column title to sort"
     @edit="onEdit"
     @play="onPlay"
     @select="board.selectPatch"

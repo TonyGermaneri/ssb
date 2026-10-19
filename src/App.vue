@@ -182,8 +182,8 @@ onBeforeUnmount(() => {
           PANELS
         </template>
         <template v-else-if="board.master.tab === 'patches'">
-          CLICK A PATCH = AUDITION · PIANO BUTTON = KEYBOARD PATCH · ☰ = EDIT ITS SLOTS · ◀ ▶ IN THE HEADER = STEP PATCHES ·
-          ♥ = FAVOURITE · SPACE = PANIC
+          CLICK A PATCH = LOAD + PLAY · ☰ = EDIT IN THE RACK · ◀ ▶ IN THE HEADER = STEP PATCHES · ♥ = FAVOURITE ·
+          SPACE = PANIC
         </template>
         <template v-else>
           CLICK PAD = PLAY · 1 2 3 = PUT IN THAT VCO SLOT · DRAG ⋮⋮ INTO A SLOT · ☰ = CONTROLS · ♥ = FAVOURITE · 1–0 Q–P A–L Z–M = PADS · SPACE = PANIC ·

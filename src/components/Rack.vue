@@ -2,20 +2,19 @@
 import { computed, ref } from 'vue'
 import { useBoard } from '../stores/board'
 import { fmtCents, fmtSemis, midiNoteName, padHue } from '../lib/format'
-import { PATCH_SLOTS, type Patch, type PatchSlot, type Sound } from '../types'
+import { PATCH_SLOTS, type PatchSlot, type Sound } from '../types'
 import ControlPanel from './ControlPanel.vue'
 import Knob from './Knob.vue'
 
 /**
- * A patch's three VCO slots, side by side across the width. Empty slots are drop zones for sounds (drag a pad by its
- * grip, or press 1 / 2 / 3 on it). Fills its pane (left of the list, or the whole window); `inline`: inside a patch
- * card's open row, at natural height.
+ * The selected patch's three VCO slots, side by side across the width: the one place a patch is edited. Empty slots
+ * are drop zones for sounds (drag a pad by its grip, or press 1 / 2 / 3 on it). Fills its pane (left of the list, or
+ * the whole window).
  */
-const props = defineProps<{ patch?: Patch | null; inline?: boolean }>()
 const board = useBoard()
 const REORDER_TYPE = 'application/x-ssb-sound'
 
-const patch = computed(() => (props.inline ? props.patch : board.selectedPatch) ?? null)
+const patch = computed(() => board.selectedPatch)
 const slots = computed<(PatchSlot | null)[]>(() => patch.value?.slots ?? Array.from({ length: PATCH_SLOTS }, () => null))
 const layerOf = (x: PatchSlot | null): Sound | undefined => (x ? board.layerSound(x.layer) : undefined)
 const sourceName = (x: PatchSlot | null) => (x ? board.byId(x.layer.soundId)?.settings.name ?? '(missing sound)' : '')
@@ -42,8 +41,8 @@ function onDrop(e: DragEvent, i: number) {
 </script>
 
 <template>
-  <div class="rack" :class="{ inline }">
-    <div v-if="!inline" class="title">
+  <div class="rack">
+    <div class="title">
       <template v-if="patch">
         <span class="lbl">PATCH {{ String(board.patchNumber).padStart(2, '0') }}</span>
         <input
@@ -65,6 +64,13 @@ function onDrop(e: DragEvent, i: number) {
         />
         <button class="heart" :class="{ on: patch.fav }" title="Favourite" @click="board.toggleFav('patch', patch.id)">
           <v-icon size="16" :icon="patch.fav ? 'mdi-heart' : 'mdi-heart-outline'" />
+        </button>
+        <v-spacer />
+        <button class="hw-btn" title="Duplicate this patch (the rack then shows the copy)" @click="board.duplicatePatch(patch.id)">
+          <v-icon size="14" icon="mdi-content-copy" /> DUPLICATE
+        </button>
+        <button class="hw-btn danger" title="Delete this patch (the rack then shows the next one)" @click="board.removePatch(patch.id)">
+          <v-icon size="14" icon="mdi-delete" /> DELETE
         </button>
       </template>
       <span v-else class="lbl">NO PATCH — drop a sound into a slot (or press 1 / 2 / 3 on a sound) to start one</span>
@@ -108,7 +114,7 @@ function onDrop(e: DragEvent, i: number) {
           <div v-else class="drop">
             <v-icon size="28" icon="mdi-tray-arrow-down" />
             <div>DRAG A SOUND HERE</div>
-            <small>or press <b>{{ i + 1 }}</b> on a sound card</small>
+            <small>or press <b>{{ i + 1 }}</b> on a sound</small>
           </div>
         </div>
       </div>
@@ -125,12 +131,6 @@ function onDrop(e: DragEvent, i: number) {
   background: color-mix(in srgb, var(--bg-lo) 85%, #000);
   border-bottom: 2px solid #000;
   box-shadow: 0 3px 8px rgba(0, 0, 0, 0.45);
-}
-.rack.inline {
-  padding: 4px 0 8px;
-  background: none;
-  border: 0;
-  box-shadow: none;
 }
 .title {
   flex: none;
@@ -262,9 +262,6 @@ function onDrop(e: DragEvent, i: number) {
   min-height: 0;
   overflow-y: auto;
   scrollbar-width: thin;
-}
-.inline .body {
-  overflow: visible;
 }
 .body :deep(.panel) {
   margin: 0;

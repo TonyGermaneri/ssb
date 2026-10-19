@@ -1215,12 +1215,12 @@ export const useBoard = defineStore('board', () => {
     perform.pressure = 0
   }
 
-  /** An instrument's CC defaults: on load and whenever it becomes the selected patch. */
+  /** An instrument's CC defaults: on load and whenever it becomes what the keys play. */
   function applyCcDefaults(sound: Sound | null | undefined) {
     for (const [cc, v] of Object.entries(sound?.ccDefaults ?? {})) engine.setCC(+cc, v)
   }
-  watch(() => master.selectedId, () => applyCcDefaults(selected.value))
-  watch(() => master.patchId, () => applyCcDefaults(patchMain.value))
+  // clicking a pad selects it: that only changes what the keys play when no patch is selected
+  watch(playable, (s) => applyCcDefaults(s))
 
   // ── themes ─────────────────────────────────────────────────────────────
   const theme = computed(() => themeById(master.theme))
@@ -1271,6 +1271,12 @@ export const useBoard = defineStore('board', () => {
     Object.assign(master.mod, h.mod)
   }
 
+  /** A patch card's ☰: load the patch and show the rack (the one place a patch is edited). */
+  function editPatch(id: string) {
+    selectPatch(id)
+    master.rack = true
+  }
+
   /** Step through the patch catalog (in the tag-filtered order), wrapping. */
   function selectPatchStep(dir: 1 | -1) {
     const list = visiblePatches.value.length ? visiblePatches.value : patches.value
@@ -1309,16 +1315,11 @@ export const useBoard = defineStore('board', () => {
     copy.name = `${copy.name} copy`
     for (const x of copy.slots) if (x) x.layer.id = uid()
     patches.value.splice(i + 1, 0, copy)
+    // edit the copy, not the original
+    selectPatch(copy.id)
   }
 
-  function removePatch(id: string) {
-    const p = patches.value.find((x) => x.id === id)
-    if (!p) return
-    for (const l of patchLayers(p)) engine.stopSound(l.id)
-    openPanels.delete(id)
-    patches.value = patches.value.filter((x) => x.id !== id)
-    if (master.patchId === id) selectPatch(patches.value[0]?.id ?? null)
-  }
+  const removePatch = (id: string) => removePatches([id])
 
   /** Delete several patches at once (one undo step); the selection moves to the nearest survivor. */
   function removePatches(ids: string[]) {
@@ -1327,7 +1328,6 @@ export const useBoard = defineStore('board', () => {
     for (const p of patches.value) {
       if (!gone.has(p.id)) continue
       for (const l of patchLayers(p)) engine.stopSound(l.id)
-      openPanels.delete(p.id)
     }
     patches.value = patches.value.filter((p) => !gone.has(p.id))
     if (master.patchId && gone.has(master.patchId)) selectPatch(next)
@@ -1938,7 +1938,7 @@ export const useBoard = defineStore('board', () => {
     currentFacets, currentFilter, currentTotal, currentShown, toggleCurrentTag, clearCurrentTags, currentHidden, hideCurrentTag,
     tagHidden, patchTagHidden,
     selectedPatch, patchMain, playable, patchNumber, resolveSound, layerSound, patchLayerIds, vcoLinks,
-    installFactory, addFactoryPatch, selectPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, removePatches, assignSlot, slotsOf, toggleSlot, toggleFav,
+    installFactory, addFactoryPatch, selectPatch, editPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, removePatches, assignSlot, slotsOf, toggleSlot, toggleFav,
     pressPatch, releasePatch, patchIdOfLayer,
     tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
     addFiles, addCapture, load, press, release, panic, noteOn, noteOff,
