@@ -35,6 +35,12 @@ concurrency:
 permissions:
   contents: write   # the release job needs this; every other job only reads
 
+# Every artifact handed between jobs goes through GitHub's artifact service, which now and then stops
+# answering for a few minutes: v0.8.0's run built, signed, validated and notarised everything, then
+# lost the release because one upload's CreateArtifact timed out (the action's own five tries span
+# two minutes). So each transfer here runs with continue-on-error and, if it failed, runs again after
+# a pause; a second upload of the same artifact overwrites whatever the first one left.
+
 jobs:
   # --------------------------------------------------------------------------------------------
   # The cheap gate: the page's own tests and build, about a minute, before any compiler runs.
@@ -43,9 +49,9 @@ jobs:
     name: Page
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -74,11 +80,22 @@ jobs:
         run: npm run build
 
       # Built once here and handed to the platform jobs, which copy it into their bundles.
-      - uses: actions/upload-artifact@v4
+      - id: page-up
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: page
           path: dist/
           if-no-files-found: error
+      - if: steps.page-up.outcome == 'failure'
+        run: sleep 120
+      - if: steps.page-up.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: page
+          path: dist/
+          if-no-files-found: error
+          overwrite: true
 
   # --------------------------------------------------------------------------------------------
   macos:
@@ -86,15 +103,24 @@ jobs:
     needs: page
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - id: page-down
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: page
+          path: dist
+      - if: steps.page-down.outcome == 'failure'
+        run: sleep 120
+      - if: steps.page-down.outcome == 'failure'
+        uses: actions/download-artifact@v8
         with:
           name: page
           path: dist
 
       - name: Cache JUCE
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: native/build/_deps
           key: juce-macos-${{ hashFiles('native/CMakeLists.txt') }}
@@ -240,7 +266,7 @@ jobs:
             native/build/plugin/SsbInstrument_artefacts/RelWithDebInfo/VST3/SSB.vst3 end-to-end.wav \
             --note 69 --wait 12 --hold 1.5 --reload
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: pluginval-macos-log
@@ -281,19 +307,41 @@ jobs:
             echo "| notarised | ${{ steps.notarize.outputs.done || 'false' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - id: mac-up
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: ssb-macos-universal
           path: out/
           if-no-files-found: error
+      - if: steps.mac-up.outcome == 'failure'
+        run: sleep 120
+      - if: steps.mac-up.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ssb-macos-universal
+          path: out/
+          if-no-files-found: error
+          overwrite: true
 
       # Only present when notarisation ran; that is what the release job publishes.
-      - uses: actions/upload-artifact@v4
+      - id: release-up
         if: steps.notarize.outputs.done == 'true'
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: ssb-macos-release
           path: release-zips/
           if-no-files-found: error
+      - if: steps.release-up.outcome == 'failure'
+        run: sleep 120
+      - if: steps.release-up.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ssb-macos-release
+          path: release-zips/
+          if-no-files-found: error
+          overwrite: true
 
       - name: Remove the keychain
         if: always() && steps.creds.outputs.sign == 'true'
@@ -318,15 +366,25 @@ jobs:
     runs-on: windows-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - id: page-down
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: page
+          path: dist
+      - if: steps.page-down.outcome == 'failure'
+        shell: bash
+        run: sleep 120
+      - if: steps.page-down.outcome == 'failure'
+        uses: actions/download-artifact@v8
         with:
           name: page
           path: dist
 
       - name: Cache JUCE
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: native/build/_deps
           key: deps-windows-${{ hashFiles('native/CMakeLists.txt') }}
@@ -373,11 +431,23 @@ jobs:
           cp -R "$A/VST3/SSB.vst3" out/
           cp -R "$A/Standalone" out/Standalone
 
-      - uses: actions/upload-artifact@v4
+      - id: win-up
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: ssb-windows-x64
           path: out/
           if-no-files-found: error
+      - if: steps.win-up.outcome == 'failure'
+        shell: bash
+        run: sleep 120
+      - if: steps.win-up.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ssb-windows-x64
+          path: out/
+          if-no-files-found: error
+          overwrite: true
 
   # --------------------------------------------------------------------------------------------
   # Tags only. Everything that reached here passed the page tests, auval and pluginval.
@@ -388,9 +458,17 @@ jobs:
     needs: [macos, windows]
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - id: all-down
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          path: artifacts
+      - if: steps.all-down.outcome == 'failure'
+        run: sleep 120
+      - if: steps.all-down.outcome == 'failure'
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -443,7 +521,7 @@ jobs:
           } > release-notes.txt
           cat release-notes.txt
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: release/*
           body_path: release-notes.txt
