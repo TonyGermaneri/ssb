@@ -44,7 +44,7 @@ function onDrop(e: DragEvent, i: number) {
   <div class="rack">
     <div class="title">
       <template v-if="patch">
-        <span class="lbl">PATCH {{ String(board.patchNumber).padStart(2, '0') }}</span>
+        <span class="lbl">{{ patch === board.candidate ? '★ CANDIDATE' : `PATCH ${String(board.patchNumber).padStart(2, '0')}` }}</span>
         <input
           :value="patch.name"
           class="name"
@@ -66,12 +66,15 @@ function onDrop(e: DragEvent, i: number) {
           <v-icon size="16" :icon="patch.fav ? 'mdi-heart' : 'mdi-heart-outline'" />
         </button>
         <v-spacer />
-        <button class="hw-btn" title="Duplicate this patch (the rack then shows the copy)" @click="board.duplicatePatch(patch.id)">
-          <v-icon size="14" icon="mdi-content-copy" /> DUPLICATE
-        </button>
-        <button class="hw-btn danger" title="Delete this patch (the rack then shows the next one)" @click="board.removePatch(patch.id)">
-          <v-icon size="14" icon="mdi-delete" /> DELETE
-        </button>
+        <!-- (a candidate's SAVE / DISCARD are on its bar, under the header) -->
+        <template v-if="patch !== board.candidate">
+          <button class="hw-btn" title="Duplicate this patch (the rack then shows the copy)" @click="board.duplicatePatch(patch.id)">
+            <v-icon size="14" icon="mdi-content-copy" /> DUPLICATE
+          </button>
+          <button class="hw-btn danger" title="Delete this patch (the rack then shows the next one)" @click="board.removePatch(patch.id)">
+            <v-icon size="14" icon="mdi-delete" /> DELETE
+          </button>
+        </template>
       </template>
       <span v-else class="lbl">NO PATCH — drop a sound into a slot (or press 1 / 2 / 3 on a sound) to start one</span>
     </div>

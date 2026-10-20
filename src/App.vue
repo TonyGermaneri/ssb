@@ -14,6 +14,7 @@ import MasterStrip from './components/MasterStrip.vue'
 import TagStrip from './components/TagStrip.vue'
 import Rack from './components/Rack.vue'
 import TabBar from './components/TabBar.vue'
+import CandidateBar from './components/CandidateBar.vue'
 import PatchCards from './components/PatchCards.vue'
 const PatchTable = defineAsyncComponent(() => import('./components/PatchTable.vue'))
 import SoundGrid from './components/SoundGrid.vue'
@@ -147,6 +148,7 @@ onBeforeUnmount(() => {
       <div class="chrome">
         <MasterStrip @add="fileInput?.click()" @add-folder="folderInput?.click()" @library="openLibrary('sfz')" @waves="openLibrary('akwf')" />
       </div>
+      <CandidateBar />
       <!-- rack (the selected patch's three VCO slots) on the left, the sounds / patches list on the right third -->
       <div class="body" :class="{ split: board.master.rack && board.master.list }">
         <Rack v-if="board.master.rack || !board.master.list" class="rack-pane" />
@@ -183,8 +185,8 @@ onBeforeUnmount(() => {
           PANELS
         </template>
         <template v-else-if="board.master.tab === 'patches'">
-          CLICK A PATCH = LOAD + PLAY · ☰ = EDIT IN THE RACK · ◀ ▶ IN THE HEADER = STEP PATCHES · ♥ = FAVOURITE ·
-          SPACE = PANIC
+          CLICK A PATCH = LOAD + PLAY · ☰ = EDIT IN THE RACK · DESCRIBE ONE + ENTER = MAKE IT · ≈ = ORDER BY LIKENESS ·
+          ◀ ▶ IN THE HEADER = STEP PATCHES · ♥ = FAVOURITE · SPACE = PANIC
         </template>
         <template v-else>
           CLICK PAD = PLAY · 1 2 3 = PUT IN THAT VCO SLOT · DRAG ⋮⋮ INTO A SLOT · ☰ = CONTROLS · ♥ = FAVOURITE · 1–0 Q–P A–L Z–M = PADS · SPACE = PANIC ·

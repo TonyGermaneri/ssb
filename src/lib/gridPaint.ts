@@ -55,6 +55,22 @@ export function paintWave(
   }
 }
 
+/** a likeness score (−1..1, ≈ SIMILAR or a description) as a bar and a percentage */
+export function paintScore(ctx: CanvasRenderingContext2D, box: Box, score: number | undefined, t: Theme) {
+  if (score === undefined) return
+  const v = Math.max(0, Math.min(1, score))
+  const { x, y, width: w, height: h } = box
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.35)'
+  ctx.fillRect(x, y + h - 5, w, 4)
+  ctx.fillStyle = rgba(t.secondary, 0.85)
+  ctx.fillRect(x, y + h - 5, w * v, 4)
+  ctx.font = '16px VT323, monospace'
+  ctx.textBaseline = 'middle'
+  ctx.textAlign = 'right'
+  ctx.fillStyle = t.secondary
+  ctx.fillText(`${Math.round(score * 100)}`, x + w, y + h / 2 - 2)
+}
+
 const BARS = 72
 const LO_HZ = 40
 const HI_HZ = 16000

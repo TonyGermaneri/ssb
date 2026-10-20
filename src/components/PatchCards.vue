@@ -27,7 +27,7 @@ const perRow = computed(() => Math.max(1, Math.floor((width.value - 16) / (PAD_W
 const number = computed(() => new Map(board.patches.map((p, i) => [p.id, i + 1])))
 const rows = computed(() => {
   const out: { key: string; patches: Patch[] }[] = []
-  const list = board.visiblePatches
+  const list = board.shownPatches
   for (let i = 0; i < list.length; i += perRow.value) {
     const patches = list.slice(i, i + perRow.value)
     out.push({ key: patches.map((p) => p.id).join('|'), patches })
@@ -58,7 +58,7 @@ const hue = (p: Patch) => padHue(p.tag, p.name, board.theme.padHues)
       <template #default="{ item }">
         <div class="row">
           <div v-for="p in item.patches" :key="p.id" class="tile">
-            <PatchButton :patch="p" :hue="hue(p)" :number="number.get(p.id) ?? 0" />
+            <PatchButton :patch="p" :hue="hue(p)" :number="number.get(p.id) ?? 0" :score="board.patchScores?.get(p.id)" />
           </div>
         </div>
       </template>

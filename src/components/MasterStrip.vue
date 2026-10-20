@@ -20,7 +20,11 @@ const fx = computed(() => board.master.fx)
 const K = 28 // header knob size
 
 const patchLabel = computed(() =>
-  board.selectedPatch ? `${String(board.patchNumber).padStart(2, '0')} ${board.selectedPatch.name}` : '-- NO PATCH',
+  board.candidate && board.selectedPatch === board.candidate
+    ? `★ ${board.candidate.name}`
+    : board.selectedPatch
+      ? `${String(board.patchNumber).padStart(2, '0')} ${board.selectedPatch.name}`
+      : '-- NO PATCH',
 )
 // VIEW: what's under the header: the rack, the list, or both side by side (the list's own bar picks cards or grid)
 type Layout = 'rack' | 'both' | 'list'

@@ -3,7 +3,7 @@ import { computed, effectScope, onBeforeUnmount, type ComputedRef } from 'vue'
 import { activeVoices, audioDuration, clock } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { midiNoteName, padHue } from '../lib/format'
-import { hueColor, paintWave, type Box } from '../lib/gridPaint'
+import { hueColor, paintScore, paintWave, type Box } from '../lib/gridPaint'
 import DataGrid, { type GridRow } from './DataGrid.vue'
 import ControlPanel from './ControlPanel.vue'
 import { TRIGGER_MODES, type Sound, type SoundSettings, type TriggerMode } from '../types'
@@ -17,10 +17,12 @@ interface Row {
   fav: string
   play: string
   menu: string
+  like: string
   v1: string
   v2: string
   v3: string
   n: number
+  sim: string
   key: string
   name: string
   wave: string
@@ -48,11 +50,13 @@ const SCHEMA = [
   { name: 'fav', title: '♥', width: 34 },
   { name: 'play', title: '▶', width: 38 },
   { name: 'menu', title: '☰', width: 34 }, // the sound's control panel, drawn by DataGrid
+  { name: 'like', title: '≈', width: 30 }, // order the list by likeness to this sound
   // the selected patch's VCO slots: lit where this sound is, a click puts it in or takes it out
   { name: 'v1', title: '1', width: 30 },
   { name: 'v2', title: '2', width: 30 },
   { name: 'v3', title: '3', width: 30 },
   { name: 'n', title: '#', type: 'number', width: 44 },
+  { name: 'sim', title: 'SIM', width: 54 }, // painted: how like the ≈ sound, or the description, it is
   { name: 'key', title: 'KEY', width: 52 },
   { name: 'name', title: 'NAME', width: 170 },
   { name: 'wave', title: 'WAVE', width: 120 }, // painted: the sound's waveform, and its playhead while it plays
@@ -134,7 +138,7 @@ function rowOf(snd: Sound): Row {
   return c.value
 }
 const rows = computed<Row[]>(() =>
-  board.visible.map((snd, i) => {
+  board.shownSounds.map((snd, i) => {
     const r = rowOf(snd)
     r.n = i + 1
     return r
@@ -151,10 +155,12 @@ function makeRow(snd: Sound): Row {
     fav: snd.fav ? '♥' : '♡',
     play: '▷',
     menu: '',
+    like: '',
     v1: '',
     v2: '',
     v3: '',
     n: 0,
+    sim: '',
     key: (board.keyFor.get(snd.id) ?? '').toUpperCase(),
     name: s.name,
     wave: '',
@@ -202,13 +208,19 @@ const painters = {
     const on = playing.value.has(row.id)
     paintWave(ctx, board.peaksOf(snd.audioId), box, hueColor(hueOf(snd), on ? 66 : 58, on ? 1 : 0.8), on ? progressOf(row.id) : -1)
   },
+  sim: (ctx: CanvasRenderingContext2D, box: Box, row: GridRow) => paintScore(ctx, box, board.soundScores?.get(row.id), board.theme),
 }
 /** ☰: the control panel beside (or under) the grid shows the selected sound; ☰ on its row again puts it away */
 const panelShown = computed(() => board.master.gridPanel && !!board.selected)
-const buttons = computed(() => ({
-  menu: { icon: 'menu' as const, title: 'Controls', lit: new Set(panelShown.value && board.selected ? [board.selected.id] : []) },
-}))
+const buttons = computed(() => {
+  const to = board.similarTo.sounds
+  return {
+    menu: { icon: 'menu' as const, title: 'Controls', lit: new Set(panelShown.value && board.selected ? [board.selected.id] : []) },
+    like: { icon: 'similar' as const, title: 'Order by likeness to this sound', lit: new Set(to?.kind === 'item' ? [to.id] : []) },
+  }
+})
 function onButton(id: string, column: string) {
+  if (column === 'like') return board.similarTo.sounds?.kind === 'item' && board.similarTo.sounds.id === id ? board.clearSimilar() : board.showSimilar(id)
   if (column !== 'menu') return
   if (panelShown.value && board.master.selectedId === id) board.master.gridPanel = false
   else {
@@ -237,8 +249,9 @@ const backdrop = computed(() => (board.selected ? { peaks: board.peaksOf(board.s
     :painters="painters"
     :animate="playing.size > 0"
     :backdrop="backdrop"
+    :order="board.similarTo.sounds"
     reorder
-    hint="▷ / double-click = play · ☰ = controls · drag ⠿ into a VCO slot, or onto a row to move it there (unsorted) · 1 2 3 = put in that VCO of the patch (again = take out) · ⇧ / ⌘-click to pick several, Delete to remove them · double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type · click a column title to sort"
+    hint="▷ / double-click = play · ☰ = controls · ≈ = order by likeness to that sound · drag ⠿ into a VCO slot, or onto a row to move it there (unsorted) · 1 2 3 = put in that VCO of the patch (again = take out) · ⇧ / ⌘-click to pick several, Delete to remove them · double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type · click a column title to sort"
     @edit="onEdit"
     @play="onPlay"
     @select="board.select"

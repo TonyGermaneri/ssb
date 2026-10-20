@@ -47,7 +47,7 @@ const rows = computed<Row[]>(() => {
     if (cur.length) out.push({ key: cur.map((s) => s.id).join('|'), sounds: cur, open: false })
     cur = []
   }
-  for (const s of board.visible) {
+  for (const s of board.shownSounds) {
     if (board.openPanels.has(s.id)) {
       flush()
       out.push({ key: `open:${s.id}`, sounds: [s], open: true })

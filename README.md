@@ -100,6 +100,35 @@ Each VCO's live signal (after its own envelope and filter) is a mod-matrix sourc
 VCO 2 → pitch for FM, → volume for AM, → cutoff for audio-rate filter sweeps. VCOs are full sounds, so SFZ instruments
 and grain clouds work as oscillators too. Note-offs, STOP, choke and PANIC treat the patch as one group.
 
+### Semantic search
+
+The list's bar has a description field, **≈ SIMILAR** and, in the Patches tab, **MAKE**:
+- **A description** ("airy choir", "dark gritty bass") orders the list by how near each sound or patch is to it, as you
+  type: its name and tags (AKWF's short names spelt out: `epiano` → electric piano) and words made from its settings
+  (slow attack, dark, plucked, grain cloud, vibrato, wobble, glide, detuned unison, reverb…). A word it shares exactly
+  counts a little extra, a kind of instrument (pad, bass, bell, choir…) more. ✕ or Esc goes back to the board's order.
+- **≈ SIMILAR** (or **≈** on a grid row) orders it by likeness to the selected sound or patch: its settings (each
+  standardised over the board), what it sounds like (its spectrum in bands at the harmonics of C2: a wave's harmonics,
+  a sample's FFT across its clip) and its words. How alike shows on the cards (≈) and in the grid's **SIM** column.
+- **MAKE** (or Enter) doesn't find a patch, it searches for settings: the patches nearest the description are blended,
+  the nearer the more, each setting along its knob (times and frequencies by ratio; grain and filter settings only from
+  patches with the same kind), starting from the nearest one's VCOs and modes. Then the description's own words push
+  it: **DARKER / BRIGHTER**, **SLOWER / FASTER ATTACK**, **LONGER / SHORTER**, **WIDER / DRIER**, **MORE MOTION / STILLER**,
+  **GRITTIER / CLEANER**, **HEAVIER / LIGHTER**; a sound it names outright (choir, organ, flute) can take VCO 1. The
+  result loads as the **candidate** (★ in the header): play it, edit it in the rack; its bar under the header shows what
+  it was made from and what the words pushed, with **REROLL** (another blend of the nearest few), **SAVE** (onto the
+  board) and **DISCARD** (back to the patch before). Until it's saved it isn't on the board: not stored or exported,
+  and ⌘Z doesn't undo its edits.
+
+The words are embedded by [Model2Vec](https://github.com/MinishLab/model2vec)'s **potion-base-8M** (MinishLab, MIT;
+static embeddings distilled from BAAI's bge-base-en-v1.5), which runs in the page: its WordPiece tokenizer, then the
+mean of its tokens' vectors. It ships in `public/models` as int8 (7.7 MB, `scripts/model2vec.mjs`), so search works
+offline in the browser, the app and the plugin alike, and the board's 4,500-odd sounds and patches are embedded in a
+fraction of a second as they arrive (after the board loads, an import, a new patch) and again after they change. As
+in rolidrummer: each text is embedded once, a few synth words are spelt out before they're embedded ("plucky", "fat",
+"glassy"), similarity is a dot product of unit vectors, and words and settings stay apart until the ranking.
+`src/lib/semantic/semantic.test.ts` checks what descriptions bring to the top of the built-in patches.
+
 ### Starting up
 
 Every launch starts as a **soundboard**: the pads as cards, the VCO rack put away (**VIEW → RACK** or **BOTH**
@@ -281,7 +310,8 @@ value, and click a column title to sort. Drag a row by its **⠿** into a VCO sl
 rows) or onto another row to move it there (while the grid isn't sorted), and **1 2 3** put the sound into that VCO
 of the patch or take it out, as on the cards. **WAVE** draws each sound's waveform, with a playhead while it plays.
 In the Patches tab a row click (or ▷) loads the patch, **☰** shows it in the rack, and **VCOS** draws its three
-slots' waves. Behind the rows the grid paints the selected sound's waveform, large and faint, and while anything
+slots' waves. In both, **≈** orders the list by likeness to that row and **SIM** shows how alike each row is (to it,
+or to a description; see [Semantic search](#semantic-search)): the grid then sorts by #, the order of likeness. Behind the rows the grid paints the selected sound's waveform, large and faint, and while anything
 plays, the master's spectrum and scope (in the AU / VST3, whose engine plays outside the page, a glow that follows
 the level). Playing rows light up; the grid follows the current theme.
 

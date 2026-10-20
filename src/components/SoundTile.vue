@@ -55,6 +55,7 @@ function onDrop(e: DragEvent) {
       :hue="hue"
       :open="open"
       :key-label="board.keyFor.get(sound.id)"
+      :score="board.soundScores?.get(sound.id)"
       @toggle="board.togglePanel(sound.id)"
       @dragstart="onDragStart"
     />

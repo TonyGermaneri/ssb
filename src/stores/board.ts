@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { computed, nextTick, reactive, ref, shallowReactive, shallowRef, toRaw, watch, type Ref } from 'vue'
+import { computed, markRaw, nextTick, reactive, ref, shallowReactive, shallowRef, toRaw, watch, type Ref } from 'vue'
 import { del, get, keys, set } from 'idb-keyval'
 import * as engine from '../audio/engine'
 import { computePeaks } from '../audio/peaks'
@@ -21,9 +21,11 @@ import { isSynthAudioId, synthAudioId, synthWave } from '../audio/synthWaves'
 import { FACTORY_PATCHES, LAYER_VOLUME, LEGACY_FACTORY_NAMES, type FactoryPatch } from '../lib/factory'
 import { FACTORY_LEVELS, FACTORY_LEVELS_V3 } from '../lib/factoryLevels'
 import {
-  akwfReady, boardOrder, CYCLE_ROOT, isWaveAudioId, loadAkwf, waveAudioId, waveFolder, waveSoundSettings,
-  type AkwfWave,
+  akwfReady, boardOrder, CYCLE_ROOT, isWaveAudioId, loadAkwf, waveAudioId, waveChannels, waveFolder, waveNameOf,
+  waveSoundSettings, type AkwfWave,
 } from '../lib/akwf'
+import { SemanticIndex } from '../lib/semantic'
+import { makeCandidate, type CandidateInfo } from '../lib/semantic/candidate'
 import { stripExt } from '../lib/format'
 import {
   divisionBeats, defaultMaster, defaultMatrix, defaultSettings, FILTER_TYPES, migrateMaster, migratePresetSettings, presetSettings,
@@ -117,9 +119,30 @@ export const useBoard = defineStore('board', () => {
     const raw = untrack(item)
     return track(item, () => {
       texts.delete(raw)
+      semantic.forget(raw)
       changes.value++
     })
   }
+
+  // ── semantic search (lib/semantic): every sound's and patch's words, settings and sound, as vectors ──
+  // (raw: the store would wrap it, unwrapping its own refs under its methods; they're what's reactive about it)
+  const semantic = markRaw(new SemanticIndex({
+    sounds: () => sounds.value,
+    patches: () => patches.value,
+    layerSound: (layer) => layerSound(layer),
+    soundName: (id) => byId(id)?.settings.name,
+    audioOf(s) {
+      const id = s.zones?.[0]?.audioId ?? s.audioId
+      if (isWaveAudioId(id)) {
+        const ch = waveChannels(waveNameOf(id))
+        return ch ? { cycle: ch[0] } : null
+      }
+      const b = engine.buffers.get(id)
+      if (!b) return null
+      const whole = !!s.zones?.length
+      return { data: b.getChannelData(0), rate: b.sampleRate, from: whole ? 0 : s.settings.clipIn * b.duration, to: whole ? b.duration : s.settings.clipOut * b.duration }
+    },
+  }))
 
   // ── derived ────────────────────────────────────────────────────────────
   /** every tag in the catalog (comma-separated per pad), for tag pickers */
@@ -197,9 +220,19 @@ export const useBoard = defineStore('board', () => {
     layerCache.set(layer.id, snd)
     return snd
   }
+  /**
+   * The patch a description made (lib/semantic/candidate.ts), loaded and playable but not on the board: kept out of
+   * the catalog, saving, undo and exports until SAVE puts it there.
+   */
+  const candidate = ref<Patch | null>(null)
+  const candidateInfo = shallowRef<CandidateInfo | null>(null)
+  /** a patch by id: the board's, or the candidate */
+  const patchById = (id: string | null) =>
+    (id && (patches.value.find((p) => p.id === id) ?? (candidate.value?.id === id ? candidate.value : null))) || null
   const layerIndex = computed(() => {
     const m = new Map<string, { patch: Patch; layer: PatchLayer }>()
-    for (const p of patches.value) for (const l of patchLayers(p)) m.set(l.id, { patch: p, layer: l })
+    for (const p of candidate.value ? [...patches.value, candidate.value] : patches.value)
+      for (const l of patchLayers(p)) m.set(l.id, { patch: p, layer: l })
     return m
   })
   /** a sound pad, or a patch layer (by layer id) */
@@ -209,7 +242,7 @@ export const useBoard = defineStore('board', () => {
     const l = layerIndex.value.get(id)
     return l ? layerSound(l.layer) : undefined
   }
-  const selectedPatch = computed(() => patches.value.find((p) => p.id === master.patchId) ?? null)
+  const selectedPatch = computed(() => patchById(master.patchId))
   const patchMain = computed(() => {
     const c = selectedPatch.value && carrierSlot(selectedPatch.value)
     return c ? layerSound(c.layer) ?? null : null
@@ -241,6 +274,7 @@ export const useBoard = defineStore('board', () => {
     const buf = cycle ? engine.cycleBuffer(cycle.channels, cycle.rate) : await engine.decode(bytes) // detaches `bytes`
     engine.buffers.set(audioId, buf)
     peaks.set(audioId, computePeaks(buf))
+    semantic.audioChanged()
     return rate
   }
 
@@ -1327,7 +1361,7 @@ export const useBoard = defineStore('board', () => {
     selectPatch(copy.id)
   }
 
-  const removePatch = (id: string) => removePatches([id])
+  const removePatch = (id: string) => (id === candidate.value?.id ? discardCandidate() : removePatches([id]))
 
   /** Delete several patches at once (one undo step); the selection moves to the nearest survivor. */
   function removePatches(ids: string[]) {
@@ -1346,7 +1380,7 @@ export const useBoard = defineStore('board', () => {
    * The slot gets a fresh layer (a copy of the sound's settings); whatever was there is replaced. null empties it.
    */
   function assignSlot(slot: number, soundId: string | null, patchId = master.patchId) {
-    let p = patches.value.find((x) => x.id === patchId)
+    let p = patchById(patchId)
     if (!p) {
       if (!soundId) return
       p = newPatch(undefined, byId(soundId)?.settings.name)
@@ -1374,12 +1408,12 @@ export const useBoard = defineStore('board', () => {
 
   /** Audition a patch (its main voice at its root note, other slots included). */
   const pressPatch = (id: string, velocity = 1) => {
-    const p = patches.value.find((x) => x.id === id)
+    const p = patchById(id)
     const c = p && carrierSlot(p)
     if (c) press(c.layer.id, velocity)
   }
   const releasePatch = (id: string) => {
-    const p = patches.value.find((x) => x.id === id)
+    const p = patchById(id)
     const c = p && carrierSlot(p)
     if (c) release(c.layer.id)
   }
@@ -1600,12 +1634,110 @@ export const useBoard = defineStore('board', () => {
 
   // ── favourites ──
   function toggleFav(kind: 'sound' | 'patch', id: string) {
-    const item = kind === 'sound' ? byId(id) : patches.value.find((p) => p.id === id)
+    const item = kind === 'sound' ? byId(id) : patchById(id)
     if (item) item.fav = !item.fav
   }
 
   /** which patch a (layer) voice belongs to */
   const patchIdOfLayer = (layerId: string) => layerIndex.value.get(layerId)?.patch.id
+
+  // ── semantic search: "similar to", descriptions, candidates ──
+  // the index fills in as things arrive: after the board loads (the model is fetched then, in the background), after
+  // imports and new patches (any change), and once the waves are in memory (their spectra)
+  watch(changes, () => loaded.value && semantic.soon())
+  watch(akwfReady, (ready) => ready && semantic.audioChanged())
+  watch(loaded, (ok) => ok && window.setTimeout(() => void semantic.load().catch((e) => console.warn('semantic search:', e)), 1200))
+
+  /** what a tab's list is ordered by, if not the board's order: likeness to an item, or to a description */
+  type SimilarTo = { kind: 'item'; id: string; name: string } | { kind: 'text'; text: string }
+  const similarTo = reactive<{ sounds: SimilarTo | null; patches: SimilarTo | null }>({ sounds: null, patches: null })
+  const tabKey = () => (master.tab === 'patches' ? 'patches' : 'sounds')
+  /** order the showing tab by likeness to its selected sound or patch (or `id`) */
+  function showSimilar(id?: string) {
+    const tab = tabKey()
+    const item = tab === 'patches' ? patchById(id ?? master.patchId) : byId(id ?? master.selectedId ?? '')
+    const name = item ? ('slots' in item ? item.name : item.settings.name) : ''
+    similarTo[tab] = item ? { kind: 'item', id: item.id, name } : null
+  }
+  /** order the showing tab by how near each item's words are to `text` (empty: the board's order again) */
+  function showMatching(text: string) {
+    similarTo[tabKey()] = text.trim() ? { kind: 'text', text: text.trim() } : null
+    if (text.trim()) void semantic.load().catch(() => {})
+  }
+  const clearSimilar = () => (similarTo[tabKey()] = null)
+  /** likeness scores for one tab's ordering (null: the board's order) */
+  function scoresFor<T extends Sound | Patch>(kind: 'sound' | 'patch', to: SimilarTo | null, items: T[]): Map<string, number> | null {
+    void semantic.version.value
+    void semantic.ready.value
+    if (!to) return null
+    if (to.kind === 'text') return semantic.ready.value ? semantic.matchText(kind, to.text, items) : null
+    const ref = kind === 'patch' ? patchById(to.id) : byId(to.id)
+    return ref ? semantic.similar(kind, ref as T, items) : null
+  }
+  const soundScores = computed(() => scoresFor('sound', similarTo.sounds, visible.value))
+  const patchScores = computed(() => scoresFor('patch', similarTo.patches, visiblePatches.value))
+  const byScore = <T extends { id: string }>(list: T[], s: Map<string, number> | null) =>
+    s ? [...list].sort((a, b) => (s.get(b.id) ?? -2) - (s.get(a.id) ?? -2)) : list
+  /** the lists as shown: the tag-filtered pads and patches, in order of likeness while a tab is ordered so */
+  const shownSounds = computed(() => byScore(visible.value, soundScores.value))
+  const shownPatches = computed(() => byScore(visiblePatches.value, patchScores.value))
+
+  /** where the keyboard was before a candidate was loaded, for DISCARD */
+  let beforeCandidate: string | null = null
+  /**
+   * Search a description's settings: the patches its words are nearest give a blend, the words push it (darker,
+   * slower…), a sound it names may take the main VCO. The result is loaded as the candidate; `seed` > 0 rerolls.
+   */
+  async function describePatch(query: string, seed = 0) {
+    const q = query.trim()
+    if (!q) return
+    await semantic.load()
+    const list = patches.value
+    if (!list.length) {
+      toast.value = 'No patches to search yet'
+      return
+    }
+    const scores = semantic.matchText('patch', q, list)
+    const ranked = [...list].sort((a, b) => scores.get(b.id)! - scores.get(a.id)!)
+    const best = scores.get(ranked[0].id)!
+    // the nearest few, within reach of the best (rolidrummer keeps matches within 0.12), sharply weighted
+    const near = ranked.filter((p) => scores.get(p.id)! >= best - 0.12).slice(0, 6)
+    const ws = near.map((p) => Math.exp((scores.get(p.id)! - best) / 0.035))
+    const sum = ws.reduce((a, b) => a + b, 0)
+    const donors = near.map((patch, i) => ({ patch: untrack(patch), weight: ws[i] / sum }))
+    // a sound the description names outright ("choir", "organ") for the main VCO, if it's clearly nearer than the patch's
+    let swap: Sound | undefined
+    const names = semantic.matchText('sound', q, sounds.value)
+    const top = [...names].sort((a, b) => b[1] - a[1])[0]
+    const mainId = carrierSlot(donors[0].patch)?.layer.soundId
+    if (top && top[1] > 0.5 && top[1] - (names.get(mainId ?? '') ?? 0) > 0.15) swap = byId(top[0])
+    const { patch, info } = makeCandidate({ donors, pushes: semantic.pushes(q), query: q, seed, swap: swap && untrack(swap), uid })
+    const prev = candidate.value
+    if (prev) for (const l of patchLayers(prev)) engine.stopSound(l.id)
+    if (!prev) beforeCandidate = master.patchId
+    candidate.value = tracked(patch)
+    candidateInfo.value = info
+    selectPatch(patch.id)
+  }
+  const rerollCandidate = () => candidateInfo.value && describePatch(candidateInfo.value.query, candidateInfo.value.seed + 1)
+  /** keep the candidate: it joins the board's patches, still selected */
+  function saveCandidate() {
+    const c = candidate.value
+    if (!c) return
+    candidate.value = null
+    candidateInfo.value = null
+    patches.value.push(tracked(untrack(c)))
+    toast.value = `Saved "${c.name}"`
+  }
+  /** let it go: back to the patch that was loaded before */
+  function discardCandidate() {
+    const c = candidate.value
+    if (!c) return
+    for (const l of patchLayers(c)) engine.stopSound(l.id)
+    candidate.value = null
+    candidateInfo.value = null
+    selectPatch(patchById(beforeCandidate)?.id ?? patches.value[0]?.id ?? null)
+  }
 
   // ── editing ────────────────────────────────────────────────────────────
   function togglePanel(id: string) {
@@ -1945,7 +2077,9 @@ export const useBoard = defineStore('board', () => {
     patches, patchTagFilter, patchTags, visiblePatches, patchFacets, togglePatchTag,
     currentFacets, currentFilter, currentTotal, currentShown, toggleCurrentTag, clearCurrentTags, currentHidden, hideCurrentTag,
     tagHidden, patchTagHidden,
-    selectedPatch, patchMain, playable, patchNumber, resolveSound, layerSound, patchLayerIds, vcoLinks,
+    selectedPatch, patchMain, playable, patchNumber, resolveSound, layerSound, patchLayerIds, vcoLinks, patchById,
+    semantic, similarTo, showSimilar, showMatching, clearSimilar, soundScores, patchScores, shownSounds, shownPatches,
+    candidate, candidateInfo, describePatch, rerollCandidate, saveCandidate, discardCandidate,
     installFactory, addFactoryPatch, selectPatch, editPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, removePatches, assignSlot, slotsOf, toggleSlot, toggleFav,
     pressPatch, releasePatch, patchIdOfLayer,
     tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,

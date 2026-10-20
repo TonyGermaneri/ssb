@@ -47,6 +47,7 @@ declare module 'canvas-datagrid' {
     scrollLeft: number
     /** the column the view is sorted by, if any */
     orderBy: string | null
+    orderDirection: 'asc' | 'desc'
     /** the grid's own 2D context, and its size in CSS pixels */
     ctx: CanvasRenderingContext2D
     width: number

@@ -48,6 +48,8 @@ const props = defineProps<{
   reorder?: boolean
   /** painted big and faint behind the rows: the selected item's waveform */
   backdrop?: { peaks?: Float32Array; hue?: number } | null
+  /** changes when the rows come in a new order of their own (≈ similar, a description): the grid shows that order */
+  order?: unknown
 }>()
 const emit = defineEmits<{
   edit: [id: string, column: string, value: string]
@@ -485,6 +487,15 @@ watch(
   () => grid?.draw(),
 )
 watch(() => props.backdrop, paintBack)
+// rows in a new order of their own: sorted by # (their place in it), whatever column the grid was sorted by
+watch(
+  () => props.order,
+  () => {
+    if (!grid) return
+    grid.orderBy = 'n'
+    grid.orderDirection = 'asc'
+  },
+)
 // sound starting (or the playheads wanting to move) starts the frames; they stop themselves once all is still
 watch([() => activeVoices.value.length > 0, () => props.animate], () => schedule())
 

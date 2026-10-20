@@ -6,7 +6,8 @@ import { midiNoteName } from '../lib/format'
 import { splitTags } from '../lib/tags'
 import { TRIGGER_MODE_INFO, type Sound } from '../types'
 
-const props = defineProps<{ sound: Sound; hue: number; keyLabel?: string; open: boolean }>()
+/** score: how like the ≈ sound or the description it is (while the list is ordered so) */
+const props = defineProps<{ sound: Sound; hue: number; keyLabel?: string; open: boolean; score?: number }>()
 const emit = defineEmits<{ toggle: []; dragstart: [e: DragEvent] }>()
 const board = useBoard()
 
@@ -109,6 +110,7 @@ function onUp() {
     </div>
 
     <div class="badges">
+      <span v-if="score !== undefined" class="sim" :title="`${Math.round(score * 100)} % alike`">≈{{ Math.round(score * 100) }}</span>
       <v-icon size="12" :icon="TRIGGER_MODE_INFO[sound.settings.mode].icon" />
       <span v-if="sound.zones?.length" class="sfz" :title="`SFZ instrument · ${sound.zones.length} zones`">SFZ</span>
       <span v-if="sound.settings.repeat === 0">∞</span>
@@ -344,6 +346,13 @@ function onUp() {
   font-size: 13px;
   line-height: 1;
   opacity: 0.85;
+}
+.sim {
+  padding: 0 3px;
+  border-radius: 2px;
+  color: #062a30;
+  background: var(--c-secondary);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--c-secondary) 60%, transparent);
 }
 .sfz {
   padding: 0 3px;

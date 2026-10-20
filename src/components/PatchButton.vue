@@ -6,7 +6,8 @@ import { splitTags } from '../lib/tags'
 import { carrierSlot, patchLayers, type Patch } from '../types'
 
 /** A patch card: a click loads the patch and plays it; ☰ (or right-click) loads it and shows it in the rack. */
-const props = defineProps<{ patch: Patch; hue: number; number: number }>()
+/** score: how like the ≈ patch or the description it is (while the list is ordered so) */
+const props = defineProps<{ patch: Patch; hue: number; number: number; score?: number }>()
 const board = useBoard()
 
 const layers = computed(() => patchLayers(props.patch))
@@ -69,7 +70,9 @@ function onUp() {
     >
       <v-icon size="18" icon="mdi-menu" />
     </button>
-    <span class="corner num">{{ String(number).padStart(2, '0') }}</span>
+    <!-- while the list is ordered by likeness, the corner says how alike instead of the patch's number -->
+    <span v-if="score !== undefined" class="corner num sim" :title="`${Math.round(score * 100)} % alike · patch ${number}`">≈{{ Math.round(score * 100) }}</span>
+    <span v-else class="corner num">{{ String(number).padStart(2, '0') }}</span>
     <div class="backlight" />
     <div v-if="lastVoice" :key="lastVoice" class="flash" />
     <div class="led" />
@@ -267,6 +270,11 @@ function onUp() {
   color: rgba(255, 255, 255, 0.6);
   background: rgba(0, 0, 0, 0.25);
   z-index: 2;
+}
+.num.sim {
+  color: #062a30;
+  background: var(--c-secondary);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--c-secondary) 60%, transparent);
 }
 .heart.on {
   color: #ff3d6e;

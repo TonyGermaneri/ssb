@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { activeVoices } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { fmtSec, midiNoteName, padHue } from '../lib/format'
-import { hueColor, paintWave, type Box } from '../lib/gridPaint'
+import { hueColor, paintScore, paintWave, type Box } from '../lib/gridPaint'
 import DataGrid, { type GridRow } from './DataGrid.vue'
 import { carrierSlot, type Patch, type Sound } from '../types'
 
@@ -15,7 +15,9 @@ const SCHEMA = [
   { name: 'fav', title: '♥', width: 34 },
   { name: 'play', title: '▶', width: 38 },
   { name: 'menu', title: '☰', width: 34 }, // edit in the rack, drawn by DataGrid
+  { name: 'like', title: '≈', width: 30 }, // order the list by likeness to this patch
   { name: 'n', title: '#', type: 'number', width: 44 },
+  { name: 'sim', title: 'SIM', width: 54 }, // painted: how like the ≈ patch, or the description, it is
   { name: 'name', title: 'NAME', width: 180 },
   { name: 'vcos', title: 'VCOS', width: 150 }, // painted: each slot's waveform
   { name: 'tag', title: 'TAGS', width: 200 },
@@ -40,7 +42,7 @@ const playing = computed(() => {
 })
 
 const rows = computed<GridRow[]>(() =>
-  board.visiblePatches.map((p, i) => {
+  board.shownPatches.map((p, i) => {
     const main = carrierSlot(p)?.layer
     const soundName = (id: string) => board.byId(id)?.settings.name ?? '(missing)'
     const slotName = (i: number) => {
@@ -54,7 +56,9 @@ const rows = computed<GridRow[]>(() =>
       fav: p.fav ? '♥' : '♡',
       play: '▷', // ◉ while it plays: DataGrid draws it from `playing`
       menu: '',
+      like: '',
       n: i + 1,
+      sim: '',
       name: p.name,
       vcos: '',
       tag: p.tag,
@@ -93,11 +97,23 @@ const painters = {
       paintWave(ctx, snd && board.peaksOf(snd.audioId), b, snd ? hueColor(hueOf(snd), 58, x!.audible || i === 0 ? 0.85 : 0.35) : 'rgba(255, 255, 255, 0.15)')
     })
   },
+  sim: (ctx: CanvasRenderingContext2D, box: Box, row: GridRow) => paintScore(ctx, box, board.patchScores?.get(row.id), board.theme),
 }
-const buttons = computed(() => ({
-  menu: { icon: 'menu' as const, title: 'Edit in the rack', lit: new Set(board.master.rack && board.master.patchId ? [board.master.patchId] : []) },
-}))
-const onButton = (id: string, column: string) => column === 'menu' && board.editPatch(id)
+const buttons = computed(() => {
+  const to = board.similarTo.patches
+  return {
+    menu: { icon: 'menu' as const, title: 'Edit in the rack', lit: new Set(board.master.rack && board.master.patchId ? [board.master.patchId] : []) },
+    like: { icon: 'similar' as const, title: 'Order by likeness to this patch', lit: new Set(to?.kind === 'item' ? [to.id] : []) },
+  }
+})
+function onButton(id: string, column: string) {
+  if (column === 'menu') board.editPatch(id)
+  else if (column === 'like') {
+    const to = board.similarTo.patches
+    if (to?.kind === 'item' && to.id === id) board.clearSimilar()
+    else board.showSimilar(id)
+  }
+}
 /** behind the rows: the selected patch's main VCO */
 const backdrop = computed(() => {
   const p: Patch | null = board.selectedPatch
@@ -127,7 +143,8 @@ function onPlay(id: string) {
     :buttons="buttons"
     :painters="painters"
     :backdrop="backdrop"
-    hint="▷ / double-click = load and play · click a row to load the patch · ☰ = edit it in the rack · ⇧ / ⌘-click to pick several, Delete to remove them · double-click name or tags to edit · click a column title to sort"
+    :order="board.similarTo.patches"
+    hint="▷ / double-click = load and play · click a row to load the patch · ☰ = edit it in the rack · ≈ = order by likeness to that patch · ⇧ / ⌘-click to pick several, Delete to remove them · double-click name or tags to edit · click a column title to sort"
     @edit="onEdit"
     @play="onPlay"
     @select="board.selectPatch"
