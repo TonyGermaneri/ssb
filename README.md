@@ -90,8 +90,8 @@ The **rack** under the header shows the selected patch's three slots side by sid
 - **VCO 1** is the main voice. VCOs 2–3 have **MIX / MOD** (heard, or a silent modulator only), **TRACK / FIXED**
   (follow the played key keeping TRANS / FINE, or always play NOTE) and **LEVEL**.
 - The header's **VIEW** group picks what's under the header — **RACK**, **BOTH** (the rack with the list beside it)
-  or **LIST** — and shows the list as **CARDS** or a **GRID** (SCALE sizes the cards). Clicking a VCO in the header
-  shows the rack too. Beside the rack the list starts at a third of the window; drag the divider to resize it
+  or **LIST**. Clicking a VCO in the header shows the rack too. The list's own bar, right of the SOUNDS / PATCHES
+  tabs, shows it as **CARDS** or a **GRID** (each tab keeps its own) and sizes the cards (− 100% +). Beside the rack the list starts at a third of the window; drag the divider to resize it
   (double-click = 33%).
 - Each panel section has a **fold** triangle (top right) that shrinks it to its title. EQ, DELAY and REVERB start
   folded; folds are shared by every panel and saved.
@@ -274,12 +274,16 @@ markers' flags along the top still grab them too).
 
 ### Grid mode
 
-**VIEW → GRID** in the header switches the list to a spreadsheet (canvas-datagrid, loaded on first use). Click a row
-to select that sound (in the LIST view its full control panel opens on the right), click **▷** or double-click a
-read-only cell to play, double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type a
+**GRID** in the list's bar (each tab has its own) switches it to a spreadsheet (canvas-datagrid, loaded on first use).
+Click a row to select that sound, **☰** shows its full control panel beside the grid (under it when the list is
+narrow; ☰ on that row again, or Esc, puts it away), click **▷** or double-click a read-only cell to play, double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type a
 value, and click a column title to sort. Drag a row by its **⠿** into a VCO slot (dragging anywhere else selects
-rows), and **1 2 3** put the sound into that VCO of the patch or take it out, as on the cards. In the Patches tab a
-row click (or ▷) loads the patch. Playing rows light up; the grid follows the current theme.
+rows) or onto another row to move it there (while the grid isn't sorted), and **1 2 3** put the sound into that VCO
+of the patch or take it out, as on the cards. **WAVE** draws each sound's waveform, with a playhead while it plays.
+In the Patches tab a row click (or ▷) loads the patch, **☰** shows it in the rack, and **VCOS** draws its three
+slots' waves. Behind the rows the grid paints the selected sound's waveform, large and faint, and while anything
+plays, the master's spectrum and scope (in the AU / VST3, whose engine plays outside the page, a glow that follows
+the level). Playing rows light up; the grid follows the current theme.
 
 ### Themes
 

@@ -363,6 +363,20 @@ export function readLevels(): [number, number] {
   }) as [number, number]
 }
 
+/** The master's spectrum (dB per bin, fftSize / 2 of them) into `out`; false when this page isn't the one playing. */
+export function readSpectrum(out: Float32Array<ArrayBuffer>): boolean {
+  if (!ctx || external) return false
+  analysers[0].getFloatFrequencyData(out)
+  return true
+}
+/** The master's last fftSize samples (left), for a scope. */
+export function readScope(out: Float32Array<ArrayBuffer>): boolean {
+  if (!ctx || external) return false
+  analysers[0].getFloatTimeDomainData(out)
+  return true
+}
+export const ANALYSER_SIZE = 1024
+
 /**
  * The context time of the sound leaving the speakers now. currentTime runs ahead of it by the output latency
  * (the audio already rendered and queued: tens of ms, far more on Bluetooth), so playheads drawn at

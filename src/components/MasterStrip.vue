@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { clock } from '../audio/engine'
 import { useBoard } from '../stores/board'
-import { fmtNum, fmtPct, fmtRate, fmtScale, fmtSec, midiNoteName } from '../lib/format'
+import { fmtNum, fmtPct, fmtRate, fmtSec, midiNoteName } from '../lib/format'
 import { DIVISIONS } from '../types'
 import Knob from './Knob.vue'
 import VuMeter from './VuMeter.vue'
@@ -22,7 +22,7 @@ const K = 28 // header knob size
 const patchLabel = computed(() =>
   board.selectedPatch ? `${String(board.patchNumber).padStart(2, '0')} ${board.selectedPatch.name}` : '-- NO PATCH',
 )
-// VIEW: what's under the header (the rack, the list, or both side by side) and how the list shows its items
+// VIEW: what's under the header: the rack, the list, or both side by side (the list's own bar picks cards or grid)
 type Layout = 'rack' | 'both' | 'list'
 const LAYOUTS: { id: Layout; label: string; title: string }[] = [
   { id: 'rack', label: 'RACK', title: "The rack only: the selected patch's three VCOs across the window" },
@@ -31,10 +31,6 @@ const LAYOUTS: { id: Layout; label: string; title: string }[] = [
 ]
 const layout = computed<Layout>(() => (board.master.rack ? (board.master.list ? 'both' : 'rack') : 'list'))
 const setLayout = (l: Layout) => Object.assign(board.master, { rack: l !== 'list', list: l !== 'rack' })
-const VIEWS = [
-  { id: 'pads', label: 'CARDS', title: 'The list as cards' },
-  { id: 'grid', label: 'GRID', title: 'The list as a spreadsheet' },
-] as const
 
 /** new patch from the sound being edited (or the first sound) */
 function newPatch() {
@@ -175,32 +171,17 @@ function onImport(e: Event) {
 
     <StripSection id="view" title="VIEW" fixed>
       <div class="stack">
-        <div class="pair">
-          <button
-            v-for="l in LAYOUTS"
-            :key="l.id"
-            class="chip"
-            :class="{ on: layout === l.id }"
-            :title="l.title"
-            @click="setLayout(l.id)"
-          >
-            {{ l.label }}
-          </button>
-        </div>
-        <div class="pair">
-          <button
-            v-for="v in VIEWS"
-            :key="v.id"
-            class="chip"
-            :class="{ on: board.master.view === v.id }"
-            :title="v.title"
-            @click="board.master.view = v.id"
-          >
-            {{ v.label }}
-          </button>
-        </div>
+        <button
+          v-for="l in LAYOUTS"
+          :key="l.id"
+          class="chip"
+          :class="{ on: layout === l.id }"
+          :title="l.title"
+          @click="setLayout(l.id)"
+        >
+          {{ l.label }}
+        </button>
       </div>
-      <Knob v-model="board.master.scale" label="SCALE" :min="0.5" :max="2" :step="0.05" :default="1" :format="fmtScale" :size="K" color="secondary" />
     </StripSection>
 
     <StripSection id="perform" title="PERFORM">

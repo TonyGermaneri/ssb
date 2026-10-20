@@ -2,12 +2,17 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import canvasDatagrid, { type CanvasDatagrid, type GridCell } from 'canvas-datagrid'
 import { useBoard } from '../stores/board'
-import { gridStyle, mix } from '../theme/gridStyle'
+import { activeVoices, levels } from '../audio/engine'
+import { CELL_ALPHA, gridStyle, mix, rgba } from '../theme/gridStyle'
+import { Backdrop, type Box } from '../lib/gridPaint'
 
 /**
  * Themed canvas-datagrid for a catalog (sounds or patches). Rows need a hidden \`id\` and a 1-based \`n\` (the row's
  * place in \`rows\`, shown as #). ↑ / ↓ move the selection; ⇧ / ⌘ gather rows for Delete, which asks first.
- * With \`dragType\`, a \`grip\` column (⠿) drags its row out; \`toggles\` columns are buttons, one per row.
+ * With \`dragType\`, a \`grip\` column (⠿) drags its row out (and, with \`reorder\`, onto another row to move it);
+ * \`toggles\` columns are buttons labelled with their title, \`buttons\` columns icon buttons, \`painters\` columns
+ * drawn by the parent. Behind the rows a backdrop paints \`backdrop\`'s waveform, and the master's spectrum and scope
+ * while sound plays.
  */
 export interface GridRow {
   id: string
@@ -33,6 +38,16 @@ const props = defineProps<{
   dragType?: string
   /** click-to-toggle columns, drawn as buttons labelled with the column's title: lit for the row ids in its set */
   toggles?: Record<string, ReadonlySet<string>>
+  /** icon-button columns (a click emits \`button\`, nothing else): the icon, and the rows it's lit for */
+  buttons?: Record<string, { icon: 'menu' | 'similar'; lit?: ReadonlySet<string>; title: string }>
+  /** columns the parent draws into (no text), behind nothing but the cell's own background */
+  painters?: Record<string, (ctx: CanvasRenderingContext2D, box: Box, row: GridRow) => void>
+  /** redraw every frame (playheads move) */
+  animate?: boolean
+  /** a row dragged by its grip can be dropped on another to move it there (while the grid isn't sorted) */
+  reorder?: boolean
+  /** painted big and faint behind the rows: the selected item's waveform */
+  backdrop?: { peaks?: Float32Array; hue?: number } | null
 }>()
 const emit = defineEmits<{
   edit: [id: string, column: string, value: string]
@@ -40,24 +55,35 @@ const emit = defineEmits<{
   select: [id: string]
   fav: [id: string]
   toggle: [id: string, column: string]
+  button: [id: string, column: string]
+  /** a row dropped onto another (reorder) */
+  move: [from: string, to: string]
   /** confirmed: delete these rows */
   delete: [ids: string[]]
 }>()
 
 const board = useBoard()
 const host = ref<HTMLDivElement>()
+const back = ref<HTMLCanvasElement>()
+/** the slot (a panel) goes under the grid when there isn't room beside it */
+const root = ref<HTMLDivElement>()
+const narrow = ref(false)
+const NARROW = 980
 /** what a dragged row looks like under the pointer (off screen until then) */
 const ghost = ref<HTMLDivElement>()
 let grid: CanvasDatagrid | null = null
 
 const GRIP = 'grip'
-/** a column this draws itself: the grip or a toggle */
-const special = (column: string) => (column === GRIP && !!props.dragType) || !!props.toggles?.[column]
-/** what a cell under the pointer does: 'grip', 'toggle', or '' for the grid's own clicks and drags */
+/** a column whose cells are controls: the grip, a toggle or a button */
+const special = (column: string) =>
+  (column === GRIP && !!props.dragType) || !!props.toggles?.[column] || !!props.buttons?.[column]
+/** a column drawn here or by the parent, not as text (nor sorted by) */
+const drawn = (column: string) => special(column) || !!props.painters?.[column]
+/** what a cell under the pointer does: 'grip', 'toggle', 'button', or '' for the grid's own clicks and drags */
 function kindOf(cell: GridCell | undefined) {
   const column = cell?.header?.name ?? ''
   if (!cell?.data || cell.isHeader || cell.isColumnHeader || !special(column)) return ''
-  return column === GRIP ? 'grip' : 'toggle'
+  return column === GRIP ? 'grip' : props.buttons?.[column] ? 'button' : 'toggle'
 }
 
 /** rows Delete / Backspace asked to remove (kept while the prompt fades out, so its count doesn't change) */
@@ -109,6 +135,48 @@ function applyTheme() {
   // fill the host (default 'auto' grows the grid to fit every row, so it never scrolls)
   Object.assign(grid.style, gridStyle(board.theme), { height: '100%', width: '100%' })
   grid.draw()
+  paintBack()
+}
+
+// ── the backdrop: a canvas under the (transparent) grid ──
+const backdrop = new Backdrop()
+function paintBack() {
+  const c = back.value
+  if (!c) return
+  const dpr = window.devicePixelRatio || 1
+  const w = c.clientWidth
+  const h = c.clientHeight
+  if (!w || !h) return
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+    c.width = Math.round(w * dpr)
+    c.height = Math.round(h * dpr)
+  }
+  const ctx = c.getContext('2d')!
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  backdrop.paint(ctx, w, h, board.theme, {
+    peaks: props.backdrop?.peaks,
+    hue: props.backdrop?.hue,
+    live: activeVoices.value.length > 0,
+    level: Math.max(...levels.value),
+  })
+}
+/** while sound plays (or bars still fall, or playheads move): repaint every frame; a hidden page gets no frames */
+let ticking = 0
+function tick() {
+  ticking = 0
+  paintBack()
+  if (props.animate) grid?.draw()
+  if (activeVoices.value.length || backdrop.busy || props.animate) schedule()
+}
+function schedule() {
+  if (ticking) return
+  ticking = document.hidden ? window.setTimeout(tick, 33) : requestAnimationFrame(tick)
+}
+const stopTicking = () => {
+  if (!ticking) return
+  cancelAnimationFrame(ticking)
+  clearTimeout(ticking)
+  ticking = 0
 }
 
 onMounted(() => {
@@ -128,6 +196,10 @@ onMounted(() => {
   applyTheme()
   sync(props.rows)
   document.fonts?.ready.then(() => grid?.draw())
+  backObserver = new ResizeObserver(() => paintBack())
+  backObserver.observe(host.value!)
+  sizeObserver = new ResizeObserver(() => (narrow.value = (root.value?.clientWidth ?? 0) < NARROW))
+  sizeObserver.observe(root.value!)
 
   // canvas-datagrid only wheel-scrolls once focused; scroll it ourselves until then (focus would steal pad keys)
   host.value!.addEventListener(
@@ -164,6 +236,48 @@ onMounted(() => {
   canvas.addEventListener('dragend', () => {
     dragRow = null
     canvas.draggable = false
+    dropAt = null
+  })
+  // reorder: a dragged row dropped onto another moves there (sorted, the order shown isn't the board's: no drop)
+  const rowUnder = (e: DragEvent) => {
+    const r = canvas.getBoundingClientRect()
+    const cell = g.getCellAt(e.clientX - r.left, e.clientY - r.top)
+    return cell?.data && !cell.isHeader && !cell.isColumnHeader ? cell : undefined
+  }
+  canvas.addEventListener('dragover', (e) => {
+    if (!props.reorder || !props.dragType || !e.dataTransfer?.types.includes(props.dragType) || g.orderBy) return
+    const cell = rowUnder(e)
+    if (!cell) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    if (dropAt?.id !== cell.data.id) {
+      dropAt = { id: cell.data.id, y: cell.y }
+      g.draw()
+    }
+  })
+  canvas.addEventListener('dragleave', () => {
+    dropAt = null
+    g.draw()
+  })
+  canvas.addEventListener('drop', (e) => {
+    const from = props.dragType ? e.dataTransfer?.getData(props.dragType) : ''
+    const to = dropAt?.id
+    dropAt = null
+    g.draw()
+    if (!from || !to || from === to) return
+    e.preventDefault()
+    emit('move', from, to)
+  })
+  // where a dragged row would land: a line along the top of the row under it
+  g.addEventListener('afterdraw', () => {
+    if (!dropAt) return
+    const ctx = g.ctx
+    ctx.save()
+    ctx.fillStyle = board.theme.primary
+    ctx.shadowColor = board.theme.primary
+    ctx.shadowBlur = 8
+    ctx.fillRect(0, dropAt.y - 1, g.width, 3)
+    ctx.restore()
   })
   /** the cursor this put on the canvas ('' while the grid's own shows), and the grid's from under it */
   let ours = ''
@@ -199,12 +313,16 @@ onMounted(() => {
   g.addEventListener('click', (e) => {
     const id = idOf(e.cell)
     const y = e.cell.rowIndex ?? -1
-    if ((e.cell.isHeader || e.cell.isColumnHeader) && special(col(e))) return e.preventDefault() // nothing to sort by
+    if ((e.cell.isHeader || e.cell.isColumnHeader) && drawn(col(e))) return e.preventDefault() // nothing to sort by
     if (!id || e.cell.isHeader || y < 0) return
     if (col(e) === 'fav') return emit('fav', id) // ♥ column toggles without selecting
     if (kindOf(e.cell) === 'toggle') {
       e.preventDefault()
       return emit('toggle', id, col(e))
+    }
+    if (kindOf(e.cell) === 'button') {
+      e.preventDefault()
+      return emit('button', id, col(e))
     }
     if (e.NativeEvent?.shiftKey) {
       e.preventDefault()
@@ -269,18 +387,46 @@ onMounted(() => {
   g.addEventListener('formattext', (e) => {
     const row = e.row as GridRow | undefined
     if (!row || e.cell.isHeader || e.cell.isColumnHeader) return
-    if (special(col(e))) e.cell.formattedValue = '' // drawn below
+    if (drawn(col(e))) e.cell.formattedValue = '' // drawn below, or by the parent
     else if (col(e) === 'play' && props.playing.has(row.id)) e.cell.formattedValue = '◉'
   })
   // the grip's dots, and each toggle as a button with its column's title on it, lit when its set has the row
   g.addEventListener('afterrendercell', (e) => {
     const row = e.row as GridRow | undefined
     const column = col(e)
-    if (!row || e.cell.isHeader || e.cell.isColumnHeader || !special(column)) return
+    if (!row || e.cell.isHeader || e.cell.isColumnHeader || !drawn(column)) return
     const { ctx, cell } = e
     const t = board.theme
     ctx.save()
-    if (column === GRIP) {
+    const paint = props.painters?.[column]
+    const button = props.buttons?.[column]
+    if (paint) paint(ctx, { x: cell.x + 3, y: cell.y + 3, width: cell.width - 6, height: cell.height - 6 }, row)
+    else if (button) {
+      const on = !!button.lit?.has(row.id)
+      const cx = Math.round(cell.x + cell.width / 2)
+      const cy = Math.round(cell.y + cell.height / 2)
+      ctx.fillStyle = on ? t.primary : t.text[3]
+      if (on) {
+        ctx.shadowColor = t.primary
+        ctx.shadowBlur = 6
+      }
+      if (button.icon === 'menu') for (let i = -1; i <= 1; i++) ctx.fillRect(cx - 6, cy + i * 4 - 1, 12, 2)
+      else {
+        // ≈: two waves
+        ctx.strokeStyle = ctx.fillStyle
+        ctx.lineWidth = 1.6
+        for (const dy of [-3, 3]) {
+          ctx.beginPath()
+          for (let i = 0; i <= 12; i++) {
+            const px = cx - 6 + i
+            const py = cy + dy + Math.sin((i / 12) * Math.PI * 2) * -2
+            if (i) ctx.lineTo(px, py)
+            else ctx.moveTo(px, py)
+          }
+          ctx.stroke()
+        }
+      }
+    } else if (column === GRIP) {
       // two columns of three dots
       const cx = Math.round(cell.x + cell.width / 2)
       const cy = Math.round(cell.y + cell.height / 2)
@@ -317,8 +463,8 @@ onMounted(() => {
     const row = e.row as GridRow | undefined
     if (!row || e.cell.isHeader || e.cell.isColumnHeader) return
     const t = board.theme
-    if (props.playing.has(row.id)) e.ctx.fillStyle = mix(t.panel[2], t.primary, e.cell.selected ? 0.45 : 0.32)
-    else if (row.id === props.selectedId && !e.cell.selected) e.ctx.fillStyle = mix(t.panel[2], t.secondary, 0.1)
+    if (props.playing.has(row.id)) e.ctx.fillStyle = rgba(mix(t.panel[2], t.primary, e.cell.selected ? 0.45 : 0.32), CELL_ALPHA + 0.1)
+    else if (row.id === props.selectedId && !e.cell.selected) e.ctx.fillStyle = rgba(mix(t.panel[2], t.secondary, 0.1), CELL_ALPHA + 0.05)
   })
   g.addEventListener('rendertext', (e) => {
     const row = e.row as GridRow | undefined
@@ -335,27 +481,37 @@ onMounted(() => {
 watch(() => props.rows, sync)
 watch(() => board.theme, applyTheme)
 watch(
-  () => [props.selectedId, props.playing, props.toggles],
+  () => [props.selectedId, props.playing, props.toggles, props.buttons],
   () => grid?.draw(),
 )
+watch(() => props.backdrop, paintBack)
+// sound starting (or the playheads wanting to move) starts the frames; they stop themselves once all is still
+watch([() => activeVoices.value.length > 0, () => props.animate], () => schedule())
 
+/** where a dragged row would be dropped (reorder) */
+let dropAt: { id: string; y: number } | null = null
+let backObserver: ResizeObserver | undefined
+let sizeObserver: ResizeObserver | undefined
 /** stops following the pointer for the grip's cursor */
 let unhover = () => {}
 onBeforeUnmount(() => {
   unhover()
+  stopTicking()
+  backObserver?.disconnect()
+  sizeObserver?.disconnect()
   grid?.dispose?.()
   grid = null
 })
 </script>
 
 <template>
-  <div class="grid-mode">
+  <div ref="root" class="grid-mode" :class="{ narrow }">
     <div class="grid-shell">
-      <div ref="host" class="grid-host" />
-      <p class="hint">{{ hint }}</p>
+      <div ref="host" class="grid-host"><canvas ref="back" class="backdrop" aria-hidden="true" /></div>
+      <p class="hint" :title="hint">{{ hint }}</p>
     </div>
     <div ref="ghost" class="drag-ghost" aria-hidden="true" />
-    <slot />
+    <slot :narrow="narrow" />
     <v-dialog v-model="asking" max-width="420">
       <div class="ask" tabindex="-1" @keydown.stop @keydown.enter="onEnter" @keydown.esc="asking = false">
         <h3><v-icon icon="mdi-delete-alert" color="error" size="20" /> DELETE</h3>
@@ -378,14 +534,25 @@ onBeforeUnmount(() => {
   height: 100%;
   min-height: 300px;
 }
+.grid-mode.narrow {
+  flex-direction: column;
+}
+/* under a narrow grid the panel needs the room: the hint keeps to one line (all of it on hover) */
+.narrow .hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .grid-shell {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 .grid-host {
+  position: relative;
   flex: 1;
   min-height: 0;
   border-radius: 6px;
@@ -394,6 +561,19 @@ onBeforeUnmount(() => {
   box-shadow:
     0 8px 20px rgba(0, 0, 0, 0.5),
     inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+/* the grid sits over the backdrop, which shows through its transparent background and see-through rows */
+.grid-host :deep(canvas-datagrid) {
+  position: relative;
+  z-index: 1;
+}
+.backdrop {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 .ask {
   padding: 14px 16px;

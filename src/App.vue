@@ -67,6 +67,7 @@ function onKeyDown(e: KeyboardEvent) {
   }
   if (e.key === 'Escape') {
     board.openPanels.clear()
+    board.master.gridPanel = false
     return
   }
   if (e.repeat) return
@@ -168,15 +169,15 @@ onBeforeUnmount(() => {
           <TagStrip v-if="board.sounds.length || board.patches.length" />
           <main class="deck">
         <template v-if="board.master.tab === 'patches'">
-          <PatchTable v-if="board.master.view === 'grid' && board.patches.length" />
+          <PatchTable v-if="board.listView === 'grid' && board.patches.length" />
           <PatchCards v-else />
         </template>
         <template v-else>
-          <GridView v-if="board.master.view === 'grid' && board.sounds.length" />
+          <GridView v-if="board.listView === 'grid' && board.sounds.length" />
           <SoundGrid v-else @add="fileInput?.click()" />
         </template>
       </main>
-      <footer v-if="board.master.view === 'pads'" class="legend">
+      <footer v-if="board.listView === 'pads'" class="legend">
         <template v-if="board.master.play">
           PLAY MODE · Z–/ AND Q–P ROWS = PIANO (Q = C4, ORIGINAL PITCH) · - / = = OCTAVE · SPACE = PANIC · ESC = CLOSE
           PANELS

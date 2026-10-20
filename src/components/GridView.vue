@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, effectScope, onBeforeUnmount, type ComputedRef } from 'vue'
-import { activeVoices, audioDuration } from '../audio/engine'
+import { activeVoices, audioDuration, clock } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { midiNoteName, padHue } from '../lib/format'
-import DataGrid from './DataGrid.vue'
+import { hueColor, paintWave, type Box } from '../lib/gridPaint'
+import DataGrid, { type GridRow } from './DataGrid.vue'
 import ControlPanel from './ControlPanel.vue'
 import { TRIGGER_MODES, type Sound, type SoundSettings, type TriggerMode } from '../types'
 
@@ -15,12 +16,14 @@ interface Row {
   grip: string
   fav: string
   play: string
+  menu: string
   v1: string
   v2: string
   v3: string
   n: number
   key: string
   name: string
+  wave: string
   tag: string
   file: string
   length: string
@@ -44,6 +47,7 @@ const SCHEMA = [
   { name: 'grip', title: ' ', width: 26 }, // ⠿, drawn by DataGrid (a blank title would show the name)
   { name: 'fav', title: '♥', width: 34 },
   { name: 'play', title: '▶', width: 38 },
+  { name: 'menu', title: '☰', width: 34 }, // the sound's control panel, drawn by DataGrid
   // the selected patch's VCO slots: lit where this sound is, a click puts it in or takes it out
   { name: 'v1', title: '1', width: 30 },
   { name: 'v2', title: '2', width: 30 },
@@ -51,6 +55,7 @@ const SCHEMA = [
   { name: 'n', title: '#', type: 'number', width: 44 },
   { name: 'key', title: 'KEY', width: 52 },
   { name: 'name', title: 'NAME', width: 170 },
+  { name: 'wave', title: 'WAVE', width: 120 }, // painted: the sound's waveform, and its playhead while it plays
   { name: 'tag', title: 'TAG', width: 110 },
   { name: 'file', title: 'FILE', width: 170 },
   { name: 'length', title: 'LEN', width: 70 },
@@ -145,12 +150,14 @@ function makeRow(snd: Sound): Row {
     grip: '',
     fav: snd.fav ? '♥' : '♡',
     play: '▷',
+    menu: '',
     v1: '',
     v2: '',
     v3: '',
     n: 0,
     key: (board.keyFor.get(snd.id) ?? '').toUpperCase(),
     name: s.name,
+    wave: '',
     tag: s.tag,
     file: snd.zones?.length ? `${snd.fileName} · ${snd.zones.length} zones` : snd.fileName,
     length: `${dur.toFixed(2)}s`,
@@ -177,12 +184,46 @@ function onPlay(id: string) {
 }
 /** 1 / 2 / 3: this sound into that VCO slot of the selected patch, or out of it if it's there (as on a pad) */
 const onToggle = (id: string, column: string) => board.toggleSlot(Number(column.slice(1)) - 1, id)
+
+// ── what the cards show, painted ──
+const hueOf = (snd: Sound) => padHue(snd.settings.tag, snd.settings.name, board.theme.padHues)
+/** 0..1 through the newest voice's play (finite repeats) or its current loop cycle, as the pads' progress bars */
+function progressOf(id: string): number {
+  const v = activeVoices.value.filter((x) => x.soundId === id).at(-1)?.voice
+  if (!v) return -1
+  const elapsed = clock.value - v.t0
+  if (Number.isFinite(v.endTime)) return Math.min(1, Math.max(0, elapsed / (v.endTime - v.t0)))
+  return v.cycle > 0 ? (((elapsed % v.cycle) + v.cycle) % v.cycle) / v.cycle : -1
+}
+const painters = {
+  wave: (ctx: CanvasRenderingContext2D, box: Box, row: GridRow) => {
+    const snd = board.byId(row.id)
+    if (!snd) return
+    const on = playing.value.has(row.id)
+    paintWave(ctx, board.peaksOf(snd.audioId), box, hueColor(hueOf(snd), on ? 66 : 58, on ? 1 : 0.8), on ? progressOf(row.id) : -1)
+  },
+}
+/** ☰: the control panel beside (or under) the grid shows the selected sound; ☰ on its row again puts it away */
+const panelShown = computed(() => board.master.gridPanel && !!board.selected)
+const buttons = computed(() => ({
+  menu: { icon: 'menu' as const, title: 'Controls', lit: new Set(panelShown.value && board.selected ? [board.selected.id] : []) },
+}))
+function onButton(id: string, column: string) {
+  if (column !== 'menu') return
+  if (panelShown.value && board.master.selectedId === id) board.master.gridPanel = false
+  else {
+    board.select(id)
+    board.master.gridPanel = true
+  }
+}
+/** behind the rows: the selected sound's waveform */
+const backdrop = computed(() => (board.selected ? { peaks: board.peaksOf(board.selected.audioId), hue: hueOf(board.selected) } : null))
 </script>
 
 <template>
-  <!-- (stored as ssb-sounds since the grip and VCO columns: 'ssb-grid' remembered widths by column position) -->
+  <!-- (stored as ssb-sounds-2 since the ☰ and WAVE columns: the grid remembers widths by column position) -->
   <DataGrid
-    name="ssb-sounds"
+    name="ssb-sounds-2"
     :schema="SCHEMA"
     :rows="rows"
     :editable="Object.keys(EDIT)"
@@ -192,18 +233,27 @@ const onToggle = (id: string, column: string) => board.toggleSlot(Number(column.
     :accent="['key', 'midi']"
     :drag-type="SOUND_TYPE"
     :toggles="vcos"
-    hint="▷ / double-click = play · drag ⠿ into a VCO slot · 1 2 3 = put in that VCO of the patch (again = take out) · select a row to edit it (its panel opens beside the grid in the LIST view) · ⇧ / ⌘-click to pick several, Delete to remove them · double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type · click a column title to sort"
+    :buttons="buttons"
+    :painters="painters"
+    :animate="playing.size > 0"
+    :backdrop="backdrop"
+    reorder
+    hint="▷ / double-click = play · ☰ = controls · drag ⠿ into a VCO slot, or onto a row to move it there (unsorted) · 1 2 3 = put in that VCO of the patch (again = take out) · ⇧ / ⌘-click to pick several, Delete to remove them · double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type · click a column title to sort"
     @edit="onEdit"
     @play="onPlay"
     @select="board.select"
     @delete="board.removeSounds"
     @fav="(id: string) => board.toggleFav('sound', id)"
     @toggle="onToggle"
+    @button="onButton"
+    @move="board.move"
   >
-    <!-- the rack shows the patch; with the list full width the selected sound is edited here -->
-    <aside v-if="board.selected && !board.master.rack" class="side">
-      <ControlPanel :key="board.selected.id" :sound="board.selected" :hue="padHue(board.selected.settings.tag, board.selected.settings.name, board.theme.padHues)" />
-    </aside>
+    <template #default="{ narrow }">
+      <!-- the selected sound's panel: beside a wide grid, under a narrow one -->
+      <aside v-if="panelShown && board.selected" class="side" :class="{ under: narrow }">
+        <ControlPanel :key="board.selected.id" :sound="board.selected" :hue="hueOf(board.selected)" :wide="narrow" />
+      </aside>
+    </template>
   </DataGrid>
 </template>
 
@@ -212,5 +262,8 @@ const onToggle = (id: string, column: string) => board.toggleSlot(Number(column.
   flex: none;
   overflow-y: auto;
   scrollbar-width: thin;
+}
+.side.under {
+  max-height: 52%;
 }
 </style>

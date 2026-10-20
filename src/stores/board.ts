@@ -28,7 +28,7 @@ import { stripExt } from '../lib/format'
 import {
   divisionBeats, defaultMaster, defaultMatrix, defaultSettings, FILTER_TYPES, migrateMaster, migratePresetSettings, presetSettings,
   TRIGGER_MODES,
-  carrierSlot, headerOf, migratePatch, newSlot, PATCH_SLOTS, patchLayers, soundAudioIds, type MasterState, type Patch,
+  carrierSlot, headerOf, migratePatch, newSlot, PATCH_SLOTS, patchLayers, soundAudioIds, type ListView, type MasterState, type Patch,
   type PatchLayer, type PatchSlot, type Preset, type Sound, type SoundSettings, type VcoSlot, type Zone,
 } from '../types'
 
@@ -216,6 +216,14 @@ export const useBoard = defineStore('board', () => {
   })
   /** what the keyboard plays: the selected patch, or (with no patches yet) the sound being edited */
   const playable = computed(() => patchMain.value ?? selected.value)
+  /** the showing tab's view: cards or the grid (each tab keeps its own) */
+  const listView = computed<ListView>({
+    get: () => (master.tab === 'patches' ? master.patchView : master.view),
+    set: (v) => {
+      if (master.tab === 'patches') master.patchView = v
+      else master.view = v
+    },
+  })
   const patchNumber = computed(() => patches.value.findIndex((p) => p.id === master.patchId) + 1)
   /** 1-based position of the selected patch in the grid. */
   const selectedNumber = computed(() => {
@@ -451,7 +459,7 @@ export const useBoard = defineStore('board', () => {
       if (saved) {
         Object.assign(master, migrateMaster(saved.master))
         // every launch starts as a soundboard: the pads as cards, the VCO rack put away
-        Object.assign(master, { rack: false, view: 'pads', list: true, tab: 'sounds' })
+        Object.assign(master, { rack: false, view: 'pads', patchView: 'pads', list: true, tab: 'sounds' })
         presets.value = (saved.presets ?? []).map((p) => ({ ...p, settings: migratePresetSettings(p.settings) }))
         patches.value = (saved.patches ?? []).map((p) => tracked(migratePatch(p)))
         const ok = await readSounds(saved.sounds)
@@ -1931,7 +1939,7 @@ export const useBoard = defineStore('board', () => {
   )
 
   return {
-    sounds, master, openPanels, pressed, tagFilter, peaks, peaksOf, changes, setEngineGate, loaded, toast, midi, heldNotes,
+    sounds, master, listView, openPanels, pressed, tagFilter, peaks, peaksOf, changes, setEngineGate, loaded, toast, midi, heldNotes,
     perform, presets, clipboard, matrixScope, canUndo, canRedo, tempo, bpm, noteFor, theme, cycleTheme,
     undo, redo, savePreset, loadPreset, deletePreset, copySettings, pasteSettings, openMatrix, onMidi,
     patches, patchTagFilter, patchTags, visiblePatches, patchFacets, togglePatchTag,

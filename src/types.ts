@@ -507,6 +507,8 @@ export const defaultGlobalFx = (): GlobalFx => ({
   delayDivision: '1/8.',
 })
 
+export type ListView = 'pads' | 'grid'
+
 export interface MasterState {
   volume: number
   muted: boolean
@@ -536,8 +538,12 @@ export interface MasterState {
   bpm: number
   clockSource: 'internal' | 'midi'
   theme: string
-  /** pads = button grid, grid = spreadsheet (canvas-datagrid) */
-  view: 'pads' | 'grid'
+  /** the Sounds tab as cards (pads) or a spreadsheet (grid, canvas-datagrid) */
+  view: ListView
+  /** the Patches tab's likewise */
+  patchView: ListView
+  /** the grid's control panel for the selected sound is showing (☰ in the grid) */
+  gridPanel: boolean
   /** show the catalog (cards / grid): beside the rack (right third) when the rack is on, else full width */
   list: boolean
   /** list pane width beside the rack, as a fraction of the window (drag the divider) */
@@ -585,6 +591,8 @@ export const defaultMaster = (): MasterState => ({
   clockSource: 'internal',
   theme: 'console85',
   view: 'pads',
+  patchView: 'pads',
+  gridPanel: true,
   list: true,
   listWidth: 0.33,
   folded: ['eq', 'delay', 'reverb'],

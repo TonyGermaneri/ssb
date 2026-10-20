@@ -9,27 +9,38 @@ export function mix(a: string, b: string, t: number): string {
   return `#${((1 << 24) | (c(16) << 16) | (c(8) << 8) | c(0)).toString(16).slice(1)}`
 }
 
+/** #rrggbb at an alpha */
+export function rgba(hex: string, a: number): string {
+  const p = parseInt(hex.slice(1), 16)
+  return `rgba(${(p >> 16) & 255}, ${(p >> 8) & 255}, ${p & 255}, ${a})`
+}
+/** how much of a row's cell lets the backdrop (lib/gridPaint.ts) through */
+export const CELL_ALPHA = 0.74
+
 const LCD_FONT = 'VT323, monospace'
 const LABEL_FONT = 'bold 9px Orbitron, sans-serif'
 
-/** canvas-datagrid style object for a theme: panels, LED text, amber/cyan accents. */
+/**
+ * canvas-datagrid style object for a theme: panels, LED text, amber/cyan accents. The grid itself is transparent and
+ * its rows nearly so: a backdrop canvas under it shows through (lib/gridPaint.ts).
+ */
 export function gridStyle(t: Theme): Record<string, string | number> {
   const [hi, mid, lo] = t.panel
   const line = mix(lo, '#000000', 0.55)
   const selected = mix(lo, t.secondary, 0.22)
   const active = mix(lo, t.secondary, 0.34)
   return {
-    gridBackgroundColor: t.bg[2],
+    gridBackgroundColor: 'rgba(0, 0, 0, 0)',
     gridBorderColor: '#000000',
     // cells
     cellFont: `18px ${LCD_FONT}`,
     cellHeight: 26,
-    cellBackgroundColor: lo,
+    cellBackgroundColor: rgba(lo, CELL_ALPHA),
     cellColor: t.text[0],
     cellBorderColor: line,
-    cellHoverBackgroundColor: mid,
+    cellHoverBackgroundColor: rgba(mid, CELL_ALPHA + 0.08),
     cellHoverColor: t.text[1],
-    cellSelectedBackgroundColor: selected,
+    cellSelectedBackgroundColor: rgba(selected, CELL_ALPHA + 0.06),
     cellSelectedColor: t.text[1],
     activeCellFont: `18px ${LCD_FONT}`,
     activeCellBackgroundColor: active,

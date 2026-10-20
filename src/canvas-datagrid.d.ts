@@ -45,6 +45,14 @@ declare module 'canvas-datagrid' {
     hasFocus: boolean
     scrollTop: number
     scrollLeft: number
+    /** the column the view is sorted by, if any */
+    orderBy: string | null
+    /** the grid's own 2D context, and its size in CSS pixels */
+    ctx: CanvasRenderingContext2D
+    width: number
+    height: number
+    /** the cell at a point, in pixels from the canvas's top left */
+    getCellAt(x: number, y: number): GridCell | undefined
     draw(): void
     focus(): void
     selectNone(dontDraw?: boolean): void
