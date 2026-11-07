@@ -45,6 +45,8 @@ export interface VoiceOptions {
   level?: number
   /** extra tuning in cents (VCO fine) */
   detune?: number
+  /** a note of the keyboard, in a patch: how it joins adaptive tuning */
+  tuning?: VoiceTuning
   /** VCO 1–3 signals for this voice's mod matrix (audio-rate FM / AM) */
   modTaps?: (AudioNode | null)[]
   /**
@@ -53,6 +55,16 @@ export interface VoiceOptions {
    * (three quarters of a cycle at middle C) and add up or cancel by chance.
    */
   at?: number
+}
+
+/** A keyboard note's place in adaptive tuning (audio/adaptiveTuning.ts). */
+export interface VoiceTuning {
+  /** which of the patch's VCOs it is */
+  slot: number
+  /** the pitch class a FIXED VCO sounds; null: it follows the key that played it */
+  pc: number | null
+  /** cents to start from */
+  cents: number
 }
 
 /** A zone, resolved for playback. Times in seconds of the zone's buffer. */
@@ -187,6 +199,9 @@ export class Voice {
   private trem: GainNode
   /** summed pitch modulation in cents, fanned out to every source's detune */
   private pitchBus: GainNode
+  /** Adaptive tuning: this note's offset in cents, moved as the chord changes */
+  readonly tuning?: VoiceTuning
+  private tuneSrc?: ConstantSourceNode
   private atSrc: ConstantSourceNode
   private bendSrc: ConstantSourceNode
   private velSrc: ConstantSourceNode
@@ -289,6 +304,12 @@ export class Voice {
     this.level = opts.level ?? 1
     this.modTaps = opts.modTaps ?? []
     this.channel = opts.channel
+    this.tuning = opts.tuning
+    if (opts.tuning) {
+      this.tuneSrc = c.createConstantSource()
+      this.tuneSrc.offset.value = opts.tuning.cents
+      this.tuneSrc.connect(this.pitchBus)
+    }
     this.atValue = opts.pressure ?? hub.state.pressure
     this.bendValue = hub.state.bend
     this.timbreValue = opts.timbre ?? hub.state.timbre
@@ -319,6 +340,7 @@ export class Voice {
 
     this.t0 = opts.at !== undefined ? Math.max(opts.at, c.currentTime) : c.currentTime + 0.005
     for (const k of [this.atSrc, this.bendSrc, this.velSrc, this.noteBendSrc, this.timbreSrc, this.fenvSrc, this.keySrc, this.rndSrc]) k.start(this.t0)
+    this.tuneSrc?.start(this.t0)
     this.wireRoutes()
     this.startZoneLfos()
     this.applyCC()
@@ -411,6 +433,11 @@ export class Voice {
     src.start(this.t0, clipIn)
     src.onended = () => this.finish()
     this.src = src
+  }
+
+  /** Adaptive tuning moved this note: quickly, while the note that caused it starts and hides the step. */
+  retune(cents: number) {
+    this.tuneSrc?.offset.setTargetAtTime(cents, this.ctx.currentTime, RAMP)
   }
 
   /** Slide to a new note without retriggering (mono legato). */
@@ -983,7 +1010,7 @@ export class Voice {
     for (const n of consts) n.stop()
     for (const n of this.padLfos) n?.stop()
     for (const n of this.lfoKeyLinks) n?.disconnect()
-    for (const n of [...this.zoneLfoNodes, this.ccPitch, this.ccCut]) {
+    for (const n of [...this.zoneLfoNodes, this.ccPitch, this.ccCut, this.tuneSrc]) {
       n?.stop()
       n?.disconnect()
     }

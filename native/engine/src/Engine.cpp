@@ -118,6 +118,10 @@ struct Engine::Voice
     int midiNote { -1 }, channel { -1 };
     float pressure { 0 }, bend { 0 }, noteBend { 0 }, timbre { 0 };
     float noteRandom { 0 };   // RANDOM in the matrix: -1..1, drawn for the note
+    // Adaptive tuning: the slot this keyboard note plays (tuneMain: the main voice; -1: not a keyboard note), the
+    // pitch class a FIXED VCO sounds (-1: it follows its key), and its offset in cents, gliding to the target
+    int tuneSlot { -1 }, tunePc { -1 };
+    float tuneCents { 0 }, tuneTarget { 0 };
 
     // time, in seconds since note-on
     double t { 0 };
@@ -450,6 +454,7 @@ struct Engine::Impl
         SoundPtr group;
         float level { 1 }, detune { 0 };
         bool silent { false };
+        int tuneSlot { -1 }, tunePc { -1 };
         std::array<int16_t, 3> taps { { -1, -1, -1 } };
         std::array<uint32_t, 3> tapGen {};
         // zone
@@ -568,6 +573,9 @@ struct Engine::Impl
         v.bend = bend;
         v.noteBend = o.hasMpe ? o.noteBend : 0;
         v.timbre = o.hasMpe ? o.timbre : timbre;
+        v.tuneSlot = o.tuneSlot;
+        v.tunePc = o.tunePc;
+        v.tuneCents = v.tuneTarget = tuningFor (v);
         v.t = 0;
         v.releaseT = v.endT = v.killT = inf;
         v.monoSource = sample->channels.size() < 2;
@@ -855,6 +863,8 @@ struct Engine::Impl
         int vcoCount = 0;
         if (! asVco)
         {
+            // what the keyboard plays joins adaptive tuning; pads and release samples stay as they are
+            const bool keyboard = base.midiNote >= 0;
             for (const auto& link : sound->links)
             {
                 if (! link.osc || link.osc->id == sound->id)
@@ -867,6 +877,8 @@ struct Engine::Impl
                 o.level = link.level;
                 o.detune = link.fine;
                 o.silent = ! link.audible;
+                o.tuneSlot = keyboard ? link.index : -1;
+                o.tunePc = link.track ? -1 : ((int) vNote % 12 + 12) % 12;
                 int started[8];
                 const int k = startNote (link.osc, vNote, velocity, o, vFrom, link.track && hasFrom, true, started, 8);
                 if (k > 0 && link.index >= 0 && link.index < 3)
@@ -878,10 +890,74 @@ struct Engine::Impl
                     vcoVoices[vcoCount++] = started[i];
             }
         }
+        if (! asVco && base.midiNote >= 0) base.tuneSlot = tuneMain;
         n = startOwn (sound, note, velocity, base, fromNote, hasFrom, out, outCap);
         for (int i = 0; i < vcoCount && n < outCap; ++i)
             out[n++] = vcoVoices[i];
         return n;
+    }
+
+    // ------------------------------------------------------------------------ Adaptive tuning
+    // board.ts `retune`: each VCO's mode follows the chord the keyboard is holding (audio/adaptiveTuning.ts). The chord is
+    // read from the voices, so the pedal, HOLD and stolen notes need nothing from here.
+    static constexpr int tuneMain = 3;
+    static constexpr float tuneSmoothing = 0.015f;   // seconds: voice.ts's RAMP, as the note that caused it starts
+    std::array<AdaptiveTuner, 5> tuners = [] {
+        std::array<AdaptiveTuner, 5> t;
+        for (size_t i = 0; i < t.size(); ++i) t[i].mode = (TuningMode) i;
+        return t;
+    }();
+
+    /** A slot of what the keyboard plays: its mode and depth. */
+    void slotTuning (int slot, TuningMode& mode, float& depth) const noexcept
+    {
+        mode = TuningMode::et;
+        depth = 0;
+        if (! perf || ! perf->playable) return;
+        const auto& main = *perf->playable;
+        if (slot == tuneMain) { mode = main.tuning; depth = main.tuningDepth; return; }
+        for (const auto& link : main.links)
+            if (link.index == slot) { mode = link.tuning; depth = link.tuningDepth; return; }
+    }
+
+    float tuningFor (const Voice& v) const noexcept
+    {
+        if (v.tuneSlot < 0 || v.midiNote < 0) return 0;
+        TuningMode mode;
+        float depth;
+        slotTuning (v.tuneSlot, mode, depth);
+        if (mode == TuningMode::et) return 0;
+        return (float) tuners[(size_t) mode].cents (v.tunePc >= 0 ? v.tunePc : v.midiNote) * depth;
+    }
+
+    /** The chord changed, or a VCO's mode or depth did: tune for what's sounding, plus `note` if it's about to start. */
+    void retune (int note = -1) noexcept
+    {
+        if (! perf || ! perf->playable) return;
+        AdaptiveTuner::Ages held, ringing;
+        held.fill (-1);
+        ringing.fill (-1);
+        for (const auto& v : voices)
+        {
+            if (! v.alive || v.tuneSlot < 0 || v.midiNote < 0) continue;
+            const auto pc = (size_t) (v.midiNote % 12);
+            ringing[pc] = std::max (ringing[pc], v.t);
+            if (v.held()) held[pc] = std::max (held[pc], v.t);
+        }
+        if (note >= 0)
+        {
+            const auto pc = (size_t) (note % 12);
+            held[pc] = std::max (held[pc], 0.0);
+            ringing[pc] = std::max (ringing[pc], 0.0);
+        }
+        std::array<bool, 5> used {};
+        const auto use = [&used] (TuningMode m) { if (m != TuningMode::et) used[(size_t) m] = true; };
+        use (perf->playable->tuning);
+        for (const auto& link : perf->playable->links) use (link.tuning);
+        for (size_t m = 0; m < used.size(); ++m)
+            if (used[m]) tuners[m].chord (held, ringing, now);
+        for (auto& v : voices)
+            if (v.held() && v.tuneSlot >= 0) v.tuneTarget = tuningFor (v);
     }
 
     void rememberStart (const void* key, int note, float velocity) noexcept
@@ -1082,11 +1158,13 @@ struct Engine::Impl
                     v.glideStart = (float) v.t;
                     v.glideDur = perf->glide;
                     v.midiNote = note;
+                    retune();
                     return;
                 }
             }
             releaseSet (mono);
             mono.clear();
+            retune (note);
             const int n = startNote (sound, (float) note, velocity, base, (float) from, from >= 0, false, out, 32);
             for (int i = 0; i < n; ++i) mono.add (out[i], voices[(size_t) out[i]].generation);
         }
@@ -1096,6 +1174,7 @@ struct Engine::Impl
             releaseSet (poly[(size_t) key]);
             poly[(size_t) key].clear();
             sustainedKeys[(size_t) key] = false;
+            retune (note);
             const int n = startNote (sound, (float) note, velocity, base, (float) from, from >= 0, false, out, 32);
             for (int i = 0; i < n; ++i) poly[(size_t) key].add (out[i], voices[(size_t) out[i]].generation);
         }
@@ -1156,11 +1235,13 @@ struct Engine::Impl
                     v.glideStart = (float) v.t;
                     v.glideDur = perf->glide;
                     v.midiNote = top;
+                    retune();
                 }
                 else
                 {
                     releaseSet (mono);
                     mono.clear();
+                    retune (top);
                     Start base;
                     base.midiNote = top;
                     base.glideTime = perf->glide;
@@ -1232,6 +1313,7 @@ struct Engine::Impl
             stopVoice (v, 0.02);
         for (auto& p : pressed) { discard (std::move (p)); p = nullptr; }
         allNotesOff();
+        for (auto& t : tuners) t.reset();
         bend = pressure = 0;
         flushTails();
     }
@@ -1404,6 +1486,7 @@ struct Engine::Impl
             }
             buildRoutes (v);
         }
+        retune();   // a held chord follows MODE and DEPTH as they're turned
         for (int i = 0; i < 2; ++i)
             globalLfo[(size_t) i].set (i ? perf->globalMod.lfo2 : perf->globalMod.lfo1, bpm);
         // leaving keyboard play releases what is still held (board.ts watches master.play)
@@ -1472,7 +1555,8 @@ struct Engine::Impl
     void controlUpdate (Voice& v) noexcept
     {
         const auto& s = v.s();
-        float pitch = s.bendRange * 100.0f * v.bend + (perf ? perf->mpeBendRange : 48.0f) * 100.0f * v.noteBend + v.ccPitch;
+        v.tuneCents += (v.tuneTarget - v.tuneCents) * (1.0f - std::exp (-(float) (controlEvery / engine.rate) / tuneSmoothing));
+        float pitch = s.bendRange * 100.0f * v.bend + (perf ? perf->mpeBendRange : 48.0f) * 100.0f * v.noteBend + v.ccPitch + v.tuneCents;
         float cut = v.ccCut, cutR = v.ccCut, res = 0, trem = v.tremBase, panMod = 0, dly = 0, rev = 0;
         std::array<float, 2> gPos {}, gSize {}, gSkew {}, gVar {}, gDetune {}, gScan {}, lRate {}, lAmt {};
         for (int i = 0; i < v.routeCount; ++i)

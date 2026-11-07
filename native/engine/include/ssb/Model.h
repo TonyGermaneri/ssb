@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "AdaptiveTuning.h"
+
 namespace ssb
 {
 
@@ -252,6 +254,8 @@ struct Link
     bool audible { true }, track { true };
     float transpose { 0 }, fine { 0 };
     int fixedNote { 60 };
+    TuningMode tuning { TuningMode::et };
+    float tuningDepth { 1 };
 };
 
 struct Sound
@@ -262,6 +266,9 @@ struct Sound
     std::vector<Zone> zones;
     std::vector<Link> links;
     std::vector<std::pair<int, float>> ccDefaults;   // SFZ set_ccN: cc -> 0..1
+    // a patch's main voice is a slot too: its tuning (the other slots' are on their links)
+    TuningMode tuning { TuningMode::et };
+    float tuningDepth { 1 };
 };
 using SoundPtr = std::shared_ptr<const Sound>;
 

@@ -105,6 +105,35 @@ struct Rig
         return crossings > 1 ? (crossings - 1) / (last - first) : 0.0;
     }
 
+    /** The strongest frequency within `cents` of `around`, for a note among others in the left channel. */
+    double peakHz (double from, double to, double around, double cents = 30) const
+    {
+        const auto start = (size_t) (from * rate);
+        const auto n = std::min ((size_t) (to * rate), left.size()) - start;
+        double best = 0, bestHz = 0;
+        for (double c = -cents; c <= cents; c += 0.25)
+        {
+            const double hzNow = around * std::pow (2.0, c / 1200.0);
+            double re = 0, im = 0;
+            for (size_t i = 0; i < n; ++i)
+            {
+                const double w = 0.5 - 0.5 * std::cos (2 * ssb::dsp::pi * (double) i / (double) n);
+                const double a = 2 * ssb::dsp::pi * hzNow * (double) i / rate;
+                re += w * left[start + i] * std::cos (a);
+                im += w * left[start + i] * std::sin (a);
+            }
+            const double mag = re * re + im * im;
+            if (mag > best) { best = mag; bestHz = hzNow; }
+        }
+        return bestHz;
+    }
+
+    /** ...and how far that is from `around`, in cents. */
+    double peakCents (double from, double to, double around) const
+    {
+        return 1200.0 * std::log2 (peakHz (from, to, around) / around);
+    }
+
     void press (const std::string& id, float velocity = 1)
     {
         engine.post (ssb::Command::make (ssb::Command::Type::press, id, velocity));
@@ -355,6 +384,153 @@ TEST ("engine: a patch's VCO modulates its main voice (FM), and a MOD-only VCO i
     for (size_t i = (size_t) (0.1 * rate); i < (size_t) (0.45 * rate); ++i)
         diff += std::abs (plain->left[i] - fm->left[i]);
     CHECK (diff / (0.35 * rate) > 0.1);
+}
+
+TEST ("adaptive tuning: the tuner is the page's, chord for chord (src/audio/adaptiveTuning.test.ts's fixture)")
+{
+    const auto json = juce::JSON::parse (juce::File (SSB_TESTS_DIR "/adaptive-tuning-fixture.json"));
+    const auto* events = json.getProperty ("events", {}).getArray();
+    CHECK (events != nullptr);
+    CHECK (events->size() == 120);
+    const std::pair<const char*, ssb::TuningMode> modes[] = {
+        { "eased", ssb::TuningMode::eased }, { "strict", ssb::TuningMode::strict },
+        { "septimal", ssb::TuningMode::septimal }, { "tonal", ssb::TuningMode::tonal },
+    };
+    double worst = 0;
+    for (const auto& [name, mode] : modes)
+    {
+        ssb::AdaptiveTuner tuner;
+        tuner.mode = mode;
+        for (const auto& e : *events)
+        {
+            ssb::AdaptiveTuner::Ages held, ringing;
+            for (int pc = 0; pc < 12; ++pc)
+            {
+                held[(size_t) pc] = (double) e.getProperty ("held", {})[pc];
+                ringing[(size_t) pc] = (double) e.getProperty ("ringing", {})[pc];
+            }
+            tuner.chord (held, ringing, (double) e.getProperty ("now", {}));
+            const auto want = e.getProperty ("out", {}).getProperty (name, {});
+            worst = std::max (worst, std::abs (tuner.line - (double) want[0]));
+            for (int pc = 0; pc < 12; ++pc)
+                worst = std::max (worst, std::abs (tuner.cents (pc) - (double) want[pc + 1]));
+        }
+    }
+    CHECK_NEAR (worst, 0.0, 1e-6);
+}
+
+namespace
+{
+/** A patch of sines at A 440: VCO 1 tuned by `main`, and VCO 2 an octave up, tuned by `upper`. */
+void tuningPatch (Rig& rig, ssb::TuningMode main, ssb::TuningMode upper, float upperDepth = 1)
+{
+    auto& carrier = rig.add ("carrier", sine (440, 8), [] (auto& s) { s.rootNote = 69; s.release = 0.01f; });
+    carrier.tuning = main;
+    rig.add ("upper", sine (440, 8), [] (auto& s) { s.rootNote = 69; s.release = 0.01f; });
+    ssb::Link link;
+    link.index = 1;
+    link.soundId = "upper";
+    link.transpose = 12;
+    link.tuning = upper;
+    link.tuningDepth = upperDepth;
+    carrier.links.push_back (link);
+    rig.set ("play", true);
+    rig.set ("playable", "carrier");
+    rig.commit();
+}
+constexpr double a4 = 440, cs5 = 554.365, e5 = 659.255;
+}
+
+TEST ("engine: adaptive tuning tunes a chord VCO by VCO: pure in one, equal tempered in the other")
+{
+    Rig rig;
+    tuningPatch (rig, ssb::TuningMode::eased, ssb::TuningMode::et);
+    rig.render (1.2, { on (0.05, 69), on (0.05, 73), on (0.05, 76) });
+    // the major triad: root +4, third -10, fifth +6
+    CHECK_NEAR (rig.peakCents (0.2, 1.2, a4), 3.9, 0.5);
+    CHECK_NEAR (rig.peakCents (0.2, 1.2, cs5), -9.8, 0.5);
+    CHECK_NEAR (rig.peakCents (0.2, 1.2, e5), 5.9, 0.5);
+    // VCO 2 plays the same chord an octave up, left on ET
+    CHECK_NEAR (rig.peakCents (0.2, 1.2, 2 * a4), 0.0, 0.5);
+    CHECK_NEAR (rig.peakCents (0.2, 1.2, 2 * cs5), 0.0, 0.5);
+    CHECK_NEAR (rig.peakCents (0.2, 1.2, 2 * e5), 0.0, 0.5);
+}
+
+TEST ("engine: tuning DEPTH scales a VCO's tuning, and TRANS keeps the tuning of the key")
+{
+    Rig rig;
+    tuningPatch (rig, ssb::TuningMode::et, ssb::TuningMode::eased, 0.5f);
+    rig.render (1.2, { on (0.05, 69), on (0.05, 73), on (0.05, 76) });
+    CHECK_NEAR (rig.peakCents (0.2, 1.2, a4), 0.0, 0.5);
+    CHECK_NEAR (rig.peakCents (0.2, 1.2, 2 * a4), 2.0, 0.5);
+    CHECK_NEAR (rig.peakCents (0.2, 1.2, 2 * cs5), -4.9, 0.5);
+    CHECK_NEAR (rig.peakCents (0.2, 1.2, 2 * e5), 2.9, 0.5);
+}
+
+TEST ("engine: a FIXED VCO takes the chord's tuning for its note, and the line otherwise")
+{
+    const auto drone = [] (int fixedNote)
+    {
+        auto rig = std::make_unique<Rig>();
+        tuningPatch (*rig, ssb::TuningMode::et, ssb::TuningMode::strict);
+        auto& link = rig->sounds["carrier"]->links[0];
+        link.track = false;
+        link.transpose = 0;
+        link.fixedNote = fixedNote;
+        rig->commit();
+        rig->render (1.2, { on (0.05, 69), on (0.05, 73), on (0.05, 76) });
+        return rig;
+    };
+    CHECK_NEAR (drone (88)->peakCents (0.2, 1.2, 2 * e5), 5.9, 0.5);                    // E: the chord's fifth
+    CHECK_NEAR (drone (86)->peakCents (0.2, 1.2, 1174.659), 0.0, 0.5);                  // D: not in the chord
+}
+
+TEST ("engine: adaptive tuning moves a held note only a step when the chord comes to it")
+{
+    Rig rig;
+    tuningPatch (rig, ssb::TuningMode::eased, ssb::TuningMode::eased);
+    rig.render (2.0, { on (0.05, 69), on (0.5, 73) });
+    CHECK_NEAR (rig.peakCents (0.08, 0.48, a4), 0.0, 0.8);    // alone: equal temperament
+    CHECK_NEAR (rig.peakCents (0.7, 2.0, a4), 3.0, 0.5);      // by the third's arrival: 3 cents, not the 7 it wants
+    CHECK_NEAR (rig.peakCents (0.7, 2.0, cs5) - rig.peakCents (0.7, 2.0, a4), 386.31 - 400, 0.7);   // and the third is pure
+}
+
+TEST ("engine: adaptive tuning reads the chord from what sounds: the pedal keeps a note in it, and a lifted one lets go")
+{
+    Rig rig;
+    tuningPatch (rig, ssb::TuningMode::strict, ssb::TuningMode::et);
+    // A is down with the pedal when it's lifted from the key: it still counts for the C sharp
+    rig.render (1.0, { { 0, 0xb0, 64, 127 }, on (0.05, 69), off (0.2, 69), on (0.3, 73), on (0.3, 76) });
+    CHECK_NEAR (rig.peakCents (0.6, 1.0, cs5) - rig.peakCents (0.6, 1.0, a4), -13.7, 1.0);
+    rig.render (0.2, { { 0, 0xb0, 64, 0 }, off (0.05, 73), off (0.05, 76) });
+    CHECK (rig.engine.activeVoices() == 0);
+    // silence, then a lone note: back on the line
+    rig.render (0.6, { on (0.05, 69) });
+    CHECK (std::abs (rig.peakCents (0.2, 0.6, a4)) < 8.0);
+}
+
+TEST ("engine: a held chord follows the tuning as it is changed")
+{
+    Rig rig;
+    tuningPatch (rig, ssb::TuningMode::eased, ssb::TuningMode::et);
+    rig.render (0.5, { on (0.05, 69), on (0.05, 73), on (0.05, 76) });
+    rig.sounds["carrier"]->tuning = ssb::TuningMode::et;
+    rig.commit();
+    rig.render (1.0);
+    CHECK_NEAR (rig.peakCents (0.1, 1.0, cs5), 0.0, 0.5);
+}
+
+TEST ("engine: the page's tuning reaches a sound and its links")
+{
+    const auto json = juce::JSON::parse (R"({ "id": "a", "audioId": "a", "s": {}, "tuning": "tonal", "tuningDepth": 0.25,
+        "links": [ { "index": 1, "soundId": "b", "tuning": "septimal", "tuningDepth": 0.5 },
+                   { "index": 2, "soundId": "c" } ] })");
+    const auto sound = ssb::soundFromJson (json, [] (const std::string&) { return ssb::SamplePtr {}; });
+    CHECK (sound->tuning == ssb::TuningMode::tonal);
+    CHECK_NEAR (sound->tuningDepth, 0.25f, 1e-6f);
+    CHECK (sound->links[0].tuning == ssb::TuningMode::septimal);
+    CHECK_NEAR (sound->links[0].tuningDepth, 0.5f, 1e-6f);
+    CHECK (sound->links[1].tuning == ssb::TuningMode::et);
 }
 
 TEST ("engine: sustain pedal holds released notes until it lifts")

@@ -23,6 +23,15 @@ juce::String str (const juce::var& o, const char* key)
     return o.getProperty (key, {}).toString();
 }
 
+TuningMode tuningFrom (const juce::String& s)
+{
+    if (s == "eased")    return TuningMode::eased;
+    if (s == "strict")   return TuningMode::strict;
+    if (s == "septimal") return TuningMode::septimal;
+    if (s == "tonal")    return TuningMode::tonal;
+    return TuningMode::et;
+}
+
 FilterType filterType (const juce::String& s)
 {
     if (s == "highpass")  return FilterType::highpass;
@@ -338,8 +347,12 @@ std::shared_ptr<Sound> soundFromJson (const juce::var& o, const SampleLookup& sa
             link.transpose = num (l, "transpose", 0);
             link.fine = num (l, "fine", 0);
             link.fixedNote = (int) num (l, "fixedNote", 60);
+            link.tuning = tuningFrom (str (l, "tuning"));
+            link.tuningDepth = num (l, "tuningDepth", 1);
             sound->links.push_back (std::move (link));
         }
+    sound->tuning = tuningFrom (str (o, "tuning"));
+    sound->tuningDepth = num (o, "tuningDepth", 1);
     if (auto* cc = o.getProperty ("ccDefaults", {}).getDynamicObject())
         for (const auto& p : cc->getProperties())
             sound->ccDefaults.emplace_back (p.name.toString().getIntValue(), (float) (double) p.value);

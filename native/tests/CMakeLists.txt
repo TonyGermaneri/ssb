@@ -9,7 +9,8 @@ add_test(NAME core COMMAND ssb-tests)
 if(SSB_BUILD_PLUGIN)
     juce_add_console_app(ssb-engine-tests PRODUCT_NAME "ssb-engine-tests")
     target_sources(ssb-engine-tests PRIVATE engine_main.cpp EngineTest.cpp)
-    target_compile_definitions(ssb-engine-tests PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
+    target_compile_definitions(ssb-engine-tests PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0
+        SSB_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(ssb-engine-tests PRIVATE
         ssb_engine
         juce::juce_dsp

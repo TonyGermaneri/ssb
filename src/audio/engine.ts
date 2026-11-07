@@ -299,6 +299,10 @@ export function publish() {
 /** A start time for a note about to be played: its voices all start then (VoiceOptions.at). */
 export const noteStart = () => getCtx().currentTime + 0.005
 
+/** The clock voices run on, and the keyboard notes sounding (held, or in their release), for adaptive tuning. */
+export const voiceTime = () => getCtx().currentTime
+export const keyboardVoices = () => [...voices].filter((v) => v.tuning && v.playing)
+
 export function startVoice(sound: Sound, opts: VoiceOptions & { silent?: boolean } = {}): Voice | null {
   if (external) return null
   const audioId = opts.zone?.audioId ?? sound.audioId

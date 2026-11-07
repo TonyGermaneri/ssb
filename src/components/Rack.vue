@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useBoard } from '../stores/board'
-import { fmtCents, fmtSemis, midiNoteName, padHue } from '../lib/format'
-import { PATCH_SLOTS, type PatchSlot, type Sound } from '../types'
+import { fmtCents, fmtPct, fmtSemis, midiNoteName, padHue } from '../lib/format'
+import { PATCH_SLOTS, TUNING_MODES, type PatchSlot, type Sound, type TuningMode } from '../types'
 import ControlPanel from './ControlPanel.vue'
 import Knob from './Knob.vue'
 
@@ -21,6 +21,15 @@ const sourceName = (x: PatchSlot | null) => (x ? board.byId(x.layer.soundId)?.se
 const hue = (s: Sound) => padHue(s.settings.tag, s.settings.name, board.theme.padHues)
 const fmtLevel = (v: number) => `${Math.round(v * 100)}`
 const fmtNote = (v: number) => midiNoteName(Math.round(v))
+const TUNING: Record<TuningMode, { chip: string; label: string; hint: string }> = {
+  et: { chip: 'ET', label: 'ET', hint: 'Equal temperament: every note where the keys put it' },
+  eased: { chip: 'AJI 5-E', label: 'AJI 5-LIMIT EASED', hint: 'Pure fifths and thirds, eased where they conflict. For anything' },
+  strict: { chip: 'AJI 5-S', label: 'AJI 5-LIMIT STRICT', hint: 'Pure fifths and thirds, whatever it takes: notes step further on hard changes' },
+  septimal: { chip: 'AJI 7', label: 'AJI 7-LIMIT', hint: 'Adds natural sevenths (7:4). For held chords, at DEPTH 90 % or more; part-writing can lurch' },
+  tonal: { chip: 'AJI TC', label: 'AJI TONAL CENTRE', hint: 'Purest near the harmonic centre, less so further out: keys get a character' },
+}
+const TUNING_TITLE =
+  'Tuning. ET is equal temperament; AJI (adaptive just intonation) retunes this VCO to each chord you hold, staying close to ET. Each VCO has its own'
 
 // ── drop sounds into slots ──
 const dropTarget = ref(-1)
@@ -101,7 +110,28 @@ function onDrop(e: DragEvent, i: number) {
             </button>
           </template>
           <span v-else-if="x" class="chip dim" title="VCO 1 is the main voice: heard, follows the keyboard">MAIN</span>
+          <v-menu v-if="x" location="bottom start">
+            <template #activator="{ props: act }">
+              <button class="chip" :class="{ on: x.tuning !== 'et' }" v-bind="act" :title="`${TUNING_TITLE}. Now: ${TUNING[x.tuning].label}`">{{ TUNING[x.tuning].chip }}</button>
+            </template>
+            <div class="tuning-menu">
+              <button v-for="m in TUNING_MODES" :key="m" :class="{ on: m === x.tuning }" @click="x.tuning = m">
+                <b>{{ TUNING[m].label }}</b>
+                <span>{{ TUNING[m].hint }}</span>
+              </button>
+            </div>
+          </v-menu>
           <v-spacer />
+          <Knob
+            v-if="x && x.tuning !== 'et'"
+            v-model="x.tuningDepth"
+            label="DEPTH"
+            :default="1"
+            :format="fmtPct"
+            :size="22"
+            color="accent"
+            title="How far AJI goes: 100 % pure, 0 % equal temperament. Under an ET VCO, about 60-70 % sits best"
+          />
           <template v-if="x && i > 0">
             <Knob v-model="x.level" label="LEVEL" :max="1.5" :default="1" :format="fmtLevel" :size="22" color="accent" />
             <Knob v-model="x.transpose" label="TRANS" :min="-24" :max="24" :step="1" :default="0" bipolar :format="fmtSemis" :size="22" color="accent" />
@@ -109,7 +139,7 @@ function onDrop(e: DragEvent, i: number) {
             <Knob v-if="!x.track" v-model="x.fixedNote" label="NOTE" :min="0" :max="127" :step="1" :default="60" :format="fmtNote" :size="22" color="accent" />
           </template>
           <button v-if="x" class="hw-btn remove" title="Remove this sound from the slot" @click="board.assignSlot(i, null, patch?.id ?? null)">
-            <v-icon size="14" icon="mdi-close" /> REMOVE
+            <v-icon size="14" icon="mdi-close" /> <span class="word">REMOVE</span>
           </button>
         </div>
         <div class="body">
@@ -213,6 +243,17 @@ function onDrop(e: DragEvent, i: number) {
   border-radius: 5px 5px 0 0;
   background: rgba(0, 0, 0, 0.5);
   border-bottom: 1px solid rgba(0, 0, 0, 0.5);
+  container-type: inline-size;
+}
+/* beside the list a slot is narrow, and tuning adds a knob: everything still fits */
+@container (max-width: 560px) {
+  .bar > .remove {
+    min-width: 0;
+    padding: 0 5px;
+  }
+  .bar > .remove .word {
+    display: none;
+  }
 }
 .bar :deep(.knob .label) {
   color: var(--ink-dim);
@@ -242,7 +283,9 @@ function onDrop(e: DragEvent, i: number) {
   font-size: 6.5px;
 }
 .chip {
+  flex: none;
   padding: 0 5px;
+  white-space: nowrap;
   border-radius: 2px;
   font-size: 13px;
   line-height: 14px;
@@ -255,6 +298,39 @@ function onDrop(e: DragEvent, i: number) {
 }
 .chip.dim {
   color: var(--text-mute);
+}
+.tuning-menu {
+  display: grid;
+  gap: 4px;
+  width: 340px;
+  padding: 6px;
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--panel-hi), var(--panel-lo));
+  border: 1px solid #000;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+}
+.tuning-menu button {
+  display: grid;
+  padding: 3px 8px;
+  border-radius: 2px;
+  font-family: 'VT323', monospace;
+  text-align: left;
+  color: var(--ink-mute);
+  background: #111;
+  border: 1px solid #000;
+}
+.tuning-menu b {
+  font-size: 15px;
+  font-weight: 400;
+}
+.tuning-menu span {
+  font-size: 13px;
+  line-height: 13px;
+  color: var(--ink-dim);
+}
+.tuning-menu button.on b {
+  color: var(--c-secondary);
+  text-shadow: 0 0 4px color-mix(in srgb, var(--c-secondary) 70%, transparent);
 }
 .remove {
   height: 24px;

@@ -89,12 +89,35 @@ The **rack** under the header shows the selected patch's three slots side by sid
 - **REMOVE** empties a slot.
 - **VCO 1** is the main voice. VCOs 2–3 have **MIX / MOD** (heard, or a silent modulator only), **TRACK / FIXED**
   (follow the played key keeping TRANS / FINE, or always play NOTE) and **LEVEL**.
+- **Tuning** (the **ET** chip, on every VCO): equal temperament, or **adaptive just intonation**, which retunes that
+  VCO to each chord you hold: pure fifths and thirds, while the keyboard stays close to equal temperament. See below.
 - The header's **VIEW** group picks what's under the header — **RACK**, **BOTH** (the rack with the list beside it)
   or **LIST**. Clicking a VCO in the header shows the rack too. The list's own bar, right of the SOUNDS / PATCHES
   tabs, shows it as **CARDS** or a **GRID** (each tab keeps its own) and sizes the cards (− 100% +). Beside the rack the list starts at a third of the window; drag the divider to resize it
   (double-click = 33%).
 - Each panel section has a **fold** triangle (top right) that shrinks it to its title. EQ, DELAY and REVERB start
   folded; folds are shared by every panel and saved.
+
+### Adaptive just intonation
+
+Equal temperament's thirds beat; fixed just intonation's are still, but only in one key. Adaptive just intonation
+(AJI) gets still chords in every key by tuning each chord as it's played. C E G becomes +4 −10 +6 cents, centred on
+equal temperament, so the notes barely move from one chord to the next, and what does move hides under the new note.
+It listens to the keys you hold, with the pedal and HOLD, so it needs at least two notes.
+
+| Mode | |
+| --- | --- |
+| **ET** | Equal temperament. The default. |
+| **AJI 5-LIMIT EASED** | Pure fifths and thirds, eased for a moment where they conflict. For anything. |
+| **AJI 5-LIMIT STRICT** | Pure fifths and thirds whatever it takes; notes step further on hard changes. |
+| **AJI 7-LIMIT** | Adds natural sevenths (7:4, 31 cents flat) to dominant chords. Best on sustained chords at DEPTH 90 % or more; busy part-writing can lurch. |
+| **AJI TONAL CENTRE** | Finds the music's harmonic centre: chords near it are purest, far ones less so, so keys get a character. |
+
+**DEPTH** runs from equal temperament (0 %) to the full tuning (100 %). Each VCO has its own mode and depth, and FINE
+and TRANS still apply. VCOs a fifth or an octave apart each get the same tuning, so a stack stays parallel. A FIXED VCO
+takes the chord's tuning for its note when the chord has that note. Mixing modes is a sound of its own: an AJI VCO
+over an ET one beats gently as chords change. Under an ET VCO, a DEPTH of 60–70 % sits best. FM between VCOs wants the
+same mode on both, or the ratio moves with the chord. Clicked pads stay in equal temperament.
 
 Each VCO's live signal (after its own envelope and filter) is a mod-matrix source (**VCO 1–3** = slots 1–3): route
 VCO 2 → pitch for FM, → volume for AM, → cutoff for audio-rate filter sweeps. VCOs are full sounds, so SFZ instruments

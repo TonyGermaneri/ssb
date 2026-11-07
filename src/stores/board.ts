@@ -11,7 +11,8 @@ import { compactSound, expandSound, isWaveSound } from '../lib/storedSound'
 import { isTracked, track, untrack } from '../lib/tracked'
 import { ClockTracker } from '../lib/midiClock'
 import { THEMES, themeById } from '../theme/themes'
-import type { Voice, VoiceOptions, ZonePlay } from '../audio/voice'
+import { AdaptiveTuner } from '../audio/adaptiveTuning'
+import type { Voice, VoiceOptions, VoiceTuning, ZonePlay } from '../audio/voice'
 import { basename, dirname, type PathFile } from '../lib/dropFiles'
 import { addTags, passesTags, tagFacets } from '../lib/tags'
 import { normalisePath, parseSfz } from '../lib/sfz'
@@ -30,8 +31,8 @@ import { stripExt } from '../lib/format'
 import {
   divisionBeats, defaultMaster, defaultMatrix, defaultSettings, FILTER_TYPES, migrateMaster, migratePresetSettings, presetSettings,
   TRIGGER_MODES,
-  carrierSlot, headerOf, migratePatch, newSlot, PATCH_SLOTS, patchLayers, soundAudioIds, type ListView, type MasterState, type Patch,
-  type PatchLayer, type PatchSlot, type Preset, type Sound, type SoundSettings, type VcoSlot, type Zone,
+  carrierSlot, headerOf, migratePatch, newSlot, PATCH_SLOTS, patchLayers, soundAudioIds, type TuningMode, type ListView,
+  type MasterState, type Patch, type PatchLayer, type PatchSlot, type Preset, type Sound, type SoundSettings, type VcoSlot, type Zone,
 } from '../types'
 
 /**
@@ -944,6 +945,9 @@ export const useBoard = defineStore('board', () => {
     const taps: (AudioNode | null)[] = [null, null, null]
     // one start time for every voice of the note (see VoiceOptions.at)
     if (base.at === undefined && !engine.external) base = { ...base, at: engine.noteStart() }
+    // what the keyboard plays in a patch joins adaptive tuning; pads and release samples stay as they are
+    const slots = !asVco && base.midiNote !== undefined ? tunedSlots(sound) : null
+    const played = base.midiNote ?? note
     if (!asVco) {
       vcoLinks(sound).forEach(({ index: i, osc, slot }) => {
         if (osc.id === sound.id) return
@@ -954,7 +958,14 @@ export const useBoard = defineStore('board', () => {
           osc,
           vNote,
           velocity,
-          { ...base, group: sound.id, level: slot.level, detune: slot.fine, silent: !slot.audible },
+          {
+            ...base,
+            group: sound.id,
+            level: slot.level,
+            detune: slot.fine,
+            silent: !slot.audible,
+            tuning: slots ? voiceTuning(slots, i, played, slot.track ? null : vNote) : undefined,
+          },
           vFrom,
           true,
         )
@@ -962,7 +973,8 @@ export const useBoard = defineStore('board', () => {
         taps[i] = started[0]?.tap ?? null
       })
     }
-    return [...startOwn(sound, note, velocity, { ...base, modTaps: taps }, fromNote), ...vcoVoices]
+    const tuning = slots ? voiceTuning(slots, slots.findIndex((x) => x?.layer.id === sound.id), played, null) : base.tuning
+    return [...startOwn(sound, note, velocity, { ...base, modTaps: taps, tuning }, fromNote), ...vcoVoices]
   }
 
   /**
@@ -1104,6 +1116,55 @@ export const useBoard = defineStore('board', () => {
     monoSustained = false
   }
 
+  // ── Adaptive tuning: each VCO's mode follows the chord the keyboard is holding (audio/adaptiveTuning.ts) ──
+  const tuners = new Map<TuningMode, AdaptiveTuner>()
+  const tunerFor = (mode: TuningMode) => {
+    let t = tuners.get(mode)
+    if (!t) tuners.set(mode, (t = new AdaptiveTuner(mode)))
+    return t
+  }
+  /** a patch's VCO slots, when `sound` is its main voice */
+  const tunedSlots = (sound: Sound | null | undefined) => (sound && layerIndex.value.get(sound.id)?.patch.slots) || null
+  /** A VCO's tuning in cents: its own key's, or for a FIXED VCO the chord's for the note it sounds. */
+  function slotCents(slots: (PatchSlot | null)[], slot: number, key: number, fixed: number | null) {
+    const x = slots[slot]
+    return x && x.tuning !== 'et' ? tunerFor(x.tuning).cents(fixed ?? key) * x.tuningDepth : 0
+  }
+  const voiceTuning = (slots: (PatchSlot | null)[], slot: number, key: number, fixed: number | null): VoiceTuning => {
+    const pc = fixed === null ? null : ((fixed % 12) + 12) % 12
+    return { slot, pc, cents: slotCents(slots, slot, key, pc) }
+  }
+  const heldAges = new Float64Array(12)
+  const ringAges = new Float64Array(12)
+  /**
+   * The chord changed, or a VCO's mode or depth did: tune for what's sounding, plus `note` when it is about to start.
+   * The chord is read from the voices, so the pedal, HOLD and stolen notes need nothing from here.
+   */
+  function retune(note?: number) {
+    const slots = tunedSlots(playable.value)
+    if (engine.external || !slots) return
+    const voices = engine.keyboardVoices()
+    const now = engine.voiceTime()
+    heldAges.fill(-1)
+    ringAges.fill(-1)
+    for (const v of voices) {
+      if (v.midiNote === undefined) continue
+      const pc = v.midiNote % 12
+      const age = Math.max(0, now - v.t0)
+      ringAges[pc] = Math.max(ringAges[pc], age)
+      if (v.held) heldAges[pc] = Math.max(heldAges[pc], age)
+    }
+    if (note !== undefined) {
+      heldAges[note % 12] = Math.max(heldAges[note % 12], 0)
+      ringAges[note % 12] = Math.max(ringAges[note % 12], 0)
+    }
+    const modes = new Set(slots.map((x) => x?.tuning ?? 'et'))
+    for (const mode of modes) if (mode !== 'et') tunerFor(mode).chord(heldAges, ringAges, now)
+    for (const v of voices) {
+      if (v.held && v.tuning && v.midiNote !== undefined) v.retune(slotCents(slots, v.tuning.slot, v.midiNote, v.tuning.pc))
+    }
+  }
+
   // ── keyboard play (MIDI / computer keys → selected patch) ─────────────
   const polyVoices = new Map<string, Voice[]>()
   let monoVoices: Voice[] = []
@@ -1170,15 +1231,18 @@ export const useBoard = defineStore('board', () => {
       const [only] = monoVoices
       if (monoVoices.length === 1 && only.held && only.soundId === sound.id && !sound.zones?.length) {
         only.glideTo(semisFor(sound, undefined, note), glide, note)
+        retune()
         engine.publish()
         return
       }
       releaseAll(monoVoices)
+      retune(note)
       monoVoices = startNote(sound, note, velocity, base, from)
     } else {
       const key = voiceKey(note, channel)
       releaseAll(polyVoices.get(key))
       sustainedKeys.delete(key)
+      retune(note)
       polyVoices.set(key, startNote(sound, note, velocity, base, from))
     }
   }
@@ -1221,9 +1285,11 @@ export const useBoard = defineStore('board', () => {
         lastNote = top
         if (monoVoices.length === 1 && !sound.zones?.length) {
           monoVoices[0].glideTo(semisFor(sound, undefined, top), master.glide, top)
+          retune()
           engine.publish()
         } else {
           releaseAll(monoVoices)
+          retune(top)
           monoVoices = startNote(sound, top, 1, { midiNote: top, glideTime: master.glide }, from)
         }
       }
@@ -1253,6 +1319,7 @@ export const useBoard = defineStore('board', () => {
     engine.stopAll()
     pressed.clear()
     allNotesOff()
+    for (const t of tuners.values()) t.reset()
     perform.bend = 0
     perform.pressure = 0
   }
@@ -1263,6 +1330,8 @@ export const useBoard = defineStore('board', () => {
   }
   // clicking a pad selects it: that only changes what the keys play when no patch is selected
   watch(playable, (s) => applyCcDefaults(s))
+  // a held chord (HOLD, the pedal) follows MODE and DEPTH as they're turned
+  watch(() => tunedSlots(playable.value)?.map((x) => x && `${x.tuning} ${x.tuningDepth}`).join(), () => retune())
 
   // ── themes ─────────────────────────────────────────────────────────────
   const theme = computed(() => themeById(master.theme))
@@ -2077,7 +2146,7 @@ export const useBoard = defineStore('board', () => {
     patches, patchTagFilter, patchTags, visiblePatches, patchFacets, togglePatchTag,
     currentFacets, currentFilter, currentTotal, currentShown, toggleCurrentTag, clearCurrentTags, currentHidden, hideCurrentTag,
     tagHidden, patchTagHidden,
-    selectedPatch, patchMain, playable, patchNumber, resolveSound, layerSound, patchLayerIds, vcoLinks, patchById,
+    selectedPatch, patchMain, playable, patchNumber, resolveSound, layerSound, patchLayerIds, vcoLinks, tunedSlots, patchById,
     semantic, similarTo, showSimilar, showMatching, clearSimilar, soundScores, patchScores, shownSounds, shownPatches,
     candidate, candidateInfo, describePatch, rerollCandidate, saveCandidate, discardCandidate,
     installFactory, addFactoryPatch, selectPatch, editPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, removePatches, assignSlot, slotsOf, toggleSlot, toggleFav,

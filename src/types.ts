@@ -51,6 +51,14 @@ export const MOD_SOURCES: { id: ModSource; label: string }[] = [
 export const VCO_SOURCES = ['vco1', 'vco2', 'vco3'] as const
 
 /**
+ * How a VCO is tuned: equal temperament, or adaptive just intonation following the chord (audio/adaptiveTuning.ts).
+ * eased: 5-limit, pure until intervals conflict · strict: 5-limit, pure whatever it takes ·
+ * septimal: strict, with natural sevenths (7-limit) · tonal: 5-limit, purest near the music's harmonic centre.
+ */
+export const TUNING_MODES = ['et', 'eased', 'strict', 'septimal', 'tonal'] as const
+export type TuningMode = (typeof TUNING_MODES)[number]
+
+/**
  * Another pad layered onto this one as an oscillator: played with every note of this pad, heard (MIX) and/or used
  * as an audio-rate mod source (VCO 1–3 in the matrix).
  */
@@ -62,6 +70,8 @@ export interface VcoSlot {
   transpose: number // semitones
   fine: number // cents
   fixedNote: number // MIDI note when not tracking
+  tuning: TuningMode
+  tuningDepth: number // 0..1: equal temperament .. the full tuning
 }
 export const defaultVco = (): VcoSlot => ({
   soundId: null,
@@ -71,6 +81,8 @@ export const defaultVco = (): VcoSlot => ({
   transpose: 0,
   fine: 0,
   fixedNote: 60,
+  tuning: 'et',
+  tuningDepth: 1,
 })
 export const MAX_VCOS = 3
 
@@ -664,6 +676,8 @@ export interface PatchSlot {
   transpose: number
   fine: number
   fixedNote: number
+  tuning: TuningMode
+  tuningDepth: number
 }
 export const PATCH_SLOTS = 3
 

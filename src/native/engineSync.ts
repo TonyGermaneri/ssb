@@ -43,6 +43,7 @@ function soundJson(board: Board, sound: Sound) {
     zones = zoneJson.get(sound.zones)
     if (zones === undefined) zoneJson.set(sound.zones, (zones = JSON.parse(JSON.stringify(sound.zones))))
   }
+  const main = board.tunedSlots(sound)?.find((x) => x?.layer.id === sound.id)
   return {
     id: sound.id,
     audioId: sound.audioId,
@@ -58,7 +59,12 @@ function soundJson(board: Board, sound: Sound) {
       transpose: slot.transpose,
       fine: slot.fine,
       fixedNote: slot.fixedNote,
+      tuning: slot.tuning,
+      tuningDepth: slot.tuningDepth,
     })),
+    // a patch's main voice is a slot too, without a link to carry its tuning
+    tuning: main?.tuning ?? 'et',
+    tuningDepth: main?.tuningDepth ?? 1,
   }
 }
 
