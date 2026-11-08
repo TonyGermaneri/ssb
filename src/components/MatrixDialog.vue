@@ -6,8 +6,8 @@ import { fmtPct, fmtRate } from '../lib/format'
 import { fmtRouteAmount, lfoValue } from '../lib/modulation'
 import { isRandomShape } from '../audio/lfoMath'
 import {
-  BIPOLAR_SOURCES, DIVISIONS, lfoHz, LFO_PHASES, LFO_RATIO_MAX, LFO_RATIO_MIN, LFO_SHAPES, MOD_DEST_IDS, MOD_DESTS, MOD_SOURCES, type Lfo,
-  type LfoShape, type ModDest, type ModMatrix, type ModSource,
+  BIPOLAR_SOURCES, DIVISIONS, lfoHz, LFO_PHASES, LFO_RATIO_MAX, LFO_RATIO_MIN, LFO_SHAPES, MOD_DEST_IDS, MOD_DESTS, MOD_SOURCES,
+  MPE_SURFACES, type Lfo, type LfoShape, type ModDest, type ModMatrix, type ModSource, type MpeSurface,
 } from '../types'
 import Knob from './Knob.vue'
 
@@ -62,11 +62,33 @@ const open = computed({
   },
 })
 const isGlobal = computed(() => board.matrixScope === 'global')
+/** the MPE tab: what the MPE surfaces do to the selected patch (only while MPE is on) */
+const isMpe = computed(() => board.matrixScope === 'mpe')
+const patch = computed(() => board.selectedPatch)
 /** the pad shown on the PAD tab: the one that opened the modal, else the selected patch */
 const pad = computed(() =>
-  board.matrixScope && board.matrixScope !== 'global' ? board.byId(board.matrixScope) : board.selected,
+  board.matrixScope && board.matrixScope !== 'global' && board.matrixScope !== 'mpe' ? board.byId(board.matrixScope) : board.selected,
 )
-const matrix = computed<ModMatrix | null>(() => (isGlobal.value ? board.master.mod : pad.value?.settings.mod ?? null))
+const matrix = computed<ModMatrix | null>(() => (isMpe.value ? null : isGlobal.value ? board.master.mod : pad.value?.settings.mod ?? null))
+
+// ── MPE bindings: one per surface and destination (a binding kept to some VCOs is edited as it is) ──
+const bindingOf = (s: MpeSurface, d: ModDest) => patch.value?.mpe?.find((b) => b.surface === s && b.dest === d)
+const mpeAmount = (s: MpeSurface, d: ModDest) => bindingOf(s, d)?.amount ?? 0
+function setMpeAmount(s: MpeSurface, d: ModDest, v: number) {
+  const p = patch.value
+  if (!p) return
+  const list = (p.mpe ??= [])
+  const i = list.findIndex((b) => b.surface === s && b.dest === d)
+  if (i >= 0) {
+    if (v === 0) list.splice(i, 1)
+    else list[i].amount = v
+  } else if (v !== 0) list.push({ surface: s, dest: d, amount: v })
+}
+const slotsNote = (s: MpeSurface, d: ModDest) => {
+  const b = bindingOf(s, d)
+  return b?.slots ? `VCO ${b.slots.map((i) => i + 1).join(' + ')}` : ''
+}
+const bindingCount = computed(() => patch.value?.mpe?.length ?? 0)
 const lfos = computed<[Lfo, Lfo] | null>(() => (matrix.value ? [matrix.value.lfo1, matrix.value.lfo2] : null))
 
 function amount(src: ModSource, dest: ModDest) {
@@ -91,7 +113,8 @@ function toggleUnipolar(src: ModSource, dest: ModDest) {
   else r.unipolar = true
 }
 function clearAll() {
-  if (matrix.value) matrix.value.routes.splice(0)
+  if (isMpe.value) patch.value?.mpe?.splice(0)
+  else if (matrix.value) matrix.value.routes.splice(0)
 }
 /** blinking LED per LFO (display only) */
 const lfoLed = (lfo: Lfo) => (lfoValue(isRandomShape(lfo.shape) ? 'square' : lfo.shape, clock.value * Math.min(20, lfoHz(lfo, board.bpm))) + 1) / 2
@@ -110,7 +133,7 @@ const fmtRatio = (v: number) => `×${v < 1 ? v.toFixed(2) : v.toFixed(v < 2 ? 2 
 const fmtDeg = (v: number) => `${Math.round(v)}°`
 /** the global matrix drives shared LFOs: the pad-only columns (a pad's own LFOs) aren't there */
 const destIds = computed(() => MOD_DEST_IDS.filter((d) => !(isGlobal.value && MOD_DESTS[d].pad)))
-const routeCount = computed(() => matrix.value?.routes.length ?? 0)
+const routeCount = computed(() => (isMpe.value ? bindingCount.value : matrix.value?.routes.length ?? 0))
 </script>
 
 <template>
@@ -122,11 +145,19 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
         <div class="tabs">
           <button :class="{ on: isGlobal }" @click="board.matrixScope = 'global'">GLOBAL</button>
           <button
-            :class="{ on: !isGlobal }"
+            :class="{ on: !isGlobal && !isMpe }"
             :disabled="!pad"
             @click="pad && (board.matrixScope = pad.id)"
           >
             PAD · {{ pad?.settings.name ?? '—' }}
+          </button>
+          <button
+            :class="{ on: isMpe }"
+            :disabled="!patch"
+            title="What an MPE controller's surfaces do to the selected patch: STRIKE, PRESS, SLIDE. Only while MPE is on"
+            @click="board.matrixScope = 'mpe'"
+          >
+            MPE · {{ patch?.name ?? '—' }}
           </button>
         </div>
         <v-spacer />
@@ -134,13 +165,18 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
       </header>
 
       <p class="hint">
-        <template v-if="isGlobal">Global routes apply to every sound. Global LFOs run freely.</template>
+        <template v-if="isMpe">
+          What an MPE controller's surfaces do to this patch, on every VCO: <b>STRIKE</b> how hard a key is hit, <b>PRESS</b>
+          pressure into it, <b>SLIDE</b> moving up and down it (CC74). Only while MPE is on — off, the patch plays as it
+          always does. Sideways (GLIDE) bends each note's pitch by NOTE BEND.
+        </template>
+        <template v-else-if="isGlobal">Global routes apply to every sound. Global LFOs run freely.</template>
         <template v-else>Pad routes apply only to this sound. Pad LFOs restart with every note.</template>
-        Turn a cell to route that source → destination.
+        <template v-if="!isMpe">Turn a cell to route that source → destination.</template>
       </p>
 
-      <div v-if="lfos" class="top">
-        <section v-for="(lfo, i) in lfos" :key="i" class="module lfo">
+      <div v-if="lfos || isMpe" class="top">
+        <section v-for="(lfo, i) in lfos ?? []" :key="i" class="module lfo">
           <h4>
             LFO {{ i + 1 }}
             <i class="led" :style="{ opacity: 0.15 + 0.85 * lfoLed(lfo) }" />
@@ -203,7 +239,7 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
             <Knob v-model="lfo.quant" label="QUANT" :default="0" :format="fmtPct" color="accent" />
           </div>
         </section>
-        <section class="module perform">
+        <section v-if="!isMpe" class="module perform">
           <h4>PERFORM</h4>
           <div class="row">
             <Knob v-model="board.perform.mod" label="MOD" :default="0" :format="fmtPct" color="secondary" />
@@ -225,7 +261,39 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
         </section>
       </div>
 
-      <div v-if="matrix" class="grid-wrap">
+      <div v-if="isMpe && patch" class="grid-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th />
+              <th v-for="d in MOD_DEST_IDS" :key="d" :title="MOD_DESTS[d].label">{{ DEST_SHORT[d] }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="sf in MPE_SURFACES" :key="sf.id">
+              <th class="src" :title="sf.hint">{{ sf.label }}</th>
+              <td v-for="d in MOD_DEST_IDS" :key="d" :class="{ active: mpeAmount(sf.id, d) !== 0 }" :title="slotsNote(sf.id, d)">
+                <Knob
+                  :model-value="mpeAmount(sf.id, d)"
+                  :label="''"
+                  :min="-1"
+                  :max="1"
+                  :step="0.01"
+                  :default="0"
+                  bipolar
+                  :size="24"
+                  :color="mpeAmount(sf.id, d) ? 'secondary' : 'surface-variant'"
+                  :format="(v: number) => (v ? fmtRouteAmount(d, v) : '·')"
+                  @update:model-value="(v: number) => setMpeAmount(sf.id, d, v)"
+                />
+                <span v-if="slotsNote(sf.id, d)" class="only">{{ slotsNote(sf.id, d) }}</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p v-else-if="isMpe" class="hint">Select a patch to bind its MPE surfaces.</p>
+      <div v-else-if="matrix" class="grid-wrap">
         <table class="grid">
           <thead>
             <tr>
@@ -269,8 +337,9 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
       <p v-else class="hint">Select a pad to edit its matrix.</p>
 
       <footer>
-        <span class="count">{{ routeCount }} ROUTE{{ routeCount === 1 ? '' : 'S' }}</span>
-        <span class="hint">Double-click a cell to clear it · ± / + on a cell: both ways, or one way only (UNIPOLAR) · Bend always bends pitch (pad BEND range; MPE notes use NOTE BEND)</span>
+        <span class="count">{{ routeCount }} {{ isMpe ? 'BINDING' : 'ROUTE' }}{{ routeCount === 1 ? '' : 'S' }}</span>
+        <span v-if="isMpe" class="hint">Double-click a cell to clear it · amounts are a route's: at the surface's full travel · MPE on / off is in the header (MPE) and above</span>
+        <span v-else class="hint">Double-click a cell to clear it · ± / + on a cell: both ways, or one way only (UNIPOLAR) · Bend always bends pitch (pad BEND range; MPE notes use NOTE BEND)</span>
         <v-spacer />
         <button class="hw-btn" :disabled="!routeCount" @click="clearAll">CLEAR ALL</button>
       </footer>
@@ -486,5 +555,12 @@ footer .hint {
   font-family: 'VT323', monospace;
   font-size: 17px;
   color: var(--c-primary);
+}
+.only {
+  display: block;
+  font-family: 'VT323', monospace;
+  font-size: 10px;
+  line-height: 10px;
+  color: var(--c-secondary);
 }
 </style>

@@ -1,5 +1,5 @@
 import { markRaw, ref, shallowRef } from 'vue'
-import { defaultMatrix, type GlobalFx, type ModMatrix, type Sound } from '../types'
+import { defaultMatrix, type GlobalFx, type ModMatrix, type ModRoute, type Sound } from '../types'
 import { lfoConfig, LfoSource } from './lfo'
 import { isSynthAudioId, makeSynthBuffer, type SynthWave } from './synthWaves'
 import { MasterFx } from './masterFx'
@@ -90,6 +90,7 @@ export function getCtx(): AudioContext {
     cc: new Float32Array(128),
     matrix: () => globalMatrix,
     mpeBendRange: () => mpeBendRange,
+    mpeRoutes: (id) => mpeRoutesFor(id),
     zero,
   }
   // MIDI's usual power-on CCs: volume 100, pan centre, expression full
@@ -101,6 +102,12 @@ export function getCtx(): AudioContext {
   if (external) void ctx.suspend()
   else void loadGrains(ctx)
   return ctx
+}
+
+/** a patch layer's MPE bindings as routes, from the board (empty unless MPE is on) */
+let mpeRoutesFor: (soundId: string) => ModRoute[] = () => []
+export function setMpeRoutes(fn: (soundId: string) => ModRoute[]) {
+  mpeRoutesFor = fn
 }
 
 function applyGlobalLfos() {
@@ -666,6 +673,8 @@ export interface OfflineOptions {
   bpm?: number
   /** master chorus / delay / reverb to play through (a patch's header FX); null: dry */
   fx?: GlobalFx | null
+  /** MPE bindings to play with (a patch's, as routes per layer); default: none, as with MPE off */
+  mpeRoutes?: (soundId: string) => ModRoute[]
 }
 
 /**
@@ -698,6 +707,7 @@ export async function renderOffline(build: () => unknown, o: OfflineOptions): Pr
     cc,
     matrix: () => matrix,
     mpeBendRange: () => mpeBendRange,
+    mpeRoutes: o.mpeRoutes ?? (() => []),
     zero: constant(0),
   }
   let input: AudioNode

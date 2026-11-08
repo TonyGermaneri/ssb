@@ -1,5 +1,6 @@
 import {
-  BIPOLAR_SOURCES, MOD_DESTS, type ModDest, type ModMatrix, type ModSource, type SoundSettings, type ZoneCcMod, type ZoneLfo,
+  BIPOLAR_SOURCES, MOD_DESTS, type ModDest, type ModMatrix, type ModRoute, type ModSource, type SoundSettings, type ZoneCcMod,
+  type ZoneLfo,
 } from '../types'
 import { lfoConfig, LfoSource } from './lfo'
 import { isSvfType, type SvfType } from './svfMath'
@@ -99,11 +100,13 @@ export interface ModHub {
   cc: Float32Array
   matrix: () => ModMatrix
   mpeBendRange: () => number
+  /** a patch layer's MPE bindings as routes (empty unless MPE is on) */
+  mpeRoutes: (soundId: string) => ModRoute[]
   /** a silent source for unconnected VCO slots */
   zero: ConstantSourceNode
 }
 
-type Scope = 'global' | 'pad'
+type Scope = 'global' | 'pad' | 'mpe'
 const LFO_INDEX = { lfo1: 0, lfo2: 1 } as const
 /** matrix units → AudioParam units */
 const PARAM_UNIT: Partial<Record<ModDest, number>> = { pitch: 100, cutoff: 1200 }
@@ -693,10 +696,14 @@ export class Voice {
 
   // ── modulation ───────────────────────────────────────────────────────────
   private scopes(): [Scope, ModMatrix][] {
-    return [
+    const out: [Scope, ModMatrix][] = [
       ['global', this.hub.matrix()],
       ['pad', this.settings.mod],
     ]
+    // the patch's MPE surfaces, while MPE is on: routes of the pad's own, from the note's strike / press / slide
+    const mpe = this.hub.mpeRoutes(this.soundId)
+    if (mpe.length) out.push(['mpe', { ...this.settings.mod, routes: mpe }])
+    return out
   }
 
   private lfoCfg(i: 0 | 1) {
@@ -838,7 +845,7 @@ export class Voice {
         if (!r.amount) continue
         const into = LFO_DEST[r.dest]
         if (into) {
-          if (scope !== 'pad' || r.source === into) continue
+          if (scope === 'global' || r.source === into) continue
           if (r.source === 'lfo1' || r.source === 'lfo2') {
             if (lfoEdges.has(`${into}>${r.source}`)) continue
             lfoEdges.add(`${r.source}>${into}`)

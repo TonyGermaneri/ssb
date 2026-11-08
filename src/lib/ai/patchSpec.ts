@@ -13,13 +13,14 @@ import {
   type Lfo,
   type ModMatrix,
   type ModRoute,
+  type MpeBinding,
   type Patch,
   type PatchHeader,
   type PatchLayer,
   type PatchSlot,
   type SoundSettings,
 } from '../../types'
-import { checkValue, FX_PARAMS, HEADER_PARAMS, LFO_PARAMS, ROUTE_PARAMS, SLOT_PARAMS, SOUND_PARAMS, suggest, type Param } from './params'
+import { checkValue, FX_PARAMS, HEADER_PARAMS, LFO_PARAMS, MPE_PARAMS, ROUTE_PARAMS, SLOT_PARAMS, SOUND_PARAMS, suggest, type Param } from './params'
 
 type Values = Record<string, unknown>
 
@@ -39,16 +40,24 @@ export interface SpecSlot {
   routes?: ModRoute[]
 }
 
+/** an MPE binding as a spec writes it: slots numbered 1..3 (absent: every slot) */
+export interface SpecMpe {
+  surface: string
+  dest: string
+  amount: number
+  slots?: number[]
+}
 export interface PatchSpec {
   name: string
   tags?: string
   /** slots 1..3; null = empty */
   slots: (SpecSlot | null)[]
+  /** what the MPE surfaces do to the patch (only while the player has MPE on) */
+  mpe?: SpecMpe[]
   header?: {
     volume?: number
     mono?: boolean
     glide?: number
-    mpe?: boolean
     bpm?: number
     fx?: Values
     mod?: { lfo1?: Values; lfo2?: Values; routes?: ModRoute[] }
@@ -61,6 +70,8 @@ export interface PatchChange {
   name?: string
   tags?: string
   header?: PatchSpec['header']
+  /** replaces the patch's MPE bindings */
+  mpe?: SpecMpe[]
   /** by slot number "1".."3"; null empties the slot */
   slots?: Record<string, SlotChange | null>
 }
@@ -127,11 +138,14 @@ export function toSpec(patch: Patch, sound: (id: string) => SoundRef | null): Pa
     name: patch.name,
     tags: patch.tag,
     slots: Array.from({ length: PATCH_SLOTS }, (_, i) => slotSpec(patch.slots[i] ?? null)),
+    ...(patch.mpe?.length
+      ? { mpe: patch.mpe.map((b) => ({ surface: b.surface, dest: b.dest, amount: round(b.amount) as number, ...(b.slots ? { slots: b.slots.map((i) => i + 1) } : {}) })) }
+      : {}),
     ...(Object.keys(header).length ? { header } : {}),
   }
 }
 
-const HEADER_DEFAULTS: Values = { volume: 0.8, mono: false, glide: 0, mpe: false, bpm: 120 }
+const HEADER_DEFAULTS: Values = { volume: 0.8, mono: false, glide: 0, bpm: 120 }
 
 // ── write ─────────────────────────────────────────────────────────────────
 
@@ -179,6 +193,41 @@ function checkRoutes(routes: unknown, where: string, issues: SpecIssues): ModRou
   return out
 }
 
+/** a spec's MPE bindings, checked (slots 1..3 → 0..2) */
+function checkMpe(list: unknown, issues: SpecIssues): MpeBinding[] | undefined {
+  if (list === undefined) return undefined
+  if (!Array.isArray(list)) {
+    issues.errors.push('mpe must be an array of {surface, dest, amount, slots?}')
+    return undefined
+  }
+  const out: MpeBinding[] = []
+  list.forEach((x, i) => {
+    const where = `mpe[${i}]`
+    const v: Values = {}
+    const { slots, ...rest } = (x ?? {}) as Values & { slots?: unknown }
+    applyValues(v, rest, MPE_PARAMS, where, issues)
+    if (v.surface === undefined || v.dest === undefined || v.amount === undefined) {
+      issues.errors.push(`${where} needs surface, dest and amount`)
+      return
+    }
+    const b = v as unknown as MpeBinding
+    if (slots !== undefined) {
+      if (!Array.isArray(slots) || !slots.length || slots.some((n) => !Number.isInteger(n) || (n as number) < 1 || (n as number) > PATCH_SLOTS))
+        return void issues.errors.push(`${where}.slots must list slot numbers 1..${PATCH_SLOTS} (or be left out: every slot)`)
+      b.slots = [...new Set(slots as number[])].map((n) => n - 1)
+    }
+    out.push(b)
+  })
+  return out
+}
+/** a reminder when the surfaces the user plays most are left doing nothing */
+function mpeNote(list: MpeBinding[] | undefined, issues: SpecIssues) {
+  const bound = new Set((list ?? []).filter((b) => b.amount).map((b) => b.surface))
+  const missing = (['press', 'slide'] as const).filter((s) => !bound.has(s))
+  if (missing.length)
+    issues.notes.push(`MPE: ${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} unbound — give the patch tasteful "mpe" bindings (see the guide), so an MPE controller plays it expressively`)
+}
+
 function applyLfo(into: Lfo, values: Values | undefined, where: string, issues: SpecIssues) {
   applyValues(into as unknown as Values, values, LFO_PARAMS, where, issues)
 }
@@ -202,6 +251,11 @@ export function layerFrom(src: SoundRef, spec: SpecSlot | SlotChange, where: str
 export function applyHeader(h: PatchHeader, spec: PatchSpec['header'] | undefined, issues: SpecIssues) {
   if (!spec) return
   const { fx, mod, ...rest } = spec
+  if ('mpe' in rest) {
+    // MPE mode is the player's (their controller's), not a patch's
+    delete (rest as Values).mpe
+    issues.notes.push('header.mpe is ignored: MPE on / off is the player\'s. Bind the surfaces with the patch\'s "mpe" list')
+  }
   applyValues(h as unknown as Values, rest, HEADER_PARAMS, 'header', issues)
   applyValues(h.fx as unknown as Values, fx, FX_PARAMS, 'header.fx', issues)
   if (mod) {
@@ -259,8 +313,10 @@ export async function fromSpec(
   }
   const header = newHeader()
   applyHeader(header, spec.header, issues)
+  const mpe = checkMpe(spec.mpe, issues) ?? []
   if (!issues.ok) return { issues }
-  return { patch: { id: uid(), name: spec.name.trim(), tag: tagsOf(spec.tags), slots, header }, issues }
+  mpeNote(mpe, issues)
+  return { patch: { id: uid(), name: spec.name.trim(), tag: tagsOf(spec.tags), slots, header, mpe }, issues }
 }
 
 /** a patch's tags as the board keeps them (comma separated), with "ai" added */
@@ -321,6 +377,9 @@ export async function applyChange(
     if (routes) s.mod.routes = routes
     applyValues(cur as unknown as Values, c.slot, SLOT_PARAMS, `${where}.slot`, issues)
   }
+  const mpe = checkMpe(change.mpe, issues)
+  if (mpe) next.mpe = mpe
   if (!next.slots.some(Boolean)) issues.errors.push('that would leave the patch with no sound')
+  if (issues.ok) mpeNote(next.mpe, issues)
   return issues.ok ? { patch: next, issues } : { issues }
 }

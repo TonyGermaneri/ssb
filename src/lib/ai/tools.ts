@@ -36,14 +36,27 @@ const slotSchema = (forUpdate: boolean): JsonSchema => ({
   },
   ...(forUpdate ? {} : { required: ['sound'] }),
 })
+const mpeSchema: JsonSchema = {
+  type: 'array',
+  description: 'what an MPE controller\'s surfaces do to the patch, only while the player has MPE on: bind press and slide on every patch, strike where it adds expression',
+  items: {
+    type: 'object',
+    properties: {
+      surface: { type: 'string', enum: ['strike', 'press', 'slide'] },
+      dest: { type: 'string', description: 'a route destination (cutoff, resonance, volume, reverbMix, delayMix, grainSize, grainVar, lfo1Amt, …)' },
+      amount: { type: 'number', minimum: -1, maximum: 1 },
+      slots: { type: 'array', items: { type: 'integer', minimum: 1, maximum: 3 }, description: 'only these slots (default: every slot)' },
+    },
+    required: ['surface', 'dest', 'amount'],
+  },
+}
 const headerSchema: JsonSchema = {
   type: 'object',
-  description: 'volume, mono, glide, mpe, bpm; fx: master chorus/delay/reverb; mod: {lfo1, lfo2, routes} (global)',
+  description: 'volume, mono, glide, bpm; fx: master chorus/delay/reverb; mod: {lfo1, lfo2, routes} (global)',
   properties: {
     volume: { type: 'number' },
     mono: { type: 'boolean' },
     glide: { type: 'number' },
-    mpe: { type: 'boolean' },
     bpm: { type: 'number' },
     fx: values('chorusRate, chorusDepth, chorusMix, delayTime, delaySync, delayDivision, delayFeedback, delayMix, reverbSize, reverbDecay, reverbMix'),
     mod: { type: 'object', properties: { lfo1: values('global LFO 1'), lfo2: values('global LFO 2'), routes: { type: 'array', items: routeSchema } } },
@@ -174,6 +187,7 @@ export function createTools(board: Board, o: ToolOptions): AgentTool[] {
           name: { type: 'string', description: 'UPPER CASE, evocative, like the built-ins (e.g. "VELVET HAMMER KEYS")' },
           tags: { type: 'string', description: 'comma separated: kind (pad, lead, bass, keys, pluck, fx…), character, technique' },
           slots: { type: 'array', minItems: 1, maxItems: 3, items: slotSchema(false) },
+          mpe: mpeSchema,
           header: headerSchema,
         },
         required: ['name', 'slots'],
@@ -189,7 +203,7 @@ export function createTools(board: Board, o: ToolOptions): AgentTool[] {
     {
       name: 'update_patch',
       description:
-        'Change a patch: name, tags, header (merged; fx merged; mod.routes replaced if given) and slots by number ("1".."3": settings / slot / lfo1 / lfo2 merge, routes replace, a new sound swaps the layer, null empties). All of it is checked first; nothing changes unless all of it is valid. One undo step.',
+        'Change a patch: name, tags, header (merged; fx merged; mod.routes replaced if given), mpe (replaced if given) and slots by number ("1".."3": settings / slot / lfo1 / lfo2 merge, routes replace, a new sound swaps the layer, null empties). All of it is checked first; nothing changes unless all of it is valid. One undo step.',
       schema: {
         type: 'object',
         properties: {
@@ -197,6 +211,7 @@ export function createTools(board: Board, o: ToolOptions): AgentTool[] {
           name: { type: 'string' },
           tags: { type: 'string' },
           header: headerSchema,
+          mpe: mpeSchema,
           slots: { type: 'object', properties: { '1': slotSchema(true), '2': slotSchema(true), '3': slotSchema(true) }, additionalProperties: false },
         },
         required: ['patch_id'],
@@ -251,11 +266,27 @@ export function createTools(board: Board, o: ToolOptions): AgentTool[] {
           hold: { type: 'number', minimum: 0.05, maximum: 10, description: 'seconds the key is held (default 1.5)' },
           tail: { type: 'number', minimum: 0, maximum: 10, description: 'seconds after release (default 1)' },
           wet: { type: 'boolean', description: 'include the header\'s master chorus/delay/reverb (default false: dry)' },
+          mpe: {
+            type: 'object',
+            description: 'play it as an MPE note with its surfaces held here (0..1), its "mpe" bindings acting; leave out to hear it as with MPE off. Strike is the velocity',
+            properties: { press: { type: 'number', minimum: 0, maximum: 1 }, slide: { type: 'number', minimum: 0, maximum: 1 } },
+            additionalProperties: false,
+          },
           images: { type: 'array', items: { type: 'string', enum: ['waveform', 'spectrogram'] }, description: 'which pictures (default both; [] for numbers only)' },
         },
         additionalProperties: false,
       },
-      run: async (input: { patch_id?: string; sound?: string; note?: number; velocity?: number; hold?: number; tail?: number; wet?: boolean; images?: string[] }): Promise<ToolReply> => {
+      run: async (input: {
+        patch_id?: string
+        sound?: string
+        note?: number
+        velocity?: number
+        hold?: number
+        tail?: number
+        wet?: boolean
+        mpe?: { press?: number; slide?: number }
+        images?: string[]
+      }): Promise<ToolReply> => {
         let title = ''
         let req: Parameters<Board['renderOffline']>[0]
         if (input.sound) {
@@ -269,11 +300,12 @@ export function createTools(board: Board, o: ToolOptions): AgentTool[] {
           req = { patchId: p.id }
           title = p.name
         }
-        const r = await board.renderOffline({ ...req, note: input.note, velocity: input.velocity, hold: input.hold, tail: input.tail, wet: input.wet })
+        const r = await board.renderOffline({ ...req, note: input.note, velocity: input.velocity, hold: input.hold, tail: input.tail, wet: input.wet, mpe: input.mpe })
         const a = analyse(r, title)
         const want = input.images ?? ['waveform', 'spectrogram']
         const images = (['waveform', 'spectrogram'] as const).filter((k) => want.includes(k)).map((k) => ({ mediaType: 'image/png' as const, data: a.images[k] }))
-        return { text: `${title}${input.wet ? ' (wet)' : ' (dry)'}\n${a.summary}`, images }
+        const how = `${input.wet ? ' (wet)' : ' (dry)'}${input.mpe ? ` (MPE: press ${input.mpe.press ?? 0}, slide ${input.mpe.slide ?? 0})` : ''}`
+        return { text: `${title}${how}\n${a.summary}`, images }
       },
     },
   ]

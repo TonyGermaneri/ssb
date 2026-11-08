@@ -88,6 +88,14 @@ function onDrop(e: DragEvent, i: number) {
         <button class="heart" :class="{ on: patch.fav }" title="Favourite" @click="board.toggleFav('patch', patch.id)">
           <v-icon size="16" :icon="patch.fav ? 'mdi-heart' : 'mdi-heart-outline'" />
         </button>
+        <button
+          class="mpe-chip"
+          :class="{ on: patch.mpe?.length, live: board.master.mpe }"
+          :title="`MPE: what an MPE controller's STRIKE, PRESS and SLIDE do to this patch (${patch.mpe?.length ?? 0} binding${patch.mpe?.length === 1 ? '' : 's'}; only while MPE is ${board.master.mpe ? 'on, as now' : 'on — it is off'}). Click to edit`"
+          @click="board.openMatrix('mpe')"
+        >
+          MPE<small v-if="patch.mpe?.length"> {{ patch.mpe.length }}</small>
+        </button>
         <v-spacer />
         <!-- (a candidate's SAVE / DISCARD are on its bar, under the header) -->
         <template v-if="patch !== board.candidate">
@@ -179,6 +187,27 @@ function onDrop(e: DragEvent, i: number) {
 </template>
 
 <style scoped>
+.mpe-chip {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  line-height: 18px;
+  color: var(--ink-mute);
+  background: #111;
+  border: 1px solid #000;
+}
+.mpe-chip.on {
+  color: color-mix(in srgb, var(--c-secondary) 60%, var(--ink-mute));
+}
+.mpe-chip.on.live {
+  color: var(--c-secondary);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--c-secondary) 40%, transparent);
+}
+.mpe-chip small {
+  font-size: 11px;
+}
 .rack {
   display: flex;
   flex-direction: column;

@@ -3,8 +3,9 @@
  * these patches are installed after them, as ordinary patches of the catalog (tagged "factory"), and know which
  * built-in they came from by `factoryId`, so a board gets each one once whatever it has renamed it to.
  */
-import type { GlobalFx, Lfo, ModRoute, PatchSlot, SoundSettings } from '../types'
+import type { GlobalFx, Lfo, ModRoute, MpeBinding, PatchSlot, SoundSettings } from '../types'
 import { FACTORY_PATCHES_MORE } from './factoryPatches'
+import { FACTORY_MPE } from './factoryMpe'
 
 type SlotParams = Partial<Omit<PatchSlot, 'layer'>>
 /** One slot: an AKWF wave (by its name, e.g. AKWF_saw, AKWF_epiano_0025) and how its layer differs from the wave's sound. */
@@ -34,6 +35,8 @@ export interface FactoryPatch {
     fx?: Partial<GlobalFx>
     mod?: { lfo1?: Partial<Lfo>; lfo2?: Partial<Lfo>; routes?: ModRoute[] }
   }
+  /** what the MPE surfaces do to it (only while MPE is on) */
+  mpe?: MpeBinding[]
 }
 
 /**
@@ -191,4 +194,5 @@ export const LEGACY_FACTORY_NAMES: Record<string, string> = {
   'RING BELL': 'ring-bell',
 }
 
-export const FACTORY_PATCHES: FactoryPatch[] = [...CLASSICS, ...FACTORY_PATCHES_MORE]
+/** every built-in patch, with what the MPE surfaces do to it (lib/factoryMpe.ts) */
+export const FACTORY_PATCHES: FactoryPatch[] = [...CLASSICS, ...FACTORY_PATCHES_MORE].map((fp) => ({ ...fp, mpe: fp.mpe ?? FACTORY_MPE[fp.id] ?? [] }))

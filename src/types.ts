@@ -187,6 +187,33 @@ export interface ModRoute {
    *  sweeps POS forward of where it's set, never back) */
   unipolar?: boolean
 }
+/**
+ * MPE's per-note dimensions a patch binds to its sound: STRIKE (how hard the key is hit), PRESS (pressure into the held
+ * key), SLIDE (moving up / down the key: CC74). A patch's bindings act only while MPE is on; off, it plays as it always
+ * did. (GLIDE, the per-note bend, bends the pitch already; LIFT, the release velocity, SSB doesn't read.)
+ */
+export type MpeSurface = 'strike' | 'press' | 'slide'
+export const MPE_SURFACES: { id: MpeSurface; label: string; source: ModSource; hint: string }[] = [
+  { id: 'strike', label: 'STRIKE', source: 'velocity', hint: 'how hard the key is hit' },
+  { id: 'press', label: 'PRESS', source: 'aftertouch', hint: 'pressure into the key while it is held' },
+  { id: 'slide', label: 'SLIDE', source: 'timbre', hint: 'moving up / down the key (CC74)' },
+]
+export interface MpeBinding {
+  surface: MpeSurface
+  dest: ModDest
+  /** -1..1 of the destination's scale, as a route's */
+  amount: number
+  /** only these slots (0..2); absent: every slot */
+  slots?: number[]
+}
+/** A patch's MPE bindings as the routes one slot's layer gets (only while MPE is on). */
+export function mpeRoutes(bindings: MpeBinding[] | undefined, slot: number): ModRoute[] {
+  const source = (s: MpeSurface) => MPE_SURFACES.find((x) => x.id === s)?.source
+  return (bindings ?? []).flatMap((b) => {
+    const src = source(b.surface)
+    return src && b.amount && (!b.slots || b.slots.includes(slot)) ? [{ source: src, dest: b.dest, amount: b.amount }] : []
+  })
+}
 export interface ModMatrix {
   lfo1: Lfo
   lfo2: Lfo
@@ -738,6 +765,8 @@ export interface Patch {
   /** always PATCH_SLOTS long; null = empty slot */
   slots: (PatchSlot | null)[]
   header: PatchHeader
+  /** what the MPE surfaces do to this patch (only while MPE is on) */
+  mpe?: MpeBinding[]
 }
 
 export const patchLayers = (p: Patch) => p.slots.filter((x): x is PatchSlot => !!x).map((x) => x.layer)

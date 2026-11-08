@@ -3,7 +3,7 @@
  * is written from it (so the model reads the same ranges the code enforces), and patchSpec.ts checks and clamps what
  * the model writes against it. Ranges are the panels' knob ranges.
  */
-import { DIVISIONS, FILTER_TYPES, LFO_SHAPES, MOD_DESTS, MOD_SOURCES, TRIGGER_MODES, TUNING_MODES } from '../../types'
+import { DIVISIONS, FILTER_TYPES, LFO_SHAPES, MOD_DESTS, MOD_SOURCES, MPE_SURFACES, TRIGGER_MODES, TUNING_MODES } from '../../types'
 
 export interface Param {
   key: string
@@ -188,11 +188,17 @@ export const ROUTE_PARAMS: Param[] = [
   b('unipolar', 'optional: a two-sided source (lfo1, lfo2, bend, random, vco1..vco3) counts 0..1 instead of -1..1, so it only pushes one way from where the destination is set (e.g. lfo2 → grainPos sweeping forward of the position, never back); no effect on one-sided sources or volume'),
 ]
 
+/** a patch's MPE bindings: what an MPE controller's surfaces do to it, only while the player has MPE on */
+export const MPE_PARAMS: Param[] = [
+  e('surface', MPE_SURFACES.map((s) => s.id), MPE_SURFACES.map((s) => `${s.id}: ${s.hint}`).join(' · ')),
+  e('dest', Object.keys(MOD_DESTS), 'as a route’s dest'),
+  n('amount', -1, 1, '', 'of the destination’s scale, as a route’s (0 at rest, this much at the surface’s full travel)'),
+]
+
 export const HEADER_PARAMS: Param[] = [
   n('volume', 0, 1.2, '', 'patch output volume (0.8 default)'),
   b('mono', 'one voice with legato glide'),
   n('glide', 0, 2, 's', 'portamento time'),
-  b('mpe', 'MPE: per-note pitch bend, pressure and CC74 from an MPE controller'),
   n('bpm', 20, 300, 'BPM', 'tempo for synced LFOs and delay'),
 ]
 export const FX_PARAMS: Param[] = [

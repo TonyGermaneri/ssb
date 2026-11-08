@@ -52,6 +52,36 @@ describe('patch specs', () => {
     expect(bad.issues.errors.join('\n')).toMatch(/unipolar must be true or false/)
   })
 
+  it('takes MPE bindings (slots 1..3 in the spec, 0..2 on the patch), reads them back, and asks for press and slide', async () => {
+    const mpe = [
+      { surface: 'press', dest: 'cutoff', amount: 0.3 },
+      { surface: 'slide', dest: 'reverbMix', amount: 0.25, slots: [1] },
+    ]
+    const { patch, issues } = await fromSpec({ name: 'EXPRESSIVE', slots: [{ sound: 'AKWF_saw' }, { sound: 'AKWF_sin' }], mpe }, byRef, uid)
+    expect(issues.errors).toEqual([])
+    expect(patch!.mpe).toEqual([
+      { surface: 'press', dest: 'cutoff', amount: 0.3 },
+      { surface: 'slide', dest: 'reverbMix', amount: 0.25, slots: [0] },
+    ])
+    expect(issues.notes.join('\n')).not.toMatch(/MPE:/)
+    expect(toSpec(patch!, byId).mpe).toEqual(mpe)
+    // nothing bound: made, with a reminder; update_patch replaces the list
+    const bare = await fromSpec({ name: 'FLAT', slots: [{ sound: 'AKWF_saw' }] }, byRef, uid)
+    expect(bare.patch!.mpe).toEqual([])
+    expect(bare.issues.notes.join('\n')).toMatch(/press and slide are unbound/)
+    const changed = await applyChange(bare.patch!, { mpe: [{ surface: 'press', dest: 'volume', amount: 0.2 }] }, byRef, uid)
+    expect(changed.patch!.mpe).toEqual([{ surface: 'press', dest: 'volume', amount: 0.2 }])
+    expect(changed.issues.notes.join('\n')).toMatch(/slide is unbound/)
+    // wrong surfaces and slots are refused; header.mpe is the player's, ignored with a note
+    const bad = await fromSpec({ name: 'X', slots: [{ sound: 'AKWF_saw' }], mpe: [{ surface: 'lift', dest: 'cutoff', amount: 0.2 }, { surface: 'press', dest: 'cutoff', amount: 0.2, slots: [4] }] }, byRef, uid)
+    expect(bad.patch).toBeUndefined()
+    expect(bad.issues.errors.join('\n')).toMatch(/surface/)
+    expect(bad.issues.errors.join('\n')).toMatch(/slots must list slot numbers 1..3/)
+    const h = await fromSpec({ name: 'H', slots: [{ sound: 'AKWF_saw' }], header: { mpe: true } as never }, byRef, uid)
+    expect(h.issues.errors).toEqual([])
+    expect(h.issues.notes.join('\n')).toMatch(/header.mpe is ignored/)
+  })
+
   it('refuses unknown knobs and sounds, naming the nearest', async () => {
     const { patch, issues } = await fromSpec({ name: 'X', slots: [{ sound: 'AKWF_nope', settings: {} }, { sound: 'AKWF_saw', settings: { cuttoff: 300 } }] }, byRef, uid)
     expect(patch).toBeUndefined()

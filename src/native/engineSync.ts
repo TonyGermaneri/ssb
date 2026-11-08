@@ -36,6 +36,8 @@ const matrix = (m: ModMatrix) => ({
 /** zones rarely change and can be big (thousands of SFZ regions): serialised once per array */
 const zoneJson = new WeakMap<object, unknown>()
 
+const withMpe = <M extends { routes: unknown[] }>(mod: M, extra: unknown[]): M => (extra.length ? { ...mod, routes: [...mod.routes, ...extra] } : mod)
+
 function soundJson(board: Board, sound: Sound) {
   const { mod, ...rest } = sound.settings
   let zones: unknown
@@ -47,7 +49,8 @@ function soundJson(board: Board, sound: Sound) {
   return {
     id: sound.id,
     audioId: sound.audioId,
-    s: { ...rest, mod: matrix(mod) },
+    // a patch's MPE bindings join the layer's routes while MPE is on (board.mpeRoutesFor; none otherwise)
+    s: { ...rest, mod: matrix(withMpe(mod, board.mpeRoutesFor(sound.id))) },
     zones,
     ccDefaults: sound.ccDefaults,
     links: board.vcoLinks(sound).map(({ index, osc, slot }) => ({

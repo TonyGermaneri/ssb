@@ -34,7 +34,8 @@ Two catalogs, as tabs under the header, each with card and grid views and its ow
   NEW PATCH starts from and what the keys play while no patch is selected.
 - **Patches** — playable instruments built from up to **3 VCO slots**, each holding a sound (as the patch's own
   copy of its settings, so editing a patch never changes the sound), plus the header knobs (volume, glide, mono/poly,
-  MPE, BPM, chorus / delay / reverb, global mod matrix; MPE's bend range is the controller's and stays put). Selecting a patch loads those header settings;
+  BPM, chorus / delay / reverb, global mod matrix; MPE on / off and its bend range are the controller's and stay put)
+  and its **MPE bindings** (what an MPE controller's surfaces do to it, see [MPE](#mpe)). Selecting a patch loads those header settings;
   changing them while it's selected saves them into it. Clicking a patch card loads it and plays it (so it sounds with
   its own header); **☰** (or right-click) loads it and shows the rack, the one place a patch is edited — its title row
   has the name, tags, ♥, **DUPLICATE** (the rack then shows the copy) and **DELETE** (then the next patch).
@@ -439,10 +440,16 @@ bend, pressure, mod wheel and CC74 apply to every voice. Notes on channels 2–1
 pressure (→ AFTERTOUCH in the matrix) and CC74 (→ TIMBRE), including values sent just before the note starts. MPE is
 always polyphonic.
 
-- **Bend range**: with MPE on, the button halves and a dropdown beside it sets the per-note bend range to match your
-  controller (±1 … ±96 semitones, default ±48, MPE's own default). It belongs to the controller, not the patch:
-  changing patches keeps it, and a plugin instance saves it with the session. A device that sends its range (RPN 0
-  on a member channel) sets it.
+- **Surfaces**: each patch says what an MPE controller's surfaces do to it — **STRIKE** (how hard a key is hit),
+  **PRESS** (pressure into it while held) and **SLIDE** (moving up and down it, CC74) — on its VCOs, as routes of their
+  own: the rack's **MPE** chip (or the matrix modal's MPE tab) shows and edits them. They act only while MPE is on;
+  off, the patch plays as it always did. Every built-in patch comes voiced for MPE (PRESS and SLIDE always, STRIKE where
+  it adds something), and the AI patch maker binds them on what it makes. Sideways (GLIDE) bends each note's pitch;
+  LIFT (release velocity) isn't used.
+- **On / off and bend range** belong to the controller, not the patch: changing patches keeps them, and a plugin
+  instance saves them with the session. With MPE on, the button halves and a dropdown beside it sets the per-note bend
+  range to match your controller (±1 … ±96 semitones, default ±48, MPE's own default). A device that sends its range
+  (RPN 0 on a member channel) sets it.
 - **Zones**: one lower zone of 15 member channels until a device's MPE Configuration Message (RPN 6) says otherwise;
   an upper zone (channel 16 the master, 1–15 the notes) works too.
 - **Release**: a note keeps following its channel while it rings out, until a new note takes the channel; then it
@@ -465,18 +472,18 @@ DELAY / REVERB · BOARD (undo, redo, and **+**: add files or a folder, browse wa
 export / import the board). PERFORM, TEMPO · MIDI and the effects fold sideways (◀); the rest always show. Wraps into
 rows on narrow windows.
 
+**+ → EXPORT…** lists every patch and sound in one grid (TYPE, NAME, TAG, what each is MADE OF): tick what goes into
+the .zip (click a row; ⇧-click a run; filter by PATCHES / SOUNDS / MY SAMPLES or by text; ALL / NONE act on what's
+shown), or take EVERYTHING. A ticked patch brings the sounds its VCOs use, and every sample they need travels with them
+(from the board's store, the plugin's sample cache, or the decoded audio); if one can't be found the dialog names it
+rather than leaving it out. AKWF waves and generators travel by name. **IMPORT BOARD…** reads the .zip back.
+
 - **Select a patch** by clicking its card in the Patches tab, or with ◀ ▶ in the header.
 - **PLAY** turns MIDI and the computer keyboard into a piano for the selected patch (C4 = original pitch).
   Computer keys: `Z` row = C3 octave, `Q` row = C4 octave, `-` / `=` = octave down/up.
 - **MONO** + **GLIDE** = legato portamento; **POLY** = each note its own voice (glide slides from the last note).
 
 See [PLAN.md](PLAN.md) for the design and audio graph.
-
-**+ → EXPORT…** lists every patch and sound in one grid (TYPE, NAME, TAG, what each is MADE OF): tick what goes into
-the .zip (click a row; ⇧-click a run; filter by PATCHES / SOUNDS / MY SAMPLES or by text; ALL / NONE act on what's
-shown), or take EVERYTHING. A ticked patch brings the sounds its VCOs use, and every sample they need travels with them
-(from the board's store, the plugin's sample cache, or the decoded audio); if one can't be found the dialog names it
-rather than leaving it out. AKWF waves and generators travel by name. **IMPORT BOARD…** reads the .zip back.
 
 ## License
 

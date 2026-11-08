@@ -22,6 +22,7 @@ import { sniffSampleRate } from '../lib/sampleRate'
 import { filterPlayable, nearestZone, pickZones, regionToZone, zoneSemis } from '../lib/zones'
 import { isSynthAudioId, synthAudioId, synthWave } from '../audio/synthWaves'
 import { FACTORY_PATCHES, LAYER_VOLUME, LEGACY_FACTORY_NAMES, type FactoryPatch } from '../lib/factory'
+import { fillFactoryMpe } from '../lib/factoryMpe'
 import { FACTORY_LEVELS, FACTORY_LEVELS_V3 } from '../lib/factoryLevels'
 import {
   akwfReady, boardOrder, CYCLE_ROOT, isWaveAudioId, loadAkwf, waveAudioId, waveChannels, waveFolder, waveNameOf,
@@ -33,8 +34,9 @@ import { stripExt } from '../lib/format'
 import {
   divisionBeats, defaultMaster, defaultMatrix, defaultSettings, FILTER_TYPES, migrateMaster, migratePresetSettings, presetSettings,
   TRIGGER_MODES,
-  carrierSlot, headerOf, migratePatch, newSlot, PATCH_SLOTS, patchLayers, soundAudioIds, type TuningMode, type ListView,
-  type MasterState, type Patch, type PatchLayer, type PatchSlot, type Preset, type Sound, type SoundSettings, type VcoSlot, type Zone,
+  carrierSlot, headerOf, migratePatch, mpeRoutes, newSlot, PATCH_SLOTS, patchLayers, soundAudioIds, type TuningMode, type ListView,
+  type MasterState, type ModRoute, type Patch, type PatchLayer, type PatchSlot, type Preset, type Sound, type SoundSettings,
+  type VcoSlot, type Zone,
 } from '../types'
 
 /**
@@ -97,6 +99,8 @@ const uid = () => crypto.randomUUID()
 const FACTORY_VERSION = 4
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(toRaw(v)))
 const cycle = <T>(list: readonly T[], cur: T) => list[(list.indexOf(cur) + 1) % list.length]
+
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 
 export const useBoard = defineStore('board', () => {
   const sounds = ref<Sound[]>([])
@@ -265,6 +269,14 @@ export const useBoard = defineStore('board', () => {
       for (const l of patchLayers(p)) m.set(l.id, { patch: p, layer: l })
     return m
   })
+  /** A patch layer's MPE routes: its patch's bindings for its slot, while MPE is on (none otherwise). */
+  function mpeRoutesFor(layerId: string): ModRoute[] {
+    if (!master.mpe) return []
+    const hit = layerIndex.value.get(layerId)
+    if (!hit?.patch.mpe?.length) return []
+    return mpeRoutes(hit.patch.mpe, hit.patch.slots.findIndex((x) => x?.layer.id === layerId))
+  }
+  engine.setMpeRoutes(mpeRoutesFor)
   /** a sound pad, or a patch layer (by layer id) */
   function resolveSound(id: string): Sound | undefined {
     const hit = byId(id)
@@ -535,6 +547,9 @@ export const useBoard = defineStore('board', () => {
       // first run: every AKWF wave, then the built-in patches made of them; older boards get what they lack
       if (!master.factory) await installFactory()
       else if (master.factoryVersion < FACTORY_VERSION) await upgradeFactory()
+      // built-in patches installed before they had MPE bindings get them, whatever the board's factory version (a patch
+      // with a list of its own keeps it)
+      fillFactoryMpe(patches.value)
       if (nativeBoardKey()) await restoreInstance()
       void collectOrphanAudio()
     } finally {
@@ -867,6 +882,8 @@ export const useBoard = defineStore('board', () => {
   watch(() => perform.pressure, (v) => engine.setChannelPressure(v))
   watch(() => perform.timbre, (v) => engine.setTimbre(v))
   watch(() => master.mpeBendRange, (v) => engine.setMpeBendRange(v), { immediate: true })
+  // MPE on / off brings the patches' MPE bindings in or out
+  watch(() => master.mpe, () => engine.refreshVoices())
 
   // ── undo / redo ────────────────────────────────────────────────────────
   /**
@@ -1443,9 +1460,10 @@ export const useBoard = defineStore('board', () => {
     master.patchId = id
     const p = selectedPatch.value
     if (!p) return
-    // load the patch's header knobs (not the MPE bend range: that's the controller's, and stays with the instance)
+    // load the patch's header knobs (not MPE nor its bend range: they're the controller's, and stay with the instance;
+    // a patch's MPE bindings act whenever MPE is on)
     const h = clone(p.header)
-    Object.assign(master, { volume: h.volume, glide: h.glide, mono: h.mono, mpe: h.mpe, bpm: h.bpm })
+    Object.assign(master, { volume: h.volume, glide: h.glide, mono: h.mono, bpm: h.bpm })
     Object.assign(master.fx, h.fx)
     Object.assign(master.mod, h.mod)
   }
@@ -1572,6 +1590,11 @@ export const useBoard = defineStore('board', () => {
     tail?: number
     wet?: boolean
     sampleRate?: number
+    /**
+     * Play it as an MPE note with its surfaces where given (0..1: PRESS the pressure, SLIDE the CC74 it starts and
+     * stays at; STRIKE is the velocity): the patch's MPE bindings act, as with MPE on. Absent: as with MPE off.
+     */
+    mpe?: { press?: number; slide?: number }
   }): Promise<{ channels: Float32Array[]; sampleRate: number; noteOffAt: number }> {
     const note = Math.round(req.note ?? 60)
     const velocity = Math.min(1, Math.max(0.01, req.velocity ?? 0.9))
@@ -1586,13 +1609,15 @@ export const useBoard = defineStore('board', () => {
     // AKWF waves are made from the waves in memory: have them before the voices look for their buffers
     if (layers.some(isWaveSound) && !akwfReady.value) await loadAkwf()
     const h = patch?.header
-    const r = await engine.renderOffline(() => startNote(sound, note, velocity, { midiNote: note, glideTime: 0, at: 0 }), {
+    const surfaces = req.mpe ? { pressure: clamp01(req.mpe.press ?? 0), timbre: clamp01(req.mpe.slide ?? 0) } : {}
+    const r = await engine.renderOffline(() => startNote(sound, note, velocity, { midiNote: note, glideTime: 0, at: 0, ...surfaces }), {
       seconds: hold + tail,
       releaseAt: hold,
       sampleRate: req.sampleRate,
       matrix: h?.mod,
       bpm: h?.bpm,
       fx: req.wet ? (h?.fx ?? master.fx) : null,
+      mpeRoutes: req.mpe && patch ? (id) => mpeRoutes(patch.mpe, patch.slots.findIndex((x) => x?.layer.id === id)) : undefined,
     })
     return { ...r, noteOffAt: hold }
   }
@@ -1672,7 +1697,7 @@ export const useBoard = defineStore('board', () => {
     Object.assign(mod.lfo2, h.mod?.lfo2)
     mod.routes.push(...clone(h.mod?.routes ?? []))
     const header = headerOf({ ...d, ...h, fx: { ...d.fx, ...h.fx }, mod } as MasterState)
-    return { id: uid(), name: fp.name, tag: fp.tag, factoryId: fp.id, factoryLevel: FACTORY_LEVELS[fp.id] ?? 0, slots, header }
+    return { id: uid(), name: fp.name, tag: fp.tag, factoryId: fp.id, factoryLevel: FACTORY_LEVELS[fp.id] ?? 0, slots, header, mpe: clone(fp.mpe ?? []) }
   }
 
   /** The built-in patches the board hasn't got (by their factory id), after the others. Returns how many. */
@@ -1730,7 +1755,7 @@ export const useBoard = defineStore('board', () => {
     if (!p) throw new Error(`no patch ${id}`)
     const keep = new Set(patchLayers(next).map((l) => l.id))
     for (const l of patchLayers(p)) if (!keep.has(l.id)) engine.stopSound(l.id)
-    Object.assign(p, { name: next.name, tag: next.tag, slots: next.slots, header: next.header })
+    Object.assign(p, { name: next.name, tag: next.tag, slots: next.slots, header: next.header, mpe: next.mpe })
     // the selected patch's header is the header knobs: they follow
     if (master.patchId === id) selectPatch(id)
   }
@@ -2356,6 +2381,7 @@ export const useBoard = defineStore('board', () => {
     tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
     addFiles, addCapture, load, press, release, panic, noteOn, noteOff,
     select, selectStep, togglePanel, cycleMode, cycleFilter, toggleGrain, addWaves, resetSettings, duplicate, remove, removeSounds, move,
+    mpeRoutesFor,
     exportBoard, exportPlan, exportSelection, importBoard, enableMidi, learnMidi,
   }
 })
