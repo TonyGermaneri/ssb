@@ -97,17 +97,21 @@ The **rack** under the header shows the selected patch's three slots side by sid
     The squares are the grains as they play (where each is reading), the dotted line where the LFO has moved the firing
     point. Its corner chip picks the view (2D, or a live SCOPE / BARS / SPECTRO under the crosshair, the TV stretched
     to the view's shape); **GRAIN ON / OFF** in the other corner switches grains.
-  - **GRAIN**: up / down how often grains fire, left / right how long each lasts. Its lines are the grains one after
-    another down the pad, each as long as it sounds (more rows the faster they fire), the one firing now lit: long
-    ones overlap the next (a smooth texture), short ones are dashes or dots apart. Top right: smooth granular
-    textures; bottom right: long layered grains; middle left: short separate grains, arpeggios.
-  - **LFO**: swings where the grains fire — left / right how far (far left: off), up / down how fast (tempo divisions).
-    It is the layer's LFO 2, routed to POS. The trail of dots is the firing point over the last cycle and a half.
+  - **GRAIN**: up / down the grains' size (small and fast at the top, long and slow at the bottom); left / right how
+    much of each grain's turn it sounds — 1 % at the far left (mostly silence between grains), all of it at the right
+    (LENGTH). Time runs along the rows like lines of text: a dash is a grain sounding, a gap silence, the one just
+    fired lit. Top left: fast, far apart; top right: fast, nearly continuous; bottom right: long slow grains; bottom
+    left: short grains with long silences.
+  - **LFO**: sweeps where the grains fire forward of the position, never behind it — left / right how far (far left:
+    off), up / down how fast (tempo divisions). It is the layer's LFO 2, routed one-sided to POS. The dots are the
+    firing point over the last cycle and a half, from the position (the left edge) to as far as the sweep goes.
   - **FILTER · REVERB**: up / down the reverb; left / right the filter, bypassed in the middle, a low-pass closing to
     the left, a high-pass opening to the right. The bright line is the filter's response, the copies behind it the reverb.
-  - **PITCH · RING**: fine pitch (±2 semitones) in the middle; coarse at the left (an octave up at the top, stopped
-    half-way, backwards below); the right brings in the ring modulator, its carrier rising with you. The lines are
-    contours of equal pitch: thick for the original pitch, red for stopped.
+  - **PITCH · RING**: fine pitch (±2 semitones) in the middle; coarse toward the edges (×2 at the top corners,
+    stopped half-way, backwards below, ×2 backwards at the bottom corners); the right also brings in the ring
+    modulator, up / down setting its carrier with the pitch (its dots shake as it comes in). The lines are contours
+    of equal pitch: thick for the original pitch, red for stopped, the one below it the original pitch backwards, the
+    thin one through the crosshair what plays now.
   It's the same settings as the knobs (GRAIN, LENGTH, BACK, RING, filter, reverb, PITCH / FINE): PLAY again shows them.
 - The header's **VIEW** group picks what's under the header — **RACK**, **BOTH** (the rack with the list beside it)
   or **LIST**. Clicking a VCO in the header shows the rack too. The list's own bar, right of the SOUNDS / PATCHES

@@ -18,21 +18,23 @@ import {
 const s = () => ({ ...defaultSettings('T'), grainLength: 1, grainBackwards: false, ringMix: 0, ringFreq: 440 })
 
 describe('Play pads', () => {
-  it('GRAIN: a point and its settings round-trip; top-right is fast and long, bottom-left slow and short', () => {
+  it('GRAIN: y the grain size (fast at the top), x the share of its turn a grain sounds (1 % … all of it)', () => {
     const w = grainWrite({ x: 1, y: 1 }, 2)
     expect(w.grainFreq).toBeCloseTo(150, 3)
     expect(w.grainLength).toBe(1)
     const low = grainWrite({ x: 0, y: 0 }, 2)
     expect(low.grainFreq).toBeCloseTo(0.5, 3)
-    expect(low.grainLength).toBeCloseTo(0.02, 4)
+    expect(low.grainLength).toBeCloseTo(0.01, 4)
+    // linear across: the middle sounds about half the time
+    expect(grainWrite({ x: 0.5, y: 0.5 }, 2).grainLength).toBeCloseTo(0.505, 3)
     const p = grainPoint({ ...s(), ...grainWrite({ x: 0.3, y: 0.7 }, 2) }, 2)
     expect(p.x).toBeCloseTo(0.3, 3)
     expect(p.y).toBeCloseTo(0.7, 3)
   })
 
-  it('LFO: x is the route to POS (none at the far left), y the tempo band', () => {
+  it('LFO: x is the route to POS, one-sided (none at the far left), y the tempo band', () => {
     const a = lfoWrite(s(), { x: 0.6, y: 0.99 })
-    expect(a.routes).toEqual([{ source: 'lfo2', dest: 'grainPos', amount: 0.6 }])
+    expect(a.routes).toEqual([{ source: 'lfo2', dest: 'grainPos', amount: 0.6, unipolar: true }])
     expect(a.lfo2.division).toBe(LFO_BANDS.at(-1))
     expect(a.lfo2.sync).toBe(true)
     const st = s()
@@ -81,5 +83,24 @@ describe('Play pads', () => {
     const edge = nominal.segments.flat().filter((p) => p.x < 0.03)
     expect(middle.every((p) => Math.abs(p.y - 0.5) < 0.03)).toBe(true)
     expect(edge.every((p) => Math.abs(p.y - 0.75) < 0.03)).toBe(true)
+    // a smooth valley, as SpaceCraft's: about 0.61 a quarter of the way in
+    expect(Math.abs(pitchPoint({ ...s(), pitch: 0, fine: 0 }, 0.27).y - 0.61)).toBeLessThan(0.03)
+    // a line just above nominal rises over the middle (where its pitch is near the top of the fine range)
+    const [above] = contours([1.1], 200)
+    const at = (x: number) => above.segments.flat().reduce((b, p) => (Math.abs(p.x - x) < Math.abs(b.x - x) ? p : b)).y
+    expect(at(0.5)).toBeGreaterThan(at(0.02) + 0.1)
+  })
+
+  it('the stopped line leaves the pad at the bottom about a fifth of the way in, ×-1 nearer the edges', () => {
+    const [stopped, back] = contours([0, -1], 200)
+    const bottomX = (c: { segments: [{ x: number; y: number }, { x: number; y: number }][] }) =>
+      Math.min(...c.segments.flat().filter((p) => p.x < 0.5 && p.y < 0.01).map((p) => p.x))
+    expect(bottomX(stopped)).toBeGreaterThan(0.12)
+    expect(bottomX(stopped)).toBeLessThan(0.24)
+    expect(bottomX(back)).toBeGreaterThan(0.05)
+    expect(bottomX(back)).toBeLessThan(bottomX(stopped))
+    // each starts at its edge height: stopped half-way, ×-1 a quarter up
+    expect(stopped.segments[0][0].y).toBeCloseTo(0.5, 2)
+    expect(back.segments[0][0].y).toBeCloseTo(0.25, 2)
   })
 })

@@ -4,7 +4,7 @@ import { activeVoices, clock, getBuffer, audioDuration } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import type { Sound } from '../types'
 import { fxPoint, fxWrite, grainPoint, grainWrite, lfoPoint, lfoWrite, performPoint, performWrite, pitchPoint, pitchWrite, type Point } from '../lib/play/pads'
-import { crosshair, drawClip, drawFx, drawGrain, drawLfo, drawPerformOverlay, drawPitch, grainHot, grainRows, lfoOffset, type Colors, type GrainDot } from '../lib/play/draw'
+import { crosshair, drawClip, drawFx, drawGrain, drawLfo, drawPerformOverlay, drawPitch, grainLit, lfoOffset, type Colors, type GrainDot } from '../lib/play/draw'
 import Knob from './Knob.vue'
 import LiveView from './LiveView.vue'
 import PlayPad from './PlayPad.vue'
@@ -102,8 +102,11 @@ function grainDots(now: number): GrainDot[] {
   }
   return out
 }
-const lfoAmountOf = (r: Settings) => Math.abs(r.mod.routes.find((x) => x.source === 'lfo2' && x.dest === 'grainPos')?.amount ?? 0)
-const overlapOf = (r: Settings) => (r.grainMode === 'cloud' ? r.grainDensity : r.grainMode === 'loop' ? 1 : 2)
+/** LFO 2's route to POS: how far it sweeps, and whether only forward (the pad's) */
+const lfoRouteOf = (r: Settings) => {
+  const route = r.mod.routes.find((x) => x.source === 'lfo2' && x.dest === 'grainPos')
+  return { amount: Math.abs(route?.amount ?? 0), unipolar: !!route?.unipolar }
+}
 
 // ── the pads: where their crosshairs are, and what moving them writes ──
 type PadId = 'perform' | 'grain' | 'lfo' | 'fx' | 'pitch'
@@ -180,15 +183,13 @@ const drawers = {
   grain: (g: CanvasRenderingContext2D, w: number, h: number, dpr: number) => {
     const r = raw()
     const at = pointOf('grain', r)
-    const rows = grainRows(at.y)
-    const overlap = overlapOf(r)
-    const hot = grainHot({ freq: r.grainFreq, overlap, now: clock.value, rows, sounding: sounding.value })
-    drawGrain(g, w, h, { freq: r.grainFreq, length: r.grainLength ?? 1, overlap, rows, hot, colors: colors.value, dpr })
+    const lit = grainLit({ freq: r.grainFreq, y: at.y, now: clock.value, sounding: sounding.value })
+    drawGrain(g, w, h, { duty: r.grainLength ?? 1, y: at.y, lit, colors: colors.value, dpr })
     crosshair(g, w, h, at, colors.value, dpr)
   },
   lfo: (g: CanvasRenderingContext2D, w: number, h: number, dpr: number) => {
     const r = raw()
-    drawLfo(g, w, h, { lfo: r.mod.lfo2, amount: lfoAmountOf(r), bpm: board.bpm, now: frozen, colors: colors.value, dpr })
+    drawLfo(g, w, h, { lfo: r.mod.lfo2, ...lfoRouteOf(r), bpm: board.bpm, now: frozen, colors: colors.value, dpr })
     crosshair(g, w, h, pointOf('lfo', r), colors.value, dpr)
   },
   fx: (g: CanvasRenderingContext2D, w: number, h: number, dpr: number) => {
@@ -213,14 +214,10 @@ const padRefs = { grain: grainPad, lfo: lfoPad, fx: fxPad, pitch: pitchPad }
 function looks(id: keyof typeof padRefs, r: Settings): string {
   const at = pointOf(id, r)
   const p = `${at.x.toFixed(4)},${at.y.toFixed(4)}|${colors.value.line}`
-  if (id === 'grain') {
-    const rows = grainRows(at.y)
-    const overlap = overlapOf(r)
-    return `${p}|${r.grainFreq}|${r.grainLength}|${overlap}|${grainHot({ freq: r.grainFreq, overlap, now: clock.value, rows, sounding: sounding.value })}`
-  }
+  if (id === 'grain') return `${p}|${r.grainFreq}|${r.grainLength}|${grainLit({ freq: r.grainFreq, y: at.y, now: clock.value, sounding: sounding.value })}`
   if (id === 'lfo') {
-    const a = lfoAmountOf(r)
-    return `${p}|${a}|${JSON.stringify(r.mod.lfo2)}|${board.bpm}|${a ? frozen : 0}`
+    const { amount, unipolar } = lfoRouteOf(r)
+    return `${p}|${amount}|${unipolar}|${JSON.stringify(r.mod.lfo2)}|${board.bpm}|${amount ? frozen : 0}`
   }
   if (id === 'fx') return `${p}|${r.filterType}|${r.cutoff}|${r.resonance}|${r.reverbMix}`
   return `${p}|${r.ringMix ?? 0}|${pitchTick}`
@@ -237,7 +234,8 @@ function performLooks(r: Settings): string {
   // grains move every frame while it plays
   if (sounding.value) return `${clock.value}`
   const at = pointOf('perform', r)
-  return `${at.x},${at.y}|${live.value}|${props.sound.audioId}|${r.clipIn}|${r.clipOut}|${lfoAmountOf(r)}|${r.grainPos}|${performSize.value.w}x${performSize.value.h}|${colors.value.line}`
+  const lfo = lfoRouteOf(r)
+  return `${at.x},${at.y}|${live.value}|${props.sound.audioId}|${r.clipIn}|${r.clipOut}|${lfo.amount}|${lfo.unipolar}|${r.grainPos}|${performSize.value.w}x${performSize.value.h}|${colors.value.line}`
 }
 function paintPerform() {
   const c = performCanvas.value
@@ -253,10 +251,10 @@ function paintPerform() {
   g.clearRect(0, 0, w, h)
   const r = raw()
   if (!live.value) drawClip(g, w, h, clipPeaks(Math.min(1200, Math.round(performSize.value.w))), colors.value)
-  const amount = lfoAmountOf(r)
+  const lfo = lfoRouteOf(r)
   drawPerformOverlay(g, w, h, {
     at: pointOf('perform', r),
-    fireX: amount > 0 ? clamp01(r.grainPos + lfoOffset(r.mod.lfo2, amount, board.bpm, frozen)) : null,
+    fireX: lfo.amount > 0 ? clamp01(r.grainPos + lfoOffset(r.mod.lfo2, lfo.amount, board.bpm, frozen, lfo.unipolar)) : null,
     grains: grainDots(clock.value),
     colors: colors.value,
     dpr,
@@ -379,7 +377,7 @@ const fmtQ = (v: number) => v.toFixed(1)
         <PlayPad
           ref="grainPad"
           label="GRAIN"
-          title="GRAIN — up / down: how often grains fire; left / right: how long each lasts. Each line is a grain, one after another down the pad: long ones overlap (a smooth texture), short ones are dots apart (separate grains, arpeggios). Double-click: reset"
+          title="GRAIN — up / down: the grains' size (small and fast at the top, long and slow at the bottom); left / right: how much of each grain's turn it sounds (1 % at the far left, mostly silence; all of it at the right). Time runs along the rows like lines of text: a dash is a grain sounding, a gap silence. Double-click: reset"
           :color="colors.line"
           :draw="drawers.grain"
           square
@@ -395,7 +393,7 @@ const fmtQ = (v: number) => v.toFixed(1)
         <PlayPad
           ref="lfoPad"
           label="LFO"
-          title="LFO — swings where the grains fire: left / right how far (far left: off), up / down how fast (tempo divisions, slow at the bottom). It is the layer's LFO 2, routed to POS. Double-click: off"
+          title="LFO — sweeps where the grains fire, forward of the position (never behind it): left / right how far (far left: off), up / down how fast (tempo divisions, slow at the bottom). It is the layer's LFO 2, routed to POS. Double-click: off"
           :color="colors.line"
           :draw="drawers.lfo"
           square
@@ -482,7 +480,8 @@ const fmtQ = (v: number) => v.toFixed(1)
 }
 .perform {
   position: relative;
-  aspect-ratio: 16 / 9;
+  /* short, so the four pads have the room */
+  height: 100px;
   border: 1.5px solid var(--line);
   border-radius: 6px;
   overflow: hidden;
@@ -543,7 +542,7 @@ const fmtQ = (v: number) => v.toFixed(1)
   }
   .perform {
     flex: 1;
-    aspect-ratio: auto;
+    height: auto;
   }
 }
 </style>

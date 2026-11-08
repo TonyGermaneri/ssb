@@ -3,8 +3,9 @@
  * crosshair position writes back. Positions are 0..1 with y = 1 at the top. Pure, so the mappings are tested.
  *
  * - PERFORM (the big waveform): x = where grains fire (POS, in the clip), y = the layer's volume.
- * - GRAIN: y = how often grains fire (GRAIN, log), x = how long each lasts (LENGTH, log).
- * - LFO: the layer's LFO 2 swinging POS: x = how far (its route's amount), y = how fast (tempo bands, slow → fast).
+ * - GRAIN: y = the grains' size (GRAIN, log: small and fast at the top, long and slow at the bottom), x = how much of
+ *   each grain's turn it sounds (LENGTH, 1 % at the far left -- mostly silence -- to all of it at the right).
+ * - LFO: the layer's LFO 2 sweeping POS forward of where it's set (a unipolar route): x = how far, y = how fast.
  * - FILTER · REVERB: y = reverb; x = the filter: centre bypassed, left a low-pass closing, right a high-pass opening.
  * - PITCH · RING: a pitch multiplier that is fine (±2 semitones) in the middle and coarse (×2 up, through stopped, to
  *   ×2 backwards) at the edges; the right edge brings in the ring modulator, its carrier rising with y.
@@ -26,7 +27,7 @@ export const performPoint = (s: SoundSettings): Point => ({ x: clamp01(s.grainPo
 export const performWrite = (p: Point) => ({ grainPos: clamp01(p.x), volume: Math.round(clamp01(p.y) * VOLUME_TOP * 1000) / 1000 })
 
 // ── GRAIN ──
-export const LENGTH_MIN = 0.02
+export const LENGTH_MIN = 0.01
 /**
  * The grain rates the pad spans: from one grain per clip (or 0.5 Hz) to GRAIN's top, and always four octaves at
  * least (a single-cycle wave's clip is a few ms: one grain per clip would be faster than the top).
@@ -37,11 +38,11 @@ export const grainRange = (clipSeconds: number) => ({
 })
 export function grainPoint(s: SoundSettings & { grainLength?: number }, clipSeconds: number): Point {
   const { lo, hi } = grainRange(clipSeconds)
-  return { x: logTo(s.grainLength ?? 1, LENGTH_MIN, 1), y: logTo(s.grainFreq, lo, hi) }
+  return { x: clamp01(((s.grainLength ?? 1) - LENGTH_MIN) / (1 - LENGTH_MIN)), y: logTo(s.grainFreq, lo, hi) }
 }
 export function grainWrite(p: Point, clipSeconds: number) {
   const { lo, hi } = grainRange(clipSeconds)
-  return { grainFreq: round4(logFrom(p.y, lo, hi)), grainLength: round4(logFrom(p.x, LENGTH_MIN, 1)) }
+  return { grainFreq: round4(logFrom(p.y, lo, hi)), grainLength: round4(LENGTH_MIN + clamp01(p.x) * (1 - LENGTH_MIN)) }
 }
 
 // ── LFO (the layer's LFO 2 → POS) ──
@@ -58,11 +59,14 @@ export function lfoPoint(s: SoundSettings): Point {
 export function lfoBand(y: number) {
   return Math.min(LFO_BANDS.length - 1, Math.floor(clamp01(y) * LFO_BANDS.length))
 }
-/** LFO 2 synced to the band under y, and its route to POS at x's amount (none at the far left) */
+/**
+ * LFO 2 synced to the band under y, and its route to POS at x's amount (none at the far left), one-sided: the grains
+ * fire at the position or ahead of it, never behind.
+ */
 export function lfoWrite(s: SoundSettings, p: Point) {
   const amount = round4(clamp01(p.x) < 0.02 ? 0 : clamp01(p.x))
   const routes = s.mod.routes.filter((r) => !isPosRoute(r))
-  if (amount > 0) routes.push({ source: 'lfo2', dest: 'grainPos', amount })
+  if (amount > 0) routes.push({ source: 'lfo2', dest: 'grainPos', amount, unipolar: true })
   return { lfo2: { ...s.mod.lfo2, sync: true, ratioMode: false, division: LFO_BANDS[lfoBand(p.y)], amount: 1 }, routes }
 }
 
@@ -96,19 +100,33 @@ export function fxResponse(s: Pick<SoundSettings, 'filterType' | 'cutoff' | 'res
 }
 
 // ── PITCH · RING ──
-/** how much of the coarse (edge) behaviour a column has: none in the middle, all at the edges */
-export function edgeWeight(x: number) {
-  const d = Math.abs(clamp01(x) - 0.5)
-  return Math.pow(clamp01((d - 0.08) / 0.42), 1.5)
-}
-/**
- * The pitch multiplier at a point: ×2^(±2/12) across the middle (fine), −2..+2 linear at the edges (coarse: up an
- * octave at the top, stopped half-way, an octave backwards at the bottom), blended between.
+/*
+ * SpaceCraft's pitch field, drawn as lines of equal pitch multiplier m. Each runs from (m + 2) / 4 up the edges (coarse:
+ * ×2 at the top corners, stopped half-way, ×2 backwards at the bottom ones) to where m sits in the middle's ±2
+ * semitones, along a cosine: the nominal line a smooth valley, as SpaceCraft draws it. Multipliers the middle can't
+ * play (the stopped and backwards ones) carry on below the pad there, so their lines leave it at the bottom part-way
+ * in: stopped (red) about a fifth of the way from each edge, ×-1 nearer the edge.
  */
+const FINE_LOW = 2 ** (-2 / 12)
+/** below the middle's range, how fast a line's middle height falls with m (where stopped and ×-1 leave the pad) */
+const BELOW = 1.24 / FINE_LOW
+const edgeY = (m: number) => (m + 2) / 4
+const middleY = (m: number) => (m >= FINE_LOW ? 0.5 + 3 * Math.log2(m) : (m - FINE_LOW) * BELOW)
+/** how much a column belongs to the middle: 1 there, 0 at the edges, a cosine between */
+export const middleWeight = (x: number) => (1 + Math.cos(Math.PI * Math.abs(clamp01(x) - 0.5) * 2)) / 2
+/** the height of the line of multiplier m in a column (it rises with m in every column) */
+export const contourY = (m: number, x: number) => edgeY(m) + (middleY(m) - edgeY(m)) * middleWeight(x)
+/** The pitch multiplier at a point: the line through it (bisected). */
 export function pitchMultiplier(p: Point) {
-  const u = 2 * clamp01(p.y) - 1
-  const e = edgeWeight(p.x)
-  return (1 - e) * Math.pow(2, (2 * u) / 12) + e * 2 * u
+  const y = clamp01(p.y)
+  let lo = -2.5
+  let hi = 2.5
+  for (let k = 0; k < 48; k++) {
+    const mid = (lo + hi) / 2
+    if (contourY(mid, p.x) < y) lo = mid
+    else hi = mid
+  }
+  return (lo + hi) / 2
 }
 export const RING_LO = 30
 export const RING_HI = 3840
@@ -134,65 +152,45 @@ export function pitchPoint(s: SoundSettings & { grainBackwards?: boolean; ringMi
   const ring = s.ringMix ?? 0
   const x0 = ring > 0 ? 0.6 + 0.4 * ring : column
   const solve = (x: number) => {
-    // pitchMultiplier rises with y in every column: bisect
-    let lo = 0
-    let hi = 1
-    if (target < pitchMultiplier({ x, y: 0 }) - 1e-6 || target > pitchMultiplier({ x, y: 1 }) + 1e-6) return null
-    for (let k = 0; k < 40; k++) {
-      const mid = (lo + hi) / 2
-      if (pitchMultiplier({ x, y: mid }) < target) lo = mid
-      else hi = mid
-    }
-    return (lo + hi) / 2
+    const y = contourY(target, x)
+    return y >= -1e-9 && y <= 1 + 1e-9 ? clamp01(y) : null
   }
   const y = solve(x0)
   if (y !== null) return { x: x0, y }
   // out to whichever edge is nearer, step by step, until it can
   const dir = x0 < 0.5 ? -1 : 1
-  for (let x = x0; x >= 0 && x <= 1; x += dir * 0.01) {
+  for (let k = 1; k <= 100; k++) {
+    const x = clamp01(x0 + dir * k * 0.01)
     const yy = solve(x)
     if (yy !== null) return { x, y: yy }
+    if (x === 0 || x === 1) break
   }
   return { x: dir < 0 ? 0 : 1, y: target > 0 ? 1 : 0 }
 }
 
-/**
- * Lines of equal pitch over the pad (marching squares on the multiplier field): one polyline set per level, in pad
- * coordinates (y = 1 at the top).
- */
-export function contours(levels: number[], n = 64): { level: number; segments: [Point, Point][] }[] {
-  const f = (i: number, j: number) => pitchMultiplier({ x: i / n, y: j / n })
-  const grid: number[][] = []
-  for (let i = 0; i <= n; i++) {
-    grid.push([])
-    for (let j = 0; j <= n; j++) grid[i].push(f(i, j))
-  }
+/** Lines of equal pitch over the pad, one polyline set per multiplier, in pad coordinates (y = 1 at the top). */
+export function contours(levels: number[], n = 96): { level: number; segments: [Point, Point][] }[] {
   return levels.map((level) => {
     const segments: [Point, Point][] = []
-    const lerp = (a: number, b: number) => (level - a) / (b - a)
-    for (let i = 0; i < n; i++)
-      for (let j = 0; j < n; j++) {
-        const v = [grid[i][j], grid[i + 1][j], grid[i + 1][j + 1], grid[i][j + 1]]
-        const pts: Point[] = []
-        const corners: Point[] = [
-          { x: i / n, y: j / n },
-          { x: (i + 1) / n, y: j / n },
-          { x: (i + 1) / n, y: (j + 1) / n },
-          { x: i / n, y: (j + 1) / n },
-        ]
-        for (let k = 0; k < 4; k++) {
-          const a = v[k]
-          const b = v[(k + 1) % 4]
-          if ((a < level) !== (b < level)) {
-            const t = lerp(a, b)
-            const p = corners[k]
-            const q = corners[(k + 1) % 4]
-            pts.push({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t })
-          }
+    let prev: Point | null = null
+    for (let i = 0; i <= n; i++) {
+      const p = { x: i / n, y: contourY(level, i / n) }
+      if (prev) {
+        // the part inside the pad (a line leaving at the top or bottom is cut there)
+        const inA = prev.y >= 0 && prev.y <= 1
+        const inB = p.y >= 0 && p.y <= 1
+        // where it leaves the pad between two samples
+        const cut = (a: Point, b: Point): Point => {
+          const edge = (a.y > 1) !== (b.y > 1) ? 1 : 0
+          const t = (edge - a.y) / (b.y - a.y)
+          return { x: a.x + (b.x - a.x) * t, y: edge }
         }
-        if (pts.length >= 2) segments.push([pts[0], pts[1]])
-        if (pts.length === 4) segments.push([pts[2], pts[3]])
+        if (inA && inB) segments.push([prev, p])
+        else if (inA) segments.push([prev, cut(prev, p)])
+        else if (inB) segments.push([cut(prev, p), p])
       }
+      prev = p
+    }
     return { level, segments }
   })
 }
