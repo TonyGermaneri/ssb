@@ -92,7 +92,7 @@ The **rack** under the header shows the selected patch's three slots side by sid
 - **Tuning** (the **ET** chip, on every VCO): equal temperament, or **adaptive just intonation**, which retunes that
   VCO to each chord you hold: pure fifths and thirds, while the keyboard stays close to equal temperament. See below.
 - **PLAY** (beside the tuning chip) turns a VCO's panel into a performance page, after SpaceCraft's: the clip big, and
-  four XY pads. Drag a crosshair anywhere; double-click a pad to reset it; ⚙ has its options.
+  four XY pads, in the theme's colours (each VCO its own). Drag a crosshair anywhere; double-click a pad to reset it; ⚙ has its options.
   - **The big view** is played like a pad: left / right is where in the clip the grains fire (POS), up / down how loud.
     The squares are the grains as they play (where each is reading), the dotted line where the LFO has moved the firing
     point. Its corner chip picks the view (2D, or a live SCOPE / BARS / SPECTRO under the crosshair, the TV stretched

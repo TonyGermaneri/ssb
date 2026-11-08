@@ -27,13 +27,21 @@ const s = computed(() => props.sound.settings as Settings)
 /** the same object, raw: what the frame loop reads (no tracking, no proxies, sixty times a second) */
 const raw = () => toRaw(props.sound.settings) as Settings
 
-/** SpaceCraft's two engines' colours, and a third */
-const PALETTE: Colors[] = [
-  { line: '#00e8ff', cross: '#ff2a2a' },
-  { line: '#ff2bd6', cross: '#ffa200' },
-  { line: '#a8ff1a', cross: '#b04bff' },
-]
-const colors = computed(() => PALETTE[props.slot % PALETTE.length])
+/**
+ * The theme's colours: each VCO's pictures in one of its LED colours (primary, secondary, accent), the crosshair in the
+ * first of danger / accent / secondary / primary that stands apart from it.
+ */
+const rgbOf = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16))
+const apart = (a: string, b: string) => {
+  const [x, y] = [rgbOf(a), rgbOf(b)]
+  return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]) > 110
+}
+const colors = computed<Colors>(() => {
+  const t = board.theme
+  const line = [t.primary, t.secondary, t.accent][props.slot % 3]
+  const cross = [t.danger, t.accent, t.secondary, t.primary].find((c) => c !== line && apart(c, line)) ?? t.text[0]
+  return { line, cross }
+})
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 
 // ── the clip ──
@@ -448,7 +456,7 @@ const fmtQ = (v: number) => v.toFixed(1)
   flex-direction: column;
   gap: 6px;
   padding: 6px;
-  background: #000;
+  background: var(--panel-lo);
   border-radius: 0 0 6px 6px;
   container-type: inline-size;
 }
@@ -464,11 +472,11 @@ const fmtQ = (v: number) => v.toFixed(1)
   font-weight: 900;
   letter-spacing: 0.14em;
   color: var(--cross);
-  background: rgba(0, 0, 0, 0.7);
+  background: color-mix(in srgb, var(--lcd-bg) 75%, transparent);
   border: 1.5px solid color-mix(in srgb, var(--cross) 60%, transparent);
 }
 .grain-chip.on {
-  color: #000;
+  color: var(--lcd-bg);
   background: var(--line);
   border-color: var(--line);
 }
@@ -482,6 +490,7 @@ const fmtQ = (v: number) => v.toFixed(1)
   position: relative;
   /* short, so the four pads have the room */
   height: 100px;
+  background: var(--lcd-bg);
   border: 1.5px solid var(--line);
   border-radius: 6px;
   overflow: hidden;
@@ -516,7 +525,7 @@ const fmtQ = (v: number) => v.toFixed(1)
   font-weight: 900;
   letter-spacing: 0.14em;
   color: color-mix(in srgb, var(--line) 70%, transparent);
-  text-shadow: 0 0 3px #000;
+  text-shadow: 0 0 3px var(--lcd-bg);
 }
 .pads {
   display: grid;

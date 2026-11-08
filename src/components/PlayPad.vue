@@ -92,7 +92,7 @@ function up() {
   min-width: 0;
   border: 1.5px solid var(--line);
   border-radius: 6px;
-  background: #000;
+  background: var(--lcd-bg);
   overflow: hidden;
   touch-action: none;
 }
@@ -116,7 +116,7 @@ canvas {
   font-weight: 900;
   letter-spacing: 0.14em;
   color: color-mix(in srgb, var(--line) 70%, transparent);
-  text-shadow: 0 0 3px #000;
+  text-shadow: 0 0 3px var(--lcd-bg);
 }
 .gear {
   position: absolute;
@@ -129,7 +129,7 @@ canvas {
   padding: 0;
   border-radius: 3px;
   color: color-mix(in srgb, var(--line) 70%, transparent);
-  background: rgba(0, 0, 0, 0.55);
+  background: color-mix(in srgb, var(--lcd-bg) 55%, transparent);
   border: 1px solid color-mix(in srgb, var(--line) 35%, transparent);
   opacity: 0.6;
 }
@@ -147,7 +147,7 @@ canvas {
   justify-content: center;
   gap: 6px;
   padding: 8px;
-  background: rgba(0, 0, 0, 0.82);
+  background: color-mix(in srgb, var(--lcd-bg) 85%, transparent);
 }
 .settings :deep(button.opt),
 .done {
@@ -157,11 +157,11 @@ canvas {
   font-family: 'VT323', monospace;
   font-size: 16px;
   color: color-mix(in srgb, var(--line) 75%, transparent);
-  background: color-mix(in srgb, var(--line) 10%, #000);
+  background: color-mix(in srgb, var(--line) 10%, var(--lcd-bg));
   border: 1px solid color-mix(in srgb, var(--line) 45%, transparent);
 }
 .settings :deep(button.opt.on) {
-  color: #000;
+  color: var(--lcd-bg);
   background: var(--line);
 }
 .done {
