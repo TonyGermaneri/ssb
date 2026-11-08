@@ -68,6 +68,12 @@ function onDrop(e: DragEvent, i: number) {
     <div class="title">
       <template v-if="patch">
         <span class="lbl">{{ patch === board.candidate ? '★ CANDIDATE' : `PATCH ${String(board.patchNumber).padStart(2, '0')}` }}</span>
+        <span
+          v-if="board.isBuiltIn(patch)"
+          class="built-in"
+          title="Built in: SAVE leaves it as it is and makes your edits a patch of your own (RESTORE BUILT-INS in the + menu brings back any you delete)"
+          >BUILT-IN</span
+        >
         <input
           :value="patch.name"
           class="name"
@@ -99,6 +105,24 @@ function onDrop(e: DragEvent, i: number) {
         <v-spacer />
         <!-- (a candidate's SAVE / DISCARD are on its bar, under the header) -->
         <template v-if="patch !== board.candidate">
+          <button
+            class="hw-btn save"
+            :class="{ lit: board.patchEdited }"
+            :disabled="!board.patchEdited"
+            :title="
+              !board.patchEdited
+                ? 'Nothing to save: edits to a patch wait for SAVE (choosing another patch drops them)'
+                : board.isBuiltIn(patch)
+                  ? 'SAVE: a built-in stays as it is; your edits become a patch of your own with its name, beside it'
+                  : 'SAVE the edits into this patch'
+            "
+            @click="board.savePatch()"
+          >
+            <v-icon size="14" icon="mdi-content-save" /> SAVE
+          </button>
+          <button class="hw-btn" :disabled="!board.patchEdited" title="Drop the edits: the patch as it was saved" @click="board.revertPatch()">
+            <v-icon size="14" icon="mdi-restore" /> REVERT
+          </button>
           <button class="hw-btn" title="Duplicate this patch (the rack then shows the copy)" @click="board.duplicatePatch(patch.id)">
             <v-icon size="14" icon="mdi-content-copy" /> DUPLICATE
           </button>
@@ -208,6 +232,27 @@ function onDrop(e: DragEvent, i: number) {
 .mpe-chip small {
   font-size: 11px;
 }
+/* a built-in patch: SAVE keeps edits as a patch of your own */
+.built-in {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 2px;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 7.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  line-height: 14px;
+  color: var(--text-mute);
+  border: 1px solid color-mix(in srgb, var(--text-mute) 50%, transparent);
+}
+.save.lit {
+  color: var(--c-accent);
+  text-shadow: 0 0 6px color-mix(in srgb, var(--c-accent) 80%, transparent);
+  box-shadow:
+    0 2px 0 #0a0a0b,
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 0 10px color-mix(in srgb, var(--c-accent) 30%, transparent);
+}
 .rack {
   display: flex;
   flex-direction: column;
@@ -243,13 +288,16 @@ function onDrop(e: DragEvent, i: number) {
   border: 1px solid #000;
   outline: none;
 }
+/* (they give way before the buttons wrap) */
 .title .name {
-  width: 240px;
-  max-width: 100%;
+  flex: 1 1 120px;
+  min-width: 0;
+  max-width: 240px;
 }
 .title .tags {
-  width: 300px;
-  max-width: 100%;
+  flex: 1 1 100px;
+  min-width: 0;
+  max-width: 300px;
   color: var(--c-secondary);
 }
 .heart {

@@ -203,7 +203,7 @@ export function createTools(board: Board, o: ToolOptions): AgentTool[] {
     {
       name: 'update_patch',
       description:
-        'Change a patch: name, tags, header (merged; fx merged; mod.routes replaced if given), mpe (replaced if given) and slots by number ("1".."3": settings / slot / lfo1 / lfo2 merge, routes replace, a new sound swaps the layer, null empties). All of it is checked first; nothing changes unless all of it is valid. One undo step.',
+        'Change a patch: name, tags, header (merged; fx merged; mod.routes replaced if given), mpe (replaced if given) and slots by number ("1".."3": settings / slot / lfo1 / lfo2 merge, routes replace, a new sound swaps the layer, null empties). All of it is checked first; nothing changes unless all of it is valid. One undo step. It plays at once and is kept when the user presses SAVE.',
       schema: {
         type: 'object',
         properties: {
@@ -224,7 +224,8 @@ export function createTools(board: Board, o: ToolOptions): AgentTool[] {
         if (!patch) throw new Error(`nothing was changed:\n- ${issues.errors.join('\n- ')}`)
         board.replacePatch(p.id, patch)
         if (board.master.patchId !== p.id) board.selectPatch(p.id)
-        return { text: json({ updated: p.id, name: patch.name, notes: issues.notes }) }
+        const saved = 'playing, not saved: the user keeps it with SAVE (choosing another patch drops it)' + (board.isBuiltIn(p) ? '; a built-in stays as it is, SAVE makes it a patch of their own' : '')
+        return { text: json({ updated: p.id, name: patch.name, saved, notes: issues.notes }) }
       },
     },
     {

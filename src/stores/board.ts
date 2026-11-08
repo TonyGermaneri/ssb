@@ -16,7 +16,7 @@ import { MpeZones } from '../audio/mpe'
 import type { Voice, VoiceOptions, VoiceTuning, ZonePlay } from '../audio/voice'
 import type { SoundRef } from '../lib/ai/patchSpec'
 import { basename, dirname, type PathFile } from '../lib/dropFiles'
-import { addTags, passesTags, tagFacets } from '../lib/tags'
+import { addTags, passesTags, splitTags, tagFacets } from '../lib/tags'
 import { normalisePath, parseSfz } from '../lib/sfz'
 import { sniffSampleRate } from '../lib/sampleRate'
 import { filterPlayable, nearestZone, pickZones, regionToZone, zoneSemis } from '../lib/zones'
@@ -90,13 +90,18 @@ interface SavedBoard {
   sounds: Sound[]
   master: MasterState
   presets?: Preset[]
+  /** each patch as saved (edits wait for SAVE) */
   patches?: Patch[]
+  /** the selected patch's unsaved edits (its body), so the app reopens where it was; a plugin keeps its own in the session */
+  edit?: { id: string; body: string } | null
 }
 
 const uid = () => crypto.randomUUID()
 /** 2: the factory patches are made of AKWF waves; 3: every AKWF wave is a sound, and the built-in patches; 4: those
- *  patches with headroom for chords (see upgradeFactory) */
-const FACTORY_VERSION = 4
+ *  patches with headroom for chords; 5: the built-ins dry (their chorus, delay and reverb mixes at 0; see upgradeFactory) */
+const FACTORY_VERSION = 5
+/** the global FX mixes at 0: how the built-in patches start */
+const DRY = { chorusMix: 0, delayMix: 0, reverbMix: 0 } as const
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(toRaw(v)))
 const cycle = <T>(list: readonly T[], cur: T) => list[(list.indexOf(cur) + 1) % list.length]
 
@@ -148,12 +153,25 @@ export const useBoard = defineStore('board', () => {
   const changes = shallowRef(0)
   /** each sound's / patch's JSON (sounds as stored, see compactSound), until it is next written to */
   const texts = new WeakMap<object, string>()
+  /**
+   * Patches aren't saved by being edited. Each patch's body (what it sounds like: slots, header, MPE bindings) as last
+   * saved is kept here; that is what the library stores and the other instances see, until SAVE (savePatch) makes the
+   * edits the patch, or REVERT, or choosing another patch, drops them. Name, tags and ♥ save as they change.
+   */
+  const savedBodies = new Map<string, string>()
+  /** bumped as savedBodies changes (it isn't reactive) */
+  const savedTick = shallowRef(0)
+  /** ids of patches written to since their body was saved or put back (only these can have edits) */
+  const touched = new Set<string>()
   /** A sound or patch whose writes mark it changed. */
   function tracked<T extends object>(item: T): T {
     const raw = untrack(item)
+    // (a patch has slots: its writes may be edits, which wait for SAVE)
+    const patchId = 'slots' in raw ? (raw as unknown as Patch).id : null
     return track(item, () => {
       texts.delete(raw)
       semantic.forget(raw)
+      if (patchId) touched.add(patchId)
       changes.value++
     })
   }
@@ -550,7 +568,10 @@ export const useBoard = defineStore('board', () => {
       // built-in patches installed before they had MPE bindings get them, whatever the board's factory version (a patch
       // with a list of its own keeps it)
       fillFactoryMpe(patches.value)
+      // what's stored is what's saved (the upgrades just now included); the app's unsaved edits come back as edits
+      markAllSaved()
       if (nativeBoardKey()) await restoreInstance()
+      else applyDraft(saved?.edit)
       void collectOrphanAudio()
     } finally {
       loaded.value = true
@@ -692,9 +713,11 @@ export const useBoard = defineStore('board', () => {
   function applyInstance(json: string | undefined | null) {
     if (!json) return false
     try {
-      const st = JSON.parse(json) as { master?: Partial<MasterState>; view?: Partial<InstanceView> }
+      const st = JSON.parse(json) as { master?: Partial<MasterState>; view?: Partial<InstanceView>; edit?: { id: string; body: string } }
       const m = st.master ?? {}
       for (const k of INSTANCE_ALL) if (k in m) (master as Record<string, unknown>)[k] = clone(m[k])
+      // the patch as the session left it: its unsaved edits, still unsaved
+      if (st.edit?.id === master.patchId) applyDraft(st.edit)
       // a session saved before the view was kept opens as the editor always did
       const v = st.view
       if (v) {
@@ -724,13 +747,13 @@ export const useBoard = defineStore('board', () => {
       else Object.assign(master, { play: true, midiAuto: true })
     }
     watch(
-      () => [INSTANCE_ALL.map((k) => master[k]), instanceView()],
+      () => [INSTANCE_ALL.map((k) => master[k]), instanceView(), editDraft.value?.body],
       () => {
         clearTimeout(instanceTimer)
-        instanceTimer = setTimeout(
-          () => void callNative('ssbSetState', JSON.stringify({ v: 2, master: pickInstance(master), view: instanceView() })).catch(() => {}),
-          300,
-        )
+        instanceTimer = setTimeout(() => {
+          const state = { v: 2, master: pickInstance(master), view: instanceView(), edit: editDraft.value ?? undefined }
+          void callNative('ssbSetState', JSON.stringify(state)).catch(() => {})
+        }, 300)
       },
       { deep: true, immediate: true },
     )
@@ -752,11 +775,15 @@ export const useBoard = defineStore('board', () => {
     const read = new Map((await readSounds(fresh)).map((x) => [x.id, x]))
     const list = saved.sounds.map((x) => keep.get(JSON.stringify(x)) ?? read.get(x.id)).filter((x): x is Sound => !!x)
     const keepP = new Map(toRaw(patches.value).map((x) => [patchText(x), x]))
+    // this instance's edits stay its own, over whatever was saved meanwhile
+    const draft = editDraft.value
     applyingRemote = true
     try {
       presets.value = (saved.presets ?? []).map((p) => ({ ...p, settings: migratePresetSettings(p.settings) }))
       patches.value = (saved.patches ?? []).map((x) => keepP.get(JSON.stringify(x)) ?? tracked(migratePatch(x)))
       sounds.value = list
+      markAllSaved()
+      applyDraft(draft)
       await nextTick()
     } finally {
       applyingRemote = false
@@ -793,15 +820,24 @@ export const useBoard = defineStore('board', () => {
     }, 300)
   }
 
-  /** The board as stored: sounds and patches from their kept JSON (only what changed is serialised again). */
+  /**
+   * The board as stored: sounds and patches from their kept JSON (only what changed is serialised again); a patch
+   * with edits as it was saved.
+   */
   function savedBoard(): SavedBoard {
     const snap = snapshot()
+    const stored = toRaw(patches.value).map((p, i) => {
+      if (!isEdited(p)) return snap.patches[i]
+      const [slots, header, mpe] = JSON.parse(savedBodies.get(p.id)!)
+      return JSON.stringify({ ...untrack(p), slots, header: { ...untrack(p).header, ...header }, mpe })
+    })
     return {
       version: 1,
       sounds: JSON.parse(`[${snap.sounds.join(',')}]`),
       master: clone(master),
       presets: clone(presets.value),
-      patches: JSON.parse(`[${snap.patches.join(',')}]`),
+      patches: JSON.parse(`[${stored.join(',')}]`),
+      edit: editDraft.value,
     }
   }
 
@@ -816,7 +852,15 @@ export const useBoard = defineStore('board', () => {
   // Writes inside sounds and patches arrive as `changes` (a deep watch over thousands of sounds would walk every
   // setting on every knob step); the lists themselves are watched one level deep, for adds, removes and moves.
   watch(sounds, () => adopt(sounds), { deep: 1 })
-  watch(patches, () => adopt(patches), { deep: 1 })
+  watch(
+    patches,
+    () => {
+      adopt(patches)
+      // a patch new to the board is saved as it arrives (made, duplicated, imported, undeleted)
+      for (const p of patches.value) if (!savedBodies.has(p.id)) markSaved(p)
+    },
+    { deep: 1 },
+  )
   watch(changes, () => {
     engine.refreshVoices()
     scheduleSave()
@@ -955,6 +999,7 @@ export const useBoard = defineStore('board', () => {
       cur.tag = p.tag
       cur.fav = p.fav
       cur.header = p.header
+      cur.mpe = p.mpe
       cur.slots = p.slots.map((x) => {
         if (!x) return null
         const c = curL.get(x.layer.id)
@@ -1459,14 +1504,149 @@ export const useBoard = defineStore('board', () => {
   function selectPatch(id: string | null) {
     master.patchId = id
     const p = selectedPatch.value
-    if (!p) return
-    // load the patch's header knobs (not MPE nor its bend range: they're the controller's, and stay with the instance;
-    // a patch's MPE bindings act whenever MPE is on)
+    if (p) loadHeader(p)
+  }
+  /**
+   * The header knobs take a patch's (not MPE nor its bend range: they're the controller's, and stay with the instance;
+   * a patch's MPE bindings act whenever MPE is on).
+   */
+  function loadHeader(p: Patch) {
     const h = clone(p.header)
     Object.assign(master, { volume: h.volume, glide: h.glide, mono: h.mono, bpm: h.bpm })
     Object.assign(master.fx, h.fx)
     Object.assign(master.mod, h.mod)
   }
+
+  // ── saving patches: edits wait for SAVE (see savedBodies) ──
+  /**
+   * What a patch sounds like: what an edit changes and SAVE keeps. (The header's MPE on / off and bend range are the
+   * controller's: they follow it into the header but aren't edits.)
+   */
+  function bodyOf(p: Patch): string {
+    const r = untrack(p)
+    const { mpe: _on, mpeBendRange: _range, ...header } = r.header
+    return JSON.stringify([r.slots, header, r.mpe ?? []])
+  }
+  /** a built-in patch: SAVE leaves it as it was made, and keeps its edits as a patch of your own */
+  const isBuiltIn = (p: Patch | null | undefined) => !!p?.factoryId
+  /** a copy of a built-in made yours: not built in, nor tagged so */
+  function ownCopy<T extends Patch>(p: T): T {
+    delete p.factoryId
+    delete p.factoryLevel
+    p.tag = addTags(splitTags(p.tag).filter((t) => t.toLowerCase() !== 'factory').join(', '), ['patch'])
+    return p
+  }
+  /** the patch differs from what was saved of it (a candidate, not on the board yet, has nothing saved) */
+  function isEdited(p: Patch): boolean {
+    if (!touched.has(p.id)) return false
+    const saved = savedBodies.get(p.id)
+    return saved !== undefined && bodyOf(p) !== saved
+  }
+  /** the selected patch has edits: SAVE keeps them, REVERT (or another patch) drops them */
+  const patchEdited = computed(() => {
+    void changes.value
+    void savedTick.value
+    const p = selectedPatch.value
+    return !!p && isEdited(p)
+  })
+  /** the selected patch's edits, while it has some: kept with the board / the host session, not in the patch */
+  const editDraft = computed(() => {
+    void changes.value
+    void savedTick.value
+    const p = selectedPatch.value
+    return p && isEdited(p) ? { id: p.id, body: bodyOf(p) } : null
+  })
+  /** what's there now is what's saved */
+  function markSaved(p: Patch) {
+    savedBodies.set(p.id, bodyOf(p))
+    touched.delete(p.id)
+    savedTick.value++
+  }
+  /** every patch as it is now is what's saved (after loading, upgrading or reloading the library) */
+  function markAllSaved() {
+    savedBodies.clear()
+    touched.clear()
+    for (const p of patches.value) markSaved(p)
+  }
+  /**
+   * A body put back into a patch in place, as undo does: playing voices hold their layer's settings. Layers it hasn't
+   * got stop.
+   */
+  function setBody(p: Patch, [slots, header, mpe]: [(PatchSlot | null)[], Patch['header'], Patch['mpe']]) {
+    const curL = new Map(patchLayers(p).map((l) => [l.id, l]))
+    const keep = new Set(slots.flatMap((x) => (x ? [x.layer.id] : [])))
+    for (const l of curL.values()) if (!keep.has(l.id)) engine.stopSound(l.id)
+    p.header = { ...p.header, ...header }
+    p.mpe = mpe
+    p.slots = slots.map((x) => {
+      if (!x) return null
+      const c = curL.get(x.layer.id)
+      if (!c) return x
+      Object.assign(c.settings, x.layer.settings)
+      c.soundId = x.layer.soundId
+      return { ...x, layer: c }
+    })
+  }
+  /** a patch back as it was saved (the header knobs follow, if it's the selected one) */
+  function revertPatch(id = master.patchId) {
+    const p = patchById(id)
+    const saved = p ? savedBodies.get(p.id) : undefined
+    if (!p || saved === undefined) return
+    setBody(p, JSON.parse(saved))
+    touched.delete(p.id)
+    if (p.id === master.patchId) loadHeader(p)
+  }
+  /** apply a draft (editDraft) kept from before: the patch takes those edits, unsaved */
+  function applyDraft(d: { id?: unknown; body?: unknown } | null | undefined) {
+    const p = typeof d?.id === 'string' && typeof d.body === 'string' ? patches.value.find((x) => x.id === d.id) : undefined
+    if (!p) return
+    try {
+      setBody(p, JSON.parse(d!.body as string))
+      if (p.id === master.patchId) loadHeader(p)
+    } catch {
+      // a draft that doesn't read is no draft
+    }
+  }
+  /**
+   * SAVE: the selected patch's edits become the patch. A built-in stays as it was made: its edits go to a new patch of
+   * yours with the same name, beside it, which is selected (the built-in goes back as it was).
+   */
+  function savePatch(id = master.patchId) {
+    const p = patchById(id)
+    if (!p) return
+    if (p === candidate.value) return saveCandidate()
+    if (!isEdited(p)) return void (toast.value = `"${p.name}" has no edits to save`)
+    if (!isBuiltIn(p)) {
+      markSaved(p)
+      scheduleSave()
+      toast.value = `Saved "${p.name}"`
+      return
+    }
+    const copy = ownCopy(clone(p))
+    copy.id = uid()
+    copy.fav = false
+    for (const x of copy.slots) if (x) x.layer.id = uid()
+    const i = patches.value.findIndex((x) => x.id === p.id)
+    patches.value.splice(i + 1, 0, tracked(copy))
+    // (choosing it puts the built-in back as it was)
+    selectPatch(copy.id)
+    toast.value = `Saved "${copy.name}" as a patch of your own: the built-in stays as it was`
+  }
+  // choosing another patch drops the edits of the one before (and any other, e.g. edits undo brought back)
+  watch(
+    () => master.patchId,
+    (id) => {
+      for (const pid of [...touched]) {
+        if (pid === id) continue
+        const p = patches.value.find((x) => x.id === pid)
+        if (p && isEdited(p)) {
+          revertPatch(pid)
+          toast.value = `"${p.name}": unsaved edits dropped`
+        } else touched.delete(pid)
+      }
+    },
+    { flush: 'sync' },
+  )
 
   /** A patch card's ☰: load the patch and show the rack (the one place a patch is edited). */
   function editPatch(id: string) {
@@ -1507,7 +1687,7 @@ export const useBoard = defineStore('board', () => {
   function duplicatePatch(id: string) {
     const i = patches.value.findIndex((p) => p.id === id)
     if (i < 0) return
-    const copy = clone(patches.value[i])
+    const copy = ownCopy(clone(patches.value[i]))
     copy.id = uid()
     copy.name = `${copy.name} copy`
     for (const x of copy.slots) if (x) x.layer.id = uid()
@@ -1696,7 +1876,8 @@ export const useBoard = defineStore('board', () => {
     Object.assign(mod.lfo1, h.mod?.lfo1)
     Object.assign(mod.lfo2, h.mod?.lfo2)
     mod.routes.push(...clone(h.mod?.routes ?? []))
-    const header = headerOf({ ...d, ...h, fx: { ...d.fx, ...h.fx }, mod } as MasterState)
+    // dry: the global FX mixes start at 0 (each patch's chorus, delay and reverb are voiced for when they're turned up)
+    const header = headerOf({ ...d, ...h, fx: { ...d.fx, ...h.fx, ...DRY }, mod } as MasterState)
     return { id: uid(), name: fp.name, tag: fp.tag, factoryId: fp.id, factoryLevel: FACTORY_LEVELS[fp.id] ?? 0, slots, header, mpe: clone(fp.mpe ?? []) }
   }
 
@@ -1841,6 +2022,20 @@ export const useBoard = defineStore('board', () => {
     // 0.5 installed its nine untrimmed and 0.6's first build matched each built-in to one note, which left a chord no
     // headroom: all of them to the current levels (after the renaming, so 0.5's are included)
     const relevelled = master.factoryVersion < 4 ? relevelFactory() : 0
+    // 0.13: the built-ins dry, their global FX mixes at 0, and the header's CHORUS, DELAY and REVERB folded
+    if (master.factoryVersion < 5) {
+      // a DUPLICATE of a built-in was one too, till now: the first of each is the built-in (copies go after it)
+      const seen = new Set<string>()
+      for (const p of patches.value) {
+        if (!p.factoryId) continue
+        if (seen.has(p.factoryId)) ownCopy(p)
+        else seen.add(p.factoryId)
+      }
+      for (const p of patches.value) if (p.factoryId) Object.assign(p.header.fx, DRY)
+      const sel = selectedPatch.value
+      if (sel?.factoryId) loadHeader(sel)
+      master.headerFolded = [...new Set([...master.headerFolded, 'chorus', 'delay', 'reverb'])]
+    }
     await installFactory(relevelled ? `Built-in patches turned down for headroom (${relevelled})` : undefined)
   }
 
@@ -2377,6 +2572,7 @@ export const useBoard = defineStore('board', () => {
     semantic, similarTo, showSimilar, showMatching, clearSimilar, soundScores, patchScores, shownSounds, shownPatches,
     candidate, candidateInfo, describePatch, rerollCandidate, saveCandidate, discardCandidate,
     installFactory, addFactoryPatch, selectPatch, editPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, removePatches, assignSlot, slotsOf, toggleSlot, toggleFav,
+    patchEdited, isEdited, isBuiltIn, savePatch, revertPatch,
     pressPatch, releasePatch, patchIdOfLayer, soundRef, resolveSoundRef, addAgentPatch, replacePatch, renderOffline,
     tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
     addFiles, addCapture, load, press, release, panic, noteOn, noteOff,

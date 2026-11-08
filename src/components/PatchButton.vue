@@ -72,7 +72,9 @@ function onUp() {
     </button>
     <!-- while the list is ordered by likeness, the corner says how alike instead of the patch's number -->
     <span v-if="score !== undefined" class="corner num sim" :title="`${Math.round(score * 100)} % alike · patch ${number}`">≈{{ Math.round(score * 100) }}</span>
-    <span v-else class="corner num">{{ String(number).padStart(2, '0') }}</span>
+    <span v-else class="corner num" :title="patch.factoryId ? 'Built in: SAVE leaves it as it is and makes your edits a patch of your own' : undefined"
+      ><small v-if="patch.factoryId" class="built-in">BUILT-IN</small>{{ String(number).padStart(2, '0') }}</span
+    >
     <div class="backlight" />
     <div v-if="lastVoice" :key="lastVoice" class="flash" />
     <div class="led" />
@@ -231,6 +233,13 @@ function onUp() {
 .burger {
   left: 4px;
 }
+/* a built-in patch (SAVE keeps edits as a patch of your own, of the same name): told apart from yours */
+.built-in {
+  margin-right: 4px;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  opacity: 0.75;
+}
 .burger:hover,
 .burger.active {
   background: rgba(0, 0, 0, 0.55);
@@ -238,6 +247,8 @@ function onUp() {
 }
 .num {
   right: 4px;
+  display: flex;
+  align-items: center;
   width: auto;
   padding: 0 5px;
   font-family: 'VT323', monospace;

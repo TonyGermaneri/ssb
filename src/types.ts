@@ -675,7 +675,7 @@ export const defaultMaster = (): MasterState => ({
   list: true,
   listWidth: 0.33,
   folded: ['eq', 'ring', 'delay', 'reverb'],
-  headerFolded: ['perform', 'chorus', 'reverb'],
+  headerFolded: ['perform', 'chorus', 'delay', 'reverb'],
   favSounds: false,
   favPatches: false,
   factory: false,

@@ -19,6 +19,7 @@ const SCHEMA = [
   { name: 'n', title: '#', type: 'number', width: 44 },
   { name: 'sim', title: 'SIM', width: 54 }, // painted: how like the ≈ patch, or the description, it is
   { name: 'name', title: 'NAME', width: 180 },
+  { name: 'kind', title: 'KIND', width: 74 }, // BUILT-IN (SAVE keeps edits as a patch of your own) or YOURS
   { name: 'vcos', title: 'VCOS', width: 150 }, // painted: each slot's waveform
   { name: 'tag', title: 'TAGS', width: 200 },
   { name: 'vco1', title: 'VCO 1', width: 150 },
@@ -60,6 +61,7 @@ const rows = computed<GridRow[]>(() =>
       n: i + 1,
       sim: '',
       name: p.name,
+      kind: p.factoryId ? 'BUILT-IN' : 'YOURS',
       vcos: '',
       tag: p.tag,
       vco1: slotName(0),
@@ -130,9 +132,9 @@ function onPlay(id: string) {
 </script>
 
 <template>
-  <!-- (stored as ssb-patch-grid-2 since the ☰ and VCOS columns: the grid remembers widths by column position) -->
+  <!-- (stored as ssb-patch-grid-3 since the ☰, VCOS and KIND columns: the grid remembers widths by column position) -->
   <DataGrid
-    name="ssb-patch-grid-2"
+    name="ssb-patch-grid-3"
     :schema="SCHEMA"
     :rows="rows"
     :editable="['name', 'tag']"

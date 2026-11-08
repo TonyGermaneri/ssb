@@ -35,10 +35,18 @@ Two catalogs, as tabs under the header, each with card and grid views and its ow
 - **Patches** — playable instruments built from up to **3 VCO slots**, each holding a sound (as the patch's own
   copy of its settings, so editing a patch never changes the sound), plus the header knobs (volume, glide, mono/poly,
   BPM, chorus / delay / reverb, global mod matrix; MPE on / off and its bend range are the controller's and stay put)
-  and its **MPE bindings** (what an MPE controller's surfaces do to it, see [MPE](#mpe)). Selecting a patch loads those header settings;
-  changing them while it's selected saves them into it. Clicking a patch card loads it and plays it (so it sounds with
-  its own header); **☰** (or right-click) loads it and shows the rack, the one place a patch is edited — its title row
-  has the name, tags, ♥, **DUPLICATE** (the rack then shows the copy) and **DELETE** (then the next patch).
+  and its **MPE bindings** (what an MPE controller's surfaces do to it, see [MPE](#mpe)). Selecting a patch loads those
+  header settings. Clicking a patch card loads it and plays it (so it sounds with its own header); **☰** (or
+  right-click) loads it and shows the rack, the one place a patch is edited — its title row has the name, tags, ♥,
+  **SAVE**, **REVERT**, **DUPLICATE** (the rack then shows the copy) and **DELETE** (then the next patch).
+
+**Saving patches**: editing a patch doesn't save it. Its VCOs, header knobs, matrix and MPE bindings play as you change
+them, and a dot on the header's patch display and a lit **SAVE** (there and in the rack) say it has edits. **SAVE** keeps
+them; **REVERT** drops them; choosing another patch drops them too. Until then the library (and every other SSB
+sharing it) has the patch as it was saved; the app reopens with your edits still unsaved, and a plugin keeps them in
+its session. Name, tags and ♥ save as they change. Built-in patches (marked **BUILT-IN** on their cards, in the rack
+and in the grid's KIND column) aren't overwritten: SAVE on one makes your edits a patch of your own, with the same
+name, beside it, and the built-in goes back as it was. A DUPLICATE of a built-in is yours too.
 
 The header **◀ ▶** step through patches (in the Patches tab's filtered order) and the keyboard (PLAY) plays the selected
 patch. **♥** marks favourites on sound cards, patch cards, the rack and in the grids (♥ column); **♥ FAV** in the tag
@@ -74,7 +82,9 @@ played — a poly patch as a four-note chord, a mono one a note at a time, at fu
 page (K-weighted loudness, BS.1770) and level-matched to about −16 LUFS with peaks under −7 dBFS
 (`src/lib/factoryLevels.ts`), so at the default levels a chord stays well clear of clipping (the plugin's engine
 measures the same within a dB). Boards that installed them louder are brought down once, keeping any layer you changed
-in proportion. AKWF waves start at volume 0.4 for the same reason. Once installed they're ordinary patches: edit, rename or delete them. **+ → RESTORE
+in proportion. AKWF waves start at volume 0.4 for the same reason. They start dry: the header's chorus, delay and
+reverb mixes at 0 (each patch's effects are voiced, so turning a mix up gives that patch's room or echo). Edit, rename
+or delete them; SAVE keeps edits as a patch of your own (see Saving patches, above). **+ → RESTORE
 BUILT-INS** puts back any AKWF wave or built-in patch you've deleted. A board from 0.5 keeps its nine factory patches as
 they are, under their new names (POLY SAW is SUPERSAW SUNRISE, FM PIANO is TINE MACHINE EP, …), and gains the rest;
 boards from before the AKWF waves first lose the old generated SAW WAVE … NOISE sounds, their patches moving to the
@@ -469,8 +479,8 @@ included in exports.
 OUTPUT + vertical VU · PATCH (◀ selected ▶, new, PLAY, POLY/MONO, HLD, MPE, octave, GLIDE) · VCO (the patch's three
 slots) · VIEW (RACK / BOTH / LIST, CARDS / GRID, SCALE) · PERFORM (SUS, global MATRIX) · TEMPO · MIDI · global CHORUS /
 DELAY / REVERB · BOARD (undo, redo, and **+**: add files or a folder, browse waves or the library, restore built-ins,
-export / import the board). PERFORM, TEMPO · MIDI and the effects fold sideways (◀); the rest always show. Wraps into
-rows on narrow windows.
+export / import the board). PERFORM, TEMPO · MIDI and the effects fold sideways (◀); PERFORM and the three effects
+start folded. The rest always show. Wraps into rows on narrow windows.
 
 **+ → EXPORT…** lists every patch and sound in one grid (TYPE, NAME, TAG, what each is MADE OF): tick what goes into
 the .zip (click a row; ⇧-click a run; filter by PATCHES / SOUNDS / MY SAMPLES or by text; ALL / NONE act on what's

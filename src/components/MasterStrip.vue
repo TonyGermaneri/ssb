@@ -34,6 +34,15 @@ const patchLabel = computed(() =>
       ? `${String(board.patchNumber).padStart(2, '0')} ${board.selectedPatch.name}`
       : '-- NO PATCH',
 )
+/** SAVE: what it does to this patch */
+const saveTitle = computed(() => {
+  const p = board.selectedPatch
+  if (!p || p === board.candidate) return 'SAVE: no patch to save'
+  if (!board.patchEdited) return `SAVE: "${p.name}" has no edits. Edits to a patch wait for SAVE; choosing another patch drops them`
+  return board.isBuiltIn(p)
+    ? `SAVE: "${p.name}" is built in and stays as it is; your edits become a patch of your own with its name`
+    : `SAVE the edits into "${p.name}"`
+})
 // VIEW: what's under the header: the rack, the list, or both side by side (the list's own bar picks cards or grid)
 type Layout = 'rack' | 'both' | 'list'
 const LAYOUTS: { id: Layout; label: string; title: string }[] = [
@@ -123,11 +132,18 @@ function onImport(e: Event) {
       <button class="hw-btn icon" title="Previous patch" @click="board.selectPatchStep(-1)">
         <v-icon size="18" icon="mdi-chevron-left" />
       </button>
-      <div class="lcd" :title="board.selectedPatch ? `Patch: ${board.selectedPatch.name}` : 'No patch selected'">
+      <div
+        class="lcd"
+        :title="board.selectedPatch ? `Patch: ${board.selectedPatch.name}${board.isBuiltIn(board.selectedPatch) ? ' (built in)' : ''}${board.patchEdited ? ' · edited, not saved' : ''}` : 'No patch selected'"
+      >
         {{ patchLabel }}
+        <i v-if="board.patchEdited" class="edited-led" />
       </div>
       <button class="hw-btn icon" title="Next patch" @click="board.selectPatchStep(1)">
         <v-icon size="18" icon="mdi-chevron-right" />
+      </button>
+      <button class="hw-btn icon save" :class="{ lit: board.patchEdited }" :disabled="!board.patchEdited" :title="saveTitle" @click="board.savePatch()">
+        <v-icon size="16" icon="mdi-content-save" />
       </button>
       <button
         class="hw-btn icon"
@@ -553,6 +569,25 @@ function onImport(e: Event) {
 }
 .chip.dim {
   color: var(--text-mute);
+}
+/* the patch has edits SAVE would keep */
+.edited-led {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 1;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  box-shadow: 0 0 5px var(--c-accent);
+}
+.save.lit {
+  color: var(--c-accent);
+  text-shadow: 0 0 6px color-mix(in srgb, var(--c-accent) 80%, transparent);
+  box-shadow:
+    0 2px 0 #0a0a0b,
+    inset 0 0 10px color-mix(in srgb, var(--c-accent) 30%, transparent);
 }
 /* the MCP server is on: a small LED on the AI button */
 .ai {
