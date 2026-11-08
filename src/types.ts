@@ -2,7 +2,26 @@ import {
   GRAIN_FREQ_FLOOR, GRAIN_FREQ_MAX, type AmpMode, type GrainMode, type SpraySign, type Symmetry,
 } from './audio/grainMath'
 import { SVF_TYPES, type SvfType } from './audio/svfMath'
-export type WaveView = '2d' | 'iso'
+/**
+ * How a sound's display draws: live, what its voices play (a 1960s phosphor SCOPE, 90s spectrum BARS, an RX-style
+ * SPECTRO) or the sample itself, flat or isometric (where clip and grain are dragged).
+ */
+export type WaveView = 'scope' | 'bars' | 'spectro' | '2d' | 'iso'
+export const WAVE_VIEWS: { id: WaveView; label: string; title: string }[] = [
+  { id: 'scope', label: 'SCOPE', title: 'A 1960s phosphor scope of what plays: the set\'s knobs set its bloom, contrast, trails and tint' },
+  { id: 'bars', label: 'BARS', title: 'Spectrum bars of what plays' },
+  { id: 'spectro', label: 'SPECTRO', title: 'A spectrogram of what plays: time to the left, pitch up, loudness as heat' },
+  { id: '2d', label: '2D', title: 'The sample, flat: drag the clip, or the grain' },
+  { id: 'iso', label: 'ISO', title: 'The sample, isometric: its stereo field in depth' },
+]
+/** the vintage scope's knobs, 0..1 (the TV's front panel) */
+export interface ScopeKnobs {
+  bloom: number
+  contrast: number
+  trails: number
+  tint: number
+}
+export const defaultScopeKnobs = (): ScopeKnobs => ({ bloom: 0.55, contrast: 0.55, trails: 0.55, tint: 0.5 })
 
 /** What pressing a pad does while that sound is already playing. */
 export type TriggerMode = 'stack' | 'stop' | 'restart' | 'hold'
@@ -532,8 +551,10 @@ export interface MasterState {
   mono: boolean
   /** HOLD (Granulator III's latch): released keys keep sounding until a note is played with no key down */
   hold: boolean
-  /** how the waveforms are drawn: flat, or isometric (the panel's and the header's alike) */
+  /** how the waveforms are drawn: live (scope, bars, spectro) or the sample (flat, isometric); every display alike */
   waveView: WaveView
+  /** the vintage scope's knobs */
+  scope: ScopeKnobs
   /** seconds to slide between notes */
   glide: number
   /** computer-keyboard piano octave shift */
@@ -591,7 +612,8 @@ export const defaultMaster = (): MasterState => ({
   play: false,
   mono: false,
   hold: false,
-  waveView: '2d',
+  waveView: 'scope',
+  scope: defaultScopeKnobs(),
   glide: 0,
   octave: 0,
   selectedId: null,
@@ -621,7 +643,11 @@ export const defaultMaster = (): MasterState => ({
 })
 
 export function migrateMaster(raw?: Partial<MasterState>): MasterState {
-  return { ...defaultMaster(), ...raw, fx: { ...defaultGlobalFx(), ...raw?.fx }, mod: migrateMatrix(raw?.mod) }
+  const m = { ...defaultMaster(), ...raw, fx: { ...defaultGlobalFx(), ...raw?.fx }, mod: migrateMatrix(raw?.mod) }
+  // a board from before the live views opens on the vintage scope, their new default
+  if (raw && !raw.scope) m.waveView = 'scope'
+  m.scope = { ...defaultScopeKnobs(), ...raw?.scope }
+  return m
 }
 
 // ── presets ────────────────────────────────────────────────────────────────

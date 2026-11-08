@@ -18,6 +18,10 @@ const themeMenu = ref(false)
 
 const fx = computed(() => board.master.fx)
 const K = 28 // header knob size
+/** MPE per-note bend ranges controllers use (48 is MPE's default; ROLI 48, LinnStrument 24, Osmose 2…96) */
+const BEND_RANGES = [1, 2, 3, 4, 5, 7, 12, 24, 36, 48, 60, 72, 96]
+/** the list, with a range a device sent (RPN 0) that isn't in it */
+const bendRanges = computed(() => [...new Set([...BEND_RANGES, board.master.mpeBendRange])].sort((a, b) => a - b))
 
 const patchLabel = computed(() =>
   board.candidate && board.selectedPatch === board.candidate
@@ -156,14 +160,33 @@ function onImport(e: Event) {
             HLD
           </button>
         </div>
-        <button
-          class="chip"
-          :class="{ on: board.master.mpe }"
-          title="MPE (lower zone): channel 1 is global; notes on channels 2-16 get their own bend, pressure and timbre"
-          @click="board.master.mpe = !board.master.mpe"
-        >
-          MPE
-        </button>
+        <div class="pair">
+          <button
+            class="chip grow"
+            :class="{ on: board.master.mpe }"
+            title="MPE: channel 1 is global; notes on channels 2-16 each get their own bend, pressure and timbre (CC74). A device's MPE configuration (MCM) can move the zone"
+            @click="board.master.mpe = !board.master.mpe"
+          >
+            MPE
+          </button>
+          <v-menu v-if="board.master.mpe" location="bottom start">
+            <template #activator="{ props: act }">
+              <button
+                class="chip grow on bend"
+                v-bind="act"
+                :title="`Per-note pitch bend range: ±${board.master.mpeBendRange} semitones. Set it to match your controller (MPE's default is 48; a device that sends its range sets this)`"
+              >
+                {{ board.master.mpeBendRange }}
+              </button>
+            </template>
+            <div class="bend-menu">
+              <span class="bend-head">NOTE BEND ±ST</span>
+              <button v-for="r in bendRanges" :key="r" :class="{ on: r === board.master.mpeBendRange }" @click="board.master.mpeBendRange = r">
+                {{ r }}
+              </button>
+            </div>
+          </v-menu>
+        </div>
         <span class="chip dim" title="Computer-keyboard octave (- / = keys)">{{ octaveLabel }}</span>
       </div>
       <Knob v-model="board.master.glide" label="GLIDE" :min="0" :max="2" :step="0.005" :default="0" :format="fmtSec" :size="K" />
@@ -514,6 +537,49 @@ function onImport(e: Event) {
 }
 .chip.dim {
   color: var(--text-mute);
+}
+.chip.grow {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 2px;
+}
+.chip.bend {
+  letter-spacing: 0;
+}
+.bend-menu {
+  display: grid;
+  grid-template-columns: repeat(4, 34px);
+  gap: 3px;
+  padding: 5px;
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--panel-hi), var(--panel-lo));
+  border: 1px solid #000;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+}
+.bend-head {
+  grid-column: 1 / -1;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 7px;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+  color: var(--text-head);
+}
+.bend-menu button {
+  padding: 1px 0;
+  border-radius: 2px;
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  line-height: 15px;
+  color: var(--ink-dim);
+  background: #111;
+  border: 1px solid #000;
+}
+.bend-menu button:hover {
+  color: var(--c-primary);
+}
+.bend-menu button.on {
+  color: var(--c-secondary);
+  text-shadow: 0 0 4px color-mix(in srgb, var(--c-secondary) 70%, transparent);
 }
 .chip.tiny {
   font-size: 11px;

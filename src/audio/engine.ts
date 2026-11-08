@@ -5,7 +5,7 @@ import { isSynthAudioId, makeSynthBuffer, type SynthWave } from './synthWaves'
 import { MasterFx } from './masterFx'
 import { Voice, type GrainMark, type ModHub, type VoiceOptions } from './voice'
 import { forgetGrainSample, loadGrains } from './grains'
-import { nativeEngine } from '../native/bridge'
+import { callNative, nativeEngine } from '../native/bridge'
 import { cycleRate, isWaveAudioId, waveChannels, waveNameOf } from '../lib/akwf'
 
 /**
@@ -153,7 +153,26 @@ export function setMpeBendRange(semis: number) {
 const onChannel = (ch: number, fn: (v: Voice) => void) => {
   for (const v of voices) if (v.channel === ch) fn(v)
 }
-export const setNoteBend = (ch: number, v: number) => onChannel(ch, (voice) => voice.setNoteBend(v))
+/** when each channel's last bend came (performance.now()) */
+const bendAt = new Float64Array(16)
+/** a bend this close before a note-on is the new note's starting bend (MPE sends one first), not the old note's */
+const PRE_NOTE_MS = 10
+/**
+ * A new note takes an MPE channel: notes still releasing from it keep the bend they ended with instead of following
+ * the new one's -- including the bend the controller sent just before the note-on, meant for the new note.
+ */
+export function claimChannel(ch: number) {
+  const fresh = performance.now() - (bendAt[ch] ?? 0) < PRE_NOTE_MS
+  for (const v of voices) {
+    if (v.channel !== ch || v.held) continue
+    if (fresh) v.setNoteBend(v.bendBefore)
+    v.channel = undefined
+  }
+}
+export function setNoteBend(ch: number, v: number) {
+  bendAt[ch & 15] = performance.now()
+  onChannel(ch, (voice) => voice.setNoteBend(v))
+}
 export const setNotePressure = (ch: number, v: number) => onChannel(ch, (voice) => voice.setPressure(v))
 export const setNoteTimbre = (ch: number, v: number) => onChannel(ch, (voice) => voice.setTimbre(v))
 
@@ -492,6 +511,121 @@ export function setExternalVoices(list: ExternalVoice[], time: number, grains: E
     }
     return { id: v.id, soundId: v.sound, name: '', midiNote: v.note, voice: voice as unknown as Voice }
   })
+}
+
+// ── live views (the waveform's SCOPE, BARS and SPECTRO): what a sound's voices are playing, as it sounds ─────────
+/** samples a live view reads at a time */
+export const SCOPE_SAMPLES = 2048
+/** the plugin engine stops sending a sound when its voices stop: older than this, it's silence */
+const EXT_STALE_MS = 250
+/** each watched sound: an analyser its voices' taps (post-filter, as a VCO feeds the matrix) play into */
+interface SoundTap {
+  analyser: AnalyserNode
+  taps: Map<Voice, AudioNode>
+  users: number
+  seq: number
+}
+const soundTaps = new Map<string, SoundTap>()
+/** the plugin engine's latest block of each sound it's playing (ssbMeter `scopes`), while a live view asks */
+const extScopes = new Map<string, { data: Float32Array; seq: number; at: number }>()
+let extScopeRate = 0
+let extScopeSeq = 0
+let extWatchers = 0
+
+/** A live view shows `soundId`: its voices are tapped until the returned function is called. */
+export function watchSound(soundId: string): () => void {
+  if (external) {
+    // the plugin sends its voices' audio only while some view wants it
+    if (extWatchers++ === 0) void callNative('ssbScope', true).catch(() => {})
+    return () => {
+      if (--extWatchers === 0) void callNative('ssbScope', false).catch(() => {})
+    }
+  }
+  let t = soundTaps.get(soundId)
+  if (!t) {
+    const analyser = getCtx().createAnalyser()
+    analyser.fftSize = SCOPE_SAMPLES
+    analyser.smoothingTimeConstant = 0
+    soundTaps.set(soundId, (t = { analyser, taps: new Map(), users: 0, seq: 0 }))
+  }
+  t.users++
+  const tap = t
+  return () => {
+    if (--tap.users > 0) return
+    for (const node of tap.taps.values()) unplug(node, tap.analyser)
+    soundTaps.delete(soundId)
+  }
+}
+function unplug(node: AudioNode, from: AudioNode) {
+  try {
+    node.disconnect(from)
+  } catch {
+    /* the voice already let go of it */
+  }
+}
+
+/**
+ * The last SCOPE_SAMPLES of what `soundId`'s voices play (their sum, mono) into `out`. Answers a number that changes
+ * when there is new audio (0: none yet); the plugin's arrives ~30 times a second, the page's every frame.
+ */
+export function readSound(soundId: string, out: Float32Array<ArrayBuffer>): number {
+  if (external) {
+    const got = extScopes.get(soundId)
+    if (!got || performance.now() - got.at > EXT_STALE_MS) {
+      out.fill(0)
+      return got ? -got.seq : 0
+    }
+    const n = Math.min(out.length, got.data.length)
+    out.fill(0, 0, out.length - n)
+    out.set(got.data.subarray(got.data.length - n), out.length - n)
+    return got.seq
+  }
+  const t = soundTaps.get(soundId)
+  if (!t) return 0
+  // voices come and go: their taps join and leave the sound's analyser (release tails included)
+  for (const v of voices) {
+    if (v.soundId !== soundId || t.taps.has(v)) continue
+    const node = v.tap
+    node.connect(t.analyser)
+    t.taps.set(v, node)
+  }
+  for (const [v, node] of t.taps) {
+    if (voices.has(v)) continue
+    unplug(node, t.analyser)
+    t.taps.delete(v)
+  }
+  t.analyser.getFloatTimeDomainData(out)
+  return ++t.seq
+}
+
+/** the rate a live view's samples are at */
+export const soundRate = () => (external ? extScopeRate || outputRate() : (ctx?.sampleRate ?? 48000))
+
+/** Whether any voice of `soundId` is sounding (held or ringing out): a live view at rest needn't redraw. */
+export function soundSounding(soundId: string): boolean {
+  if (external) {
+    const got = extScopes.get(soundId)
+    return !!got && performance.now() - got.at <= EXT_STALE_MS
+  }
+  for (const v of voices) if (v.soundId === soundId) return true
+  return false
+}
+
+/** The plugin engine's audio per sound (base64 16-bit, ±2 full scale), from its meter report. */
+export function setExternalScopes(scopes: Record<string, string>, rate: number) {
+  if (rate > 0) extScopeRate = rate
+  const now = performance.now()
+  extScopeSeq++
+  for (const [id, b64] of Object.entries(scopes)) {
+    const bin = atob(b64)
+    const n = bin.length >> 1
+    const data = new Float32Array(n)
+    for (let i = 0; i < n; i++) {
+      const v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8)
+      data[i] = ((v << 16) >> 16) / 16383
+    }
+    extScopes.set(id, { data, seq: extScopeSeq, at: now })
+  }
 }
 
 /** Also send the master output to `node` (measurements: comparing this engine with the plugin's). */

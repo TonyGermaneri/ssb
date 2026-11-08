@@ -36,6 +36,9 @@ public:
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
+    /** Hosts (Live, Logic: the AU's SupportsMPE property) only send a controller's per-note channels to an
+        instrument that says it takes MPE; without this they merge them onto one channel and per-note bend is lost. */
+    bool supportsMPE() const override { return true; }
     double getTailLengthSeconds() const override { return 0.0; }
 
     int getNumPrograms() override { return 1; }

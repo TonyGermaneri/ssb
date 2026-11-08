@@ -544,6 +544,9 @@ function doReset() {
 }
 .module {
   flex: 1 1 auto;
+  /* a module is never wider than the panel: its title's chips and its knob rows wrap instead (the rack's narrow slots) */
+  min-width: 0;
+  max-width: 100%;
   padding: 2px 4px 2px;
   border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: 4px;
@@ -600,8 +603,9 @@ function doReset() {
 }
 .module h4 {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 3px 6px;
   margin: 0 0 2px 2px;
   font-family: 'Orbitron', sans-serif;
   font-size: 8px;
@@ -651,6 +655,14 @@ function doReset() {
   }
   .footer .lbl {
     display: none;
+  }
+  /* the scope above the name and tags, each the panel's width */
+  .panel.wide .top {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .panel.wide .fields {
+    flex: none;
   }
 }
 .module.folded {

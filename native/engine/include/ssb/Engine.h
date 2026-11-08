@@ -127,6 +127,12 @@ public:
         2048 until they are read, dropping later ones meanwhile). One reader thread. */
     void readGrains (std::vector<GrainView>& out, size_t max);
 
+    /** The last `n` samples (up to maxScope) of what every voice of a sound (its idHash) is playing, summed, mono --
+        post-filter and EQ, before its level and pan, like the page's voice tap. Any thread; answers how many voices
+        that was (0: `out` is silence). For the editor's live views (scope, spectrum). */
+    static constexpr int maxScope = 2048;
+    int readScope (uint64_t sound, float* out, int n) const;
+
     double sampleRate() const noexcept { return rate; }
 
 private:

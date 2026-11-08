@@ -1695,3 +1695,167 @@ TEST ("engine: HOLD latches released keys until a note comes with none down; not
     rig.render (0.3);
     CHECK (sounding (rig) == 0);
 }
+
+namespace
+{
+/** MPE messages on a channel (0-15) */
+ssb::MidiEvent onCh (double t, int ch, int note, int vel = 100) { return { (int) (t * rate), (uint8_t) (0x90 | ch), (uint8_t) note, (uint8_t) vel }; }
+ssb::MidiEvent offCh (double t, int ch, int note) { return { (int) (t * rate), (uint8_t) (0x80 | ch), (uint8_t) note, 0 }; }
+/** a bend of `semis` at `range` semitones full scale */
+ssb::MidiEvent bendCh (double t, int ch, double semis, double range)
+{
+    const int raw = 8192 + (int) std::lround (semis / range * (semis >= 0 ? 8191 : 8192));
+    return { (int) (t * rate), (uint8_t) (0xe0 | ch), (uint8_t) (raw & 127), (uint8_t) (raw >> 7) };
+}
+ssb::MidiEvent ccCh (double t, int ch, int cc, int value) { return { (int) (t * rate), (uint8_t) (0xb0 | ch), (uint8_t) cc, (uint8_t) value }; }
+/** RPN `number` = `value` (coarse) on a channel, as controllers send it */
+std::vector<ssb::MidiEvent> rpnCh (double t, int ch, int number, int value)
+{
+    return { ccCh (t, ch, 101, 0), ccCh (t, ch, 100, number), ccCh (t, ch, 6, value) };
+}
+double level (const Rig& rig, double from, double to, double hz)
+{
+    const auto a = (size_t) (from * rate), b = std::min (rig.left.size(), (size_t) (to * rate));
+    double re = 0, im = 0;
+    for (size_t i = a; i < b; ++i)
+    {
+        const double w = 0.5 - 0.5 * std::cos (2 * ssb::dsp::pi * (double) (i - a) / (double) (b - a));
+        re += w * rig.left[i] * std::cos (2 * ssb::dsp::pi * hz * (double) i / rate);
+        im += w * rig.left[i] * std::sin (2 * ssb::dsp::pi * hz * (double) i / rate);
+    }
+    return std::sqrt (re * re + im * im) / (double) (b - a);
+}
+void mpeRig (Rig& rig, float release = 0.01f)
+{
+    rig.add ("a", sine (440, 8), [release] (auto& s) { s.rootNote = 69; s.release = release; });
+    rig.set ("play", true);
+    rig.set ("playable", "a");
+    rig.set ("mpe", true);
+    rig.commit();
+}
+constexpr double as4 = 466.164, b4 = 493.883, d5 = 587.330, f4 = 349.228;
+}
+
+TEST ("engine: MPE bends each note on its own channel; channel 1 bends them all")
+{
+    Rig rig;
+    mpeRig (rig);
+    // A4 on channel 2, E5 on channel 3: only channel 2 bends (+2 at the default ±48)
+    rig.render (1.0, { onCh (0.0, 1, 69), onCh (0.0, 2, 76), bendCh (0.2, 1, 2, 48) });
+    CHECK_NEAR (rig.peakCents (0.3, 0.9, b4), 0.0, 1.0);
+    CHECK_NEAR (rig.peakCents (0.3, 0.9, e5), 0.0, 1.0);
+    CHECK (level (rig, 0.3, 0.9, b4) > 20 * level (rig, 0.3, 0.9, a4));
+    // the master channel bends every note, by the sound's own BEND range (2)
+    rig.render (0.8, { bendCh (0.0, 0, 2, 2) });
+    CHECK_NEAR (rig.peakCents (0.2, 0.7, cs5), 0.0, 1.0);          // A4 +2 +2
+    CHECK_NEAR (rig.peakCents (0.2, 0.7, 739.989), 0.0, 1.0);       // E5 +2 (F#5)
+}
+
+TEST ("engine: MPE takes a device's per-note bend range (RPN 0) and its zones (MCM)")
+{
+    Rig rig;
+    mpeRig (rig);
+    // the device says ±24: the same bend message goes half as far
+    auto events = rpnCh (0.0, 1, 0, 24);
+    events.push_back (onCh (0.01, 1, 69));
+    events.push_back (bendCh (0.1, 1, 2, 48));   // 1/24 of full scale: a semitone at ±24
+    rig.render (0.8, events);
+    CHECK_NEAR (rig.peakCents (0.3, 0.7, as4), 0.0, 1.5);
+    rig.render (0.2, { offCh (0.0, 1, 69), bendCh (0.0, 1, 0, 48) });
+
+    // an upper zone of 15: channel 16 is the master, 1-15 the notes
+    Rig up;
+    mpeRig (up);
+    auto mcm = rpnCh (0.0, 15, 6, 15);
+    mcm.push_back (onCh (0.01, 0, 69));
+    mcm.push_back (onCh (0.01, 4, 76));
+    mcm.push_back (bendCh (0.1, 0, 2, 48));
+    up.render (0.8, mcm);
+    CHECK (level (up, 0.3, 0.7, b4) > 20 * level (up, 0.3, 0.7, a4));
+    CHECK_NEAR (up.peakCents (0.3, 0.7, e5), 0.0, 1.0);
+    up.render (0.8, { bendCh (0.0, 15, 2, 2) });   // the upper master bends both
+    CHECK_NEAR (up.peakCents (0.2, 0.7, cs5), 0.0, 1.0);
+    CHECK_NEAR (up.peakCents (0.2, 0.7, 739.989), 0.0, 1.0);
+}
+
+TEST ("engine: MPE pressure and timbre are per note")
+{
+    // a global route from each that ducks the volume: only the note whose channel moves goes quiet
+    for (const auto* source : { "aftertouch", "timbre" })
+    {
+        Rig rig;
+        rig.add ("a", sine (440, 8), [] (auto& s) { s.rootNote = 69; s.release = 0.01f; });
+        rig.set ("play", true);
+        rig.set ("playable", "a");
+        rig.set ("mpe", true);
+        auto* mod = new juce::DynamicObject();
+        juce::Array<juce::var> routes;
+        auto* r = new juce::DynamicObject();
+        r->setProperty ("source", source);
+        r->setProperty ("dest", "volume");
+        r->setProperty ("amount", -1.0);
+        routes.add (juce::var (r));
+        mod->setProperty ("routes", routes);
+        rig.set ("mod", juce::var (mod));
+        rig.commit();
+        const bool pressure = std::string (source) == "aftertouch";
+        // A4 on channel 2 moves (pressure, or CC74), E5 on channel 3 doesn't
+        const ssb::MidiEvent move = pressure ? ssb::MidiEvent { (int) (0.1 * rate), 0xd1, 127, 0 } : ccCh (0.1, 1, 74, 127);
+        auto events = std::vector<ssb::MidiEvent> { onCh (0.0, 1, 69), onCh (0.0, 2, 76), move };
+        if (! pressure) events.insert (events.begin(), { ccCh (0.0, 1, 74, 0), ccCh (0.0, 2, 74, 0) });
+        rig.render (0.6, events);
+        const double moved = level (rig, 0.25, 0.55, a4), still = level (rig, 0.25, 0.55, e5);
+        CHECK (moved < 0.25 * still);
+        CHECK (still > 0.05);
+    }
+}
+
+TEST ("engine: a note still releasing keeps its bend when a new note takes its MPE channel")
+{
+    Rig rig;
+    mpeRig (rig, 1.5f);
+    rig.render (1.0, {
+        bendCh (0.0, 1, 2, 48), onCh (0.0, 1, 69),   // B4 (A4 +2)
+        offCh (0.3, 1, 69),                          // releasing for 1.5 s
+        bendCh (0.35, 1, 0, 48), onCh (0.35, 1, 60), // a new note on the channel, unbent (C4)
+        bendCh (0.4, 1, 5, 48),                      // ...that slides up to F4
+    });
+    CHECK_NEAR (rig.peakCents (0.5, 0.95, f4), 0.0, 1.5);
+    // the old note doesn't follow the new one's slide (it would be at D5), nor the reset sent before the new note-on
+    // (it would drop to A4): it rings out at B4
+    CHECK (level (rig, 0.5, 0.95, d5) < 0.05 * level (rig, 0.5, 0.95, f4));
+    CHECK (level (rig, 0.5, 0.95, b4) > 10 * level (rig, 0.5, 0.95, a4));
+    CHECK_NEAR (rig.peakCents (0.5, 0.95, b4), 0.0, 1.5);
+}
+
+TEST ("engine: readScope gives the editor a sound's voices, summed, as they play")
+{
+    Rig rig;
+    rig.add ("a", sine (440, 4), [] (auto& s) { s.rootNote = 69; s.release = 0.01f; s.volume = 0.25f; });
+    rig.add ("b", sine (440, 4));
+    rig.set ("play", true);
+    rig.set ("playable", "a");
+    rig.commit();
+    std::vector<float> got ((size_t) ssb::Engine::maxScope);
+    CHECK (rig.engine.readScope (ssb::idHash ("a"), got.data(), (int) got.size()) == 0);
+    rig.render (0.5, { on (0.0, 69), on (0.0, 76) });
+    CHECK (rig.engine.readScope (ssb::idHash ("a"), got.data(), (int) got.size()) == 2);
+    CHECK (rig.engine.readScope (ssb::idHash ("b"), got.data(), 16) == 0);
+    rig.engine.readScope (ssb::idHash ("a"), got.data(), (int) got.size());
+    // the tap is before the sound's VOL: the two unit sines at full level, A4 and E5 (2^(7/12) apart)
+    double sum = 0;
+    for (float x : got) sum += (double) x * x;
+    CHECK_NEAR (std::sqrt (sum / (double) got.size()), 1.0, 0.08);
+    // and it is the latest audio, in step with the output: the read lines up with the output's last samples
+    const auto n = got.size();
+    double xy = 0, yy = 0;
+    for (size_t k = 0; k < n; ++k)
+    {
+        const double y = rig.left[rig.left.size() - n + k];
+        xy += got[k] * y;
+        yy += y * y;
+    }
+    CHECK (xy / std::sqrt (sum * yy) > 0.999);
+    rig.render (0.2, { off (0.0, 69), off (0.0, 76) });
+    CHECK (rig.engine.readScope (ssb::idHash ("a"), got.data(), (int) got.size()) == 0);
+}

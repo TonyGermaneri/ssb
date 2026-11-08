@@ -117,6 +117,7 @@ struct Engine::Voice
     float velocity { 1 }, level { 1 };
     int midiNote { -1 }, channel { -1 };
     float pressure { 0 }, bend { 0 }, noteBend { 0 }, timbre { 0 };
+    float bendBefore { 0 };   // MPE: noteBend before the last bend message (claiming a channel puts a releasing note back)
     float noteRandom { 0 };   // RANDOM in the matrix: -1..1, drawn for the note
     // Adaptive tuning: the slot this keyboard note plays (tuneMain: the main voice; -1: not a keyboard note), the
     // pitch class a FIXED VCO sounds (-1: it follows its key), and its offset in cents, gliding to the target
@@ -292,8 +293,16 @@ struct Engine::Impl
     int heldCount { 0 };
     int lastNote { -1 };
 
-    struct MpeState { float bend { 0 }, pressure { 0 }, timbre { 0 }; };
+    struct MpeState { float bend { 0 }, pressure { 0 }, timbre { 0 }; double bendAt { -1 }; };
     std::array<MpeState, 16> mpeCh {};
+    // MPE zones (an MCM, RPN 6, sets them): the lower zone's master is channel 1 (0) with members 2.. above it,
+    // the upper zone's is channel 16 (15) with members below it. Until a device says otherwise: one lower zone, 15 members.
+    int lowerMembers { 15 }, upperMembers { 0 };
+    // the per-note bend range: the performance's (the page's NOTE BEND), until a device's RPN 0 sets its own
+    float noteBendRange { 48 }, perfBendRange { -1 };
+    // the RPN each channel has selected (CC 101 / 100), and the data entry MSB it last sent (CC 6)
+    std::array<int, 16> rpn { [] { std::array<int, 16> a; a.fill (0x3fff); return a; }() };
+    std::array<int, 16> rpnMsb {};
 
     // pads pressed from the editor, and pads whose release the sustain pedal is holding back
     std::array<SoundPtr, 64> pressed {}, sustainedPads {};
@@ -350,6 +359,16 @@ struct Engine::Impl
     double viewTime { 0 };
     Ring<GrainView, 2048> grainViews;   // grains started, for the editor (audio thread -> readGrains)
 
+    // the editor's live views (Engine::readScope): each voice slot's tap (post-EQ, mono -- what a VCO feeds the
+    // matrix, as the page's voice.tap) on a ring indexed by the engine's sample clock, so a sound's voices line up
+    // when summed. Relaxed atomics: the audio thread writes, the message thread reads what it finds.
+    static constexpr int scopeLen = 4096;   // a power of two, well over a read plus a block
+    std::unique_ptr<std::atomic<float>[]> scopeRing { new std::atomic<float>[(size_t) (maxVoices * scopeLen)]() };
+    std::array<std::atomic<uint64_t>, maxVoices> scopeSound {};   // idHash of the slot's sound, 0 = none
+    std::array<std::atomic<uint64_t>, maxVoices> scopeFrom {};    // the clock at the voice's first sample
+    std::atomic<uint64_t> scopeClock { 0 };                       // samples rendered, as of the last chunk
+    uint64_t clockSamples { 0 };                                  // the audio thread's own copy
+
     void publishViews() noexcept
     {
         viewSeq.fetch_add (1, std::memory_order_acq_rel);
@@ -390,6 +409,7 @@ struct Engine::Impl
     void kill (Voice& v) noexcept
     {
         v.alive = false;
+        scopeSound[(size_t) (&v - voices.data())].store (0, std::memory_order_relaxed);
         discard (std::move (v.sound));
         discard (std::move (v.sample));
         discard (std::move (v.group));
@@ -559,6 +579,8 @@ struct Engine::Impl
         ++v.generation;
         v.order = nextOrder++;
         v.sound = sound;
+        scopeFrom[(size_t) index].store (clockSamples, std::memory_order_relaxed);
+        scopeSound[(size_t) index].store (idHash (sound->id), std::memory_order_relaxed);
         v.sample = sample;
         v.zone = o.zone;
         v.group = o.group;
@@ -571,7 +593,7 @@ struct Engine::Impl
         v.channel = o.channel;
         v.pressure = o.hasMpe ? o.pressure : pressure;
         v.bend = bend;
-        v.noteBend = o.hasMpe ? o.noteBend : 0;
+        v.noteBend = v.bendBefore = o.hasMpe ? o.noteBend : 0;
         v.timbre = o.hasMpe ? o.timbre : timbre;
         v.tuneSlot = o.tuneSlot;
         v.tunePc = o.tunePc;
@@ -1071,7 +1093,31 @@ struct Engine::Impl
         }
     }
 
-    bool isMember (int ch) const noexcept { return perf && perf->mpe && ch > 0; }
+    bool isMember (int ch) const noexcept
+    {
+        if (! perf || ! perf->mpe || ch < 0 || ch > 15) return false;
+        return (ch >= 1 && ch <= lowerMembers) || (upperMembers > 0 && ch >= 15 - upperMembers && ch <= 14);
+    }
+
+    /** RPNs: 0 (pitch bend sensitivity) on a member channel is the zone's per-note range; 6 (MCM) sets a zone. */
+    void rpnData (int ch, int msb, int lsb) noexcept
+    {
+        switch (rpn[(size_t) ch])
+        {
+            case 0:
+                if (isMember (ch) && msb > 0) noteBendRange = (float) msb + (float) lsb / 100.0f;
+                return;
+            case 6:
+            {
+                const int n = std::clamp (msb, 0, 15);
+                // zones never overlap: a zone that grows shrinks the other
+                if (ch == 0) { lowerMembers = n; upperMembers = std::max (0, std::min (upperMembers, 14 - n)); }
+                else if (ch == 15) { upperMembers = n; lowerMembers = std::max (0, std::min (lowerMembers, 14 - n)); }
+                return;
+            }
+            default: return;
+        }
+    }
     int voiceKey (int note, int ch) const noexcept { return (isMember (ch) ? ch : 0) * 128 + (note & 127); }
 
     void holdNote (int note) noexcept
@@ -1136,6 +1182,15 @@ struct Engine::Impl
         base.glideTime = perf->glide;
         if (isMember (channel))
         {
+            // the channel is this note's now: one still releasing from it keeps the bend it ended with (MPE) -- not
+            // the bend the controller sent just before this note-on, which is the new note's
+            const bool fresh = now - mpeCh[(size_t) channel].bendAt < 0.01;
+            for (auto& v : voices)
+                if (v.alive && v.channel == channel && ! v.held())
+                {
+                    if (fresh) v.noteBend = v.bendBefore;
+                    v.channel = -1;
+                }
             base.channel = channel;
             base.hasMpe = true;
             base.noteBend = mpeCh[(size_t) channel].bend;
@@ -1374,7 +1429,9 @@ struct Engine::Impl
                 if (isMember (ch))
                 {
                     mpeCh[(size_t) ch].bend = x;
-                    for (auto& v : voices) if (v.alive && v.channel == ch) v.noteBend = x;
+                    mpeCh[(size_t) ch].bendAt = now;
+                    for (auto& v : voices)
+                        if (v.alive && v.channel == ch) { v.bendBefore = v.noteBend; v.noteBend = x; }
                     return;
                 }
                 bend = x;
@@ -1405,6 +1462,15 @@ struct Engine::Impl
     void controlChange (int number, float x, int ch) noexcept
     {
         cc[(size_t) (number & 127)] = x;
+        if (ch >= 0 && ch < 16)
+        {
+            const int v7 = (int) std::lround (x * 127.0f);
+            if (number == 101) rpn[(size_t) ch] = (v7 << 7) | (rpn[(size_t) ch] & 127);
+            else if (number == 100) rpn[(size_t) ch] = (rpn[(size_t) ch] & ~127) | v7;
+            else if (number == 6) { rpnMsb[(size_t) ch] = v7; rpnData (ch, v7, 0); }
+            else if (number == 38) rpnData (ch, rpnMsb[(size_t) ch], v7);
+            else if (number == 99 || number == 98) rpn[(size_t) ch] = 0x3fff;   // an NRPN: data entry isn't ours
+        }
         if (number == 1) modWheel = x;
         else if (number == 64)
         {
@@ -1457,6 +1523,8 @@ struct Engine::Impl
         const bool wasPlay = perf && perf->play;
         auto old = std::move (perf);
         perf = std::move (next);
+        // NOTE BEND changed on the page: it wins over a range a device sent
+        if (perf->mpeBendRange != perfBendRange) noteBendRange = perfBendRange = perf->mpeBendRange;
         // sounding voices follow their sound's new settings, like the page's live knobs
         for (auto& v : voices)
         {
@@ -1556,7 +1624,7 @@ struct Engine::Impl
     {
         const auto& s = v.s();
         v.tuneCents += (v.tuneTarget - v.tuneCents) * (1.0f - std::exp (-(float) (controlEvery / engine.rate) / tuneSmoothing));
-        float pitch = s.bendRange * 100.0f * v.bend + (perf ? perf->mpeBendRange : 48.0f) * 100.0f * v.noteBend + v.ccPitch + v.tuneCents;
+        float pitch = s.bendRange * 100.0f * v.bend + noteBendRange * 100.0f * v.noteBend + v.ccPitch + v.tuneCents;
         float cut = v.ccCut, cutR = v.ccCut, res = 0, trem = v.tremBase, panMod = 0, dly = 0, rev = 0;
         std::array<float, 2> gPos {}, gSize {}, gSkew {}, gVar {}, gDetune {}, gScan {}, lRate {}, lAmt {};
         for (int i = 0; i < v.routeCount; ++i)
@@ -2019,6 +2087,7 @@ struct Engine::Impl
                             * (float) std::pow (10.0, s.volKey * v.glideTo / 12.0 / 20.0);   // K>VOL
 
         const float* taps[3] = { tapOf (v, 0), tapOf (v, 1), tapOf (v, 2) };
+        std::atomic<float>* const scope = scopeRing.get() + (size_t) (&v - voices.data()) * (size_t) scopeLen;
 
         // this voice's sends: shared delay / reverb buses keyed by their settings
         DelayBus* dbus = nullptr;
@@ -2158,9 +2227,12 @@ struct Engine::Impl
             xl = v.hi[0].process (v.hiC, v.mid[0].process (v.midC, v.lo[0].process (v.loC, xl)));
             xr = oneSide ? xl : v.hi[1].process (v.hiC, v.mid[1].process (v.midC, v.lo[1].process (v.loC, xr)));
 
-            // what a patch reads when this voice is one of its VCOs: the post-EQ signal, as mono
+            // what a patch reads when this voice is one of its VCOs: the post-EQ signal, as mono (and the editor's
+            // live views, the same)
+            const float mono = v.monoSource ? xl : 0.5f * (xl + xr);
             if (! v.tap.empty())
-                v.tap[(size_t) i] = v.monoSource ? xl : 0.5f * (xl + xr);
+                v.tap[(size_t) i] = mono;
+            scope[(clockSamples + (uint64_t) i) & (uint64_t) (scopeLen - 1)].store (mono, std::memory_order_relaxed);
 
             if (! v.silent)
             {
@@ -2241,6 +2313,8 @@ struct Engine::Impl
         for (auto& v : voices)
             if (v.alive) ++count;
         engine.active.store (count, std::memory_order_relaxed);
+        clockSamples += (uint64_t) n;
+        scopeClock.store (clockSamples, std::memory_order_release);
 
         const double dt = 1.0 / engine.rate;
         globalLfo[0].run (dt * n, n);
@@ -2595,6 +2669,30 @@ bool Engine::readVoices (std::vector<VoiceView>& out, double& time) const
     time = m.viewTime;
     std::atomic_thread_fence (std::memory_order_acquire);
     return m.viewSeq.load (std::memory_order_acquire) == before;
+}
+
+int Engine::readScope (uint64_t sound, float* out, int n) const
+{
+    const auto& m = *impl;
+    n = std::clamp (n, 0, maxScope);
+    std::fill (out, out + n, 0.0f);
+    const uint64_t end = m.scopeClock.load (std::memory_order_acquire);
+    int found = 0;
+    for (int i = 0; i < maxVoices; ++i)
+    {
+        if (sound == 0 || m.scopeSound[(size_t) i].load (std::memory_order_relaxed) != sound) continue;
+        ++found;
+        const uint64_t from = m.scopeFrom[(size_t) i].load (std::memory_order_relaxed);
+        const auto* ring = m.scopeRing.get() + (size_t) i * (size_t) Impl::scopeLen;
+        for (int k = 0; k < n; ++k)
+        {
+            // sample k of the read is clock end - n + k: nothing before the voice began (its slot held another)
+            if (end + (uint64_t) k < (uint64_t) n + from) continue;
+            const uint64_t t = end - (uint64_t) n + (uint64_t) k;
+            out[k] += ring[t & (uint64_t) (Impl::scopeLen - 1)].load (std::memory_order_relaxed);
+        }
+    }
+    return found;
 }
 
 void Engine::readGrains (std::vector<GrainView>& out, size_t max)

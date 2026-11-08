@@ -251,8 +251,11 @@ export function startEngineSync(board: Board) {
     time?: number
     rate?: number
     host?: { bpm: number; ppq: number; playing: boolean }
+    /** what each sounding sound's voices play (while a live view asks: engine.watchSound) */
+    scopes?: Record<string, string>
   }
-  onNative<Meter>('ssbMeter', ({ l, r, list, grains, time, rate, host }) => {
+  onNative<Meter>('ssbMeter', ({ l, r, list, grains, time, rate, host, scopes }) => {
+    if (scopes) engine.setExternalScopes(scopes, rate ?? 0)
     engine.setExternalLevels(l, r)
     // the DAW's clock: tempo (drives synced LFOs / delays and the display), position, transport
     board.tempo.host = host && host.bpm > 0 ? Math.round(host.bpm * 100) / 100 : 0

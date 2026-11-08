@@ -92,6 +92,12 @@ SsbEditor::SsbEditor (SsbProcessor& p)
                   plugin.pageState = args[0].toString();
               complete (juce::var (true));
           })
+          .withNativeFunction ("ssbScope", [this] (const juce::Array<juce::var>& args, auto complete)
+          {
+              // a live view (scope, spectrum) is showing: send what each sounding sound plays with the meters
+              scopeWanted = ! args.isEmpty() && (bool) args[0];
+              complete (juce::var (true));
+          })
           .withNativeFunction ("ssbLog", [] (const juce::Array<juce::var>& args, auto complete)
           {
               // The page's console errors and warnings, so a problem inside the web view shows up
@@ -385,6 +391,26 @@ void SsbEditor::timerCallback()
             m->setProperty ("list", list);
             m->setProperty ("time", time);
             m->setProperty ("rate", plugin.engine.sampleRate());
+
+            // the live views: each sounding sound's last samples, 16-bit (±2 full scale), base64
+            if (scopeWanted)
+            {
+                auto* scopes = new juce::DynamicObject();
+                std::vector<uint64_t> done;
+                scopeBlock.resize ((size_t) ssb::Engine::maxScope);
+                scopePcm.resize (scopeBlock.size());
+                for (const auto& v : views)
+                {
+                    if (done.size() >= 8 || std::find (done.begin(), done.end(), v.sound) != done.end()) continue;
+                    done.push_back (v.sound);
+                    if (plugin.engine.readScope (v.sound, scopeBlock.data(), (int) scopeBlock.size()) == 0) continue;
+                    for (size_t i = 0; i < scopeBlock.size(); ++i)
+                        scopePcm[i] = (int16_t) juce::jlimit (-32767, 32767, juce::roundToInt (scopeBlock[i] * 16383.0f));
+                    scopes->setProperty (plugin.library.idFor (v.sound),
+                                         juce::Base64::toBase64 (scopePcm.data(), scopePcm.size() * sizeof (int16_t)));
+                }
+                m->setProperty ("scopes", juce::var (scopes));
+            }
         }
 
         // the grains started since the last tick (a dense cloud's latest few hundred), for the waveform

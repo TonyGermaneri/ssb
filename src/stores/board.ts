@@ -12,6 +12,7 @@ import { isTracked, track, untrack } from '../lib/tracked'
 import { ClockTracker } from '../lib/midiClock'
 import { THEMES, themeById } from '../theme/themes'
 import { AdaptiveTuner } from '../audio/adaptiveTuning'
+import { MpeZones } from '../audio/mpe'
 import type { Voice, VoiceOptions, VoiceTuning, ZonePlay } from '../audio/voice'
 import { basename, dirname, type PathFile } from '../lib/dropFiles'
 import { addTags, passesTags, tagFacets } from '../lib/tags'
@@ -48,6 +49,14 @@ const INSTANCE_FIELDS = [
   'play', 'mono', 'glide', 'octave', 'volume', 'muted', 'selectedId', 'patchId', 'mpe', 'mpeBendRange',
   'midiAuto', 'midiBase', 'bpm', 'clockSource', 'fx', 'mod',
 ] as const
+/**
+ * How a plugin instance's editor looked, saved with the host session beside INSTANCE_FIELDS (with InstanceView): a
+ * track reopened, or duplicated, shows what it showed -- its tab, layout, folds, scope settings and scroll.
+ */
+const VIEW_FIELDS = [
+  'tab', 'view', 'patchView', 'gridPanel', 'list', 'listWidth', 'folded', 'headerFolded', 'rack', 'waveView', 'scope',
+  'favSounds', 'favPatches', 'scale',
+] as const
 /** tells the other tabs / instances the library was saved, so they reload it */
 const libraryChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('ssb-library') : null
 const pageId = crypto.randomUUID()
@@ -60,6 +69,18 @@ const AUDIO_EXT = /\.(mp3|wav|ogg|oga|m4a|aac|flac|webm|opus)$/i
 const isAudio = (path: string) => AUDIO_EXT.test(path)
 const isSfz = (path: string) => /\.sfz$/i.test(path)
 const isZip = (path: string) => /\.zip$/i.test(path)
+
+/** what of a plugin instance's view isn't in the master state */
+interface InstanceView {
+  openPanels: string[]
+  tagFilter: string[]
+  tagHidden: string[]
+  patchTagFilter: string[]
+  patchTagHidden: string[]
+  similarTo: { sounds: unknown; patches: unknown }
+  /** each scrolled pane's [top, left] (lib/scrollMemory.ts) */
+  scroll: Record<string, [number, number]>
+}
 
 interface SavedBoard {
   version: 1
@@ -109,6 +130,11 @@ export const useBoard = defineStore('board', () => {
   const patches = ref<Patch[]>([])
   const patchTagFilter = ref<string[]>([])
   const patchTagHidden = ref<string[]>([])
+  /**
+   * Where each scrolled pane is (lib/scrollMemory.ts), kept with a plugin instance's view; `restored` counts the
+   * times a saved view was put back, so the panes scroll to it.
+   */
+  const view = reactive({ scroll: {} as Record<string, [number, number]>, restored: 0 })
 
   // ── change tracking (lib/tracked.ts) ───────────────────────────────────
   /** bumped by any write to a sound or patch, and when sounds or patches are added, removed or moved */
@@ -632,13 +658,38 @@ export const useBoard = defineStore('board', () => {
   }
 
   // ── a plugin instance's own settings (saved with the host session) ─────
-  const pickInstance = (m: MasterState) => Object.fromEntries(INSTANCE_FIELDS.map((k) => [k, clone(m[k])]))
+  const INSTANCE_ALL = [...INSTANCE_FIELDS, ...VIEW_FIELDS]
+  const pickInstance = (m: MasterState) => Object.fromEntries(INSTANCE_ALL.map((k) => [k, clone(m[k])]))
+  const instanceView = (): InstanceView =>
+    clone({
+      openPanels: [...openPanels],
+      tagFilter: tagFilter.value,
+      tagHidden: tagHidden.value,
+      patchTagFilter: patchTagFilter.value,
+      patchTagHidden: patchTagHidden.value,
+      similarTo,
+      scroll: view.scroll,
+    })
+  const strings = (x: unknown): string[] => (Array.isArray(x) ? x.filter((v): v is string => typeof v === 'string') : [])
   function applyInstance(json: string | undefined | null) {
     if (!json) return false
     try {
-      const st = JSON.parse(json) as { master?: Partial<MasterState> }
+      const st = JSON.parse(json) as { master?: Partial<MasterState>; view?: Partial<InstanceView> }
       const m = st.master ?? {}
-      for (const k of INSTANCE_FIELDS) if (k in m) (master as Record<string, unknown>)[k] = clone(m[k])
+      for (const k of INSTANCE_ALL) if (k in m) (master as Record<string, unknown>)[k] = clone(m[k])
+      // a session saved before the view was kept opens as the editor always did
+      const v = st.view
+      if (v) {
+        openPanels.clear()
+        for (const id of strings(v.openPanels)) openPanels.add(id)
+        tagFilter.value = strings(v.tagFilter)
+        tagHidden.value = strings(v.tagHidden)
+        patchTagFilter.value = strings(v.patchTagFilter)
+        patchTagHidden.value = strings(v.patchTagHidden)
+        Object.assign(similarTo, { sounds: null, patches: null }, v.similarTo ?? {})
+        view.scroll = { ...(v.scroll ?? {}) }
+        view.restored++
+      }
       return true
     } catch {
       return false
@@ -655,10 +706,13 @@ export const useBoard = defineStore('board', () => {
       else Object.assign(master, { play: true, midiAuto: true })
     }
     watch(
-      () => INSTANCE_FIELDS.map((k) => master[k]),
+      () => [INSTANCE_ALL.map((k) => master[k]), instanceView()],
       () => {
         clearTimeout(instanceTimer)
-        instanceTimer = setTimeout(() => void callNative('ssbSetState', JSON.stringify({ v: 1, master: pickInstance(master) })).catch(() => {}), 300)
+        instanceTimer = setTimeout(
+          () => void callNative('ssbSetState', JSON.stringify({ v: 2, master: pickInstance(master), view: instanceView() })).catch(() => {}),
+          300,
+        )
       },
       { deep: true, immediate: true },
     )
@@ -1172,7 +1226,9 @@ export const useBoard = defineStore('board', () => {
   const releaseAll = (vs?: Voice[]) => vs?.forEach((v) => v.release())
   /** MPE member-channel controller values, kept so a note starts where its channel already is */
   const mpeChannels = new Map<number, { bend: number; pressure: number; timbre: number }>()
-  const isMember = (ch?: number): ch is number => master.mpe && ch !== undefined && ch !== 0
+  /** which channels are MPE members: a lower zone of 15 until a device's MCM says otherwise (audio/mpe.ts) */
+  const mpeZones = new MpeZones()
+  const isMember = (ch?: number): ch is number => master.mpe && ch !== undefined && mpeZones.isMember(ch)
   const mpeState = (ch: number) => {
     let st = mpeChannels.get(ch)
     if (!st) mpeChannels.set(ch, (st = { bend: 0, pressure: 0, timbre: perform.timbre }))
@@ -1218,6 +1274,8 @@ export const useBoard = defineStore('board', () => {
     engine.resume()
     const glide = master.glide
     heldNotes.value = [...heldNotes.value.filter((n) => n !== note), note]
+    // the channel is this note's now: one still releasing from it keeps the bend it ended with
+    if (isMember(channel)) engine.claimChannel(channel)
     const base: VoiceOptions = {
       midiNote: note,
       glideTime: glide,
@@ -1375,9 +1433,9 @@ export const useBoard = defineStore('board', () => {
     master.patchId = id
     const p = selectedPatch.value
     if (!p) return
-    // load the patch's header knobs
+    // load the patch's header knobs (not the MPE bend range: that's the controller's, and stays with the instance)
     const h = clone(p.header)
-    Object.assign(master, { volume: h.volume, glide: h.glide, mono: h.mono, mpe: h.mpe, mpeBendRange: h.mpeBendRange, bpm: h.bpm })
+    Object.assign(master, { volume: h.volume, glide: h.glide, mono: h.mono, mpe: h.mpe, bpm: h.bpm })
     Object.assign(master.fx, h.fx)
     Object.assign(master.mod, h.mod)
   }
@@ -2105,7 +2163,10 @@ export const useBoard = defineStore('board', () => {
         }
         perform.bend = e.value
         return
-      case 'cc':
+      case 'cc': {
+        // RPN 0 on a member channel: the device's per-note bend range (RPN 6, its zones, is kept in mpeZones)
+        const range = mpeZones.cc(e.channel, e.cc, Math.round(e.value * 127))
+        if (range !== null && master.mpe) master.mpeBendRange = range
         engine.setCC(e.cc, e.value)
         if (e.cc === 1) perform.mod = e.value
         else if (e.cc === 64) perform.sustain = e.value >= 0.5
@@ -2117,6 +2178,7 @@ export const useBoard = defineStore('board', () => {
           perform.timbre = e.value
         }
         return
+      }
     }
   }
 
@@ -2140,7 +2202,7 @@ export const useBoard = defineStore('board', () => {
   )
 
   return {
-    sounds, master, listView, openPanels, pressed, tagFilter, peaks, peaksOf, changes, setEngineGate, loaded, toast, midi, heldNotes,
+    sounds, master, listView, openPanels, view, pressed, tagFilter, peaks, peaksOf, changes, setEngineGate, loaded, toast, midi, heldNotes,
     perform, presets, clipboard, matrixScope, canUndo, canRedo, tempo, bpm, noteFor, theme, cycleTheme,
     undo, redo, savePreset, loadPreset, deletePreset, copySettings, pasteSettings, openMatrix, onMidi,
     patches, patchTagFilter, patchTags, visiblePatches, patchFacets, togglePatchTag,

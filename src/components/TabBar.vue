@@ -19,8 +19,15 @@ function onInput(e: Event) {
   typing = window.setTimeout(() => board.showMatching(query[tab.value]), 250)
 }
 const ordering = computed(() => board.similarTo[tab.value])
-// another ordering (≈ SIMILAR, or cleared) leaves the description behind
-watch(ordering, (o) => o?.kind !== 'text' && (query[tab.value] = ''))
+// another ordering (≈ SIMILAR, or cleared) leaves the description behind; one restored with the plugin's view
+// (the host reopening a track) shows its words
+function syncQuery(t: 'sounds' | 'patches') {
+  const o = board.similarTo[t]
+  if (o?.kind !== 'text') query[t] = ''
+  else if (query[t].trim() !== o.text) query[t] = o.text
+}
+watch(() => board.similarTo.sounds, () => syncQuery('sounds'), { immediate: true })
+watch(() => board.similarTo.patches, () => syncQuery('patches'), { immediate: true })
 function clear() {
   query[tab.value] = ''
   board.clearSimilar()

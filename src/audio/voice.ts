@@ -151,7 +151,11 @@ export class Voice {
   readonly t0: number
   readonly kind: VoiceKind
   midiNote?: number
-  readonly channel?: number
+  /** its MPE member channel; cleared when a new note takes the channel while this one is still releasing */
+  channel?: number
+  /** its MPE bend now, and before the last bend message (engine.claimChannel puts a releasing note back to it) */
+  noteBendValue = 0
+  bendBefore = 0
   readonly groupId?: string
   private level: number
   private modTaps: (AudioNode | null)[]
@@ -317,6 +321,7 @@ export class Voice {
     this.bendSrc.offset.value = this.bendValue
     this.velSrc.offset.value = this.velocity
     this.noteBendSrc.offset.value = opts.noteBend ?? 0
+    this.noteBendValue = this.bendBefore = opts.noteBend ?? 0
     this.timbreSrc.offset.value = this.timbreValue
     this.kind = s.grain ? 'cloud' : s.timeMode === 'stretch' ? 'stretch' : 'sample'
     this.zone = opts.zone
@@ -864,6 +869,8 @@ export class Voice {
 
   /** MPE per-note pitch bend, -1..1 (scaled by the MPE bend range). */
   setNoteBend(v: number) {
+    this.bendBefore = this.noteBendValue
+    this.noteBendValue = v
     this.noteBendSrc.offset.setTargetAtTime(v, this.ctx.currentTime, 0.005)
   }
 

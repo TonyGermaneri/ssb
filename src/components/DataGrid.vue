@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import canvasDatagrid, { type CanvasDatagrid, type GridCell } from 'canvas-datagrid'
 import { useBoard } from '../stores/board'
+import { rememberScroll } from '../lib/scrollMemory'
 import { activeVoices, levels } from '../audio/engine'
 import { CELL_ALPHA, gridStyle, mix, rgba } from '../theme/gridStyle'
 import { Backdrop, type Box } from '../lib/gridPaint'
@@ -74,6 +75,22 @@ const NARROW = 980
 /** what a dragged row looks like under the pointer (off screen until then) */
 const ghost = ref<HTMLDivElement>()
 let grid: CanvasDatagrid | null = null
+/** the grid, for the scroll memory: where it was scrolled is kept with a plugin instance's view */
+const gridRef = shallowRef<CanvasDatagrid | null>(null)
+rememberScroll(
+  () => `grid:${props.name}`,
+  () => gridRef.value,
+  (g, onScroll, onUser) => {
+    g.addEventListener('scroll', onScroll)
+    const el = host.value
+    const user = ['wheel', 'pointerdown', 'keydown'] as const
+    for (const u of user) el?.addEventListener(u, onUser, { passive: true, capture: true })
+    return () => {
+      g.removeEventListener('scroll', onScroll)
+      for (const u of user) el?.removeEventListener(u, onUser, { capture: true })
+    }
+  },
+)
 
 const GRIP = 'grip'
 /** a column whose cells are controls: the grip, a toggle or a button */
@@ -195,6 +212,7 @@ onMounted(() => {
     editable: true,
   })
   grid = g
+  gridRef.value = g
   applyTheme()
   sync(props.rows)
   document.fonts?.ready.then(() => grid?.draw())

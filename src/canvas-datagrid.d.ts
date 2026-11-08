@@ -62,6 +62,7 @@ declare module 'canvas-datagrid' {
     scrollIntoView(x?: number, y?: number): void
     dispose?(): void
     addEventListener(ev: string, fn: (e: GridEvent) => void): void
+    removeEventListener(ev: string, fn: (e: GridEvent) => void): void
   }
   export default function canvasDatagrid(args: Record<string, unknown>): CanvasDatagrid
 }

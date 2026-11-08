@@ -83,7 +83,9 @@ so pads light, progress rings turn and waveform playheads move for notes it play
 (sounds, patches, presets), kept in the web view's storage; when one instance saves, the others
 reload it (a BroadcastChannel), so two open windows never overwrite each other's additions. What an
 instance plays -- its patch or sound, keyboard mode, volume, FX, mod matrix, MIDI mapping -- is its
-own and is saved with the host session (`ssbSetState`). A new instance starts in keyboard play
+own and is saved with the host session (`ssbSetState`), and so is how its editor looked -- tab,
+layout, folds, filters, the display view, scroll positions -- so reopening or duplicating a track
+shows exactly what it showed. A new instance starts in keyboard play
 with pads mapped to notes automatically. If the page's storage has lost a sample, it is restored
 from the plugin's disk cache (`ssbGetAudio`). (Before 0.2 each instance kept a board of its own;
 the first load merges those into the library.)

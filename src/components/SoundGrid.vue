@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useBoard } from '../stores/board'
+import { rememberElementScroll } from '../lib/scrollMemory'
 import type { Sound } from '../types'
 import SoundTile from './SoundTile.vue'
 
@@ -19,6 +20,8 @@ const GAP = 4
 const SIDE = 24 // grid padding, left + right
 
 const wrap = ref<HTMLElement>()
+// where the list was scrolled, kept with a plugin instance's view
+rememberElementScroll(() => 'sounds:cards', () => wrap.value?.querySelector<HTMLElement>('.v-virtual-scroll'))
 const width = ref(1200)
 let ro: ResizeObserver | undefined
 watch(wrap, (el) => {

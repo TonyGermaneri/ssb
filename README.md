@@ -34,7 +34,7 @@ Two catalogs, as tabs under the header, each with card and grid views and its ow
   NEW PATCH starts from and what the keys play while no patch is selected.
 - **Patches** — playable instruments built from up to **3 VCO slots**, each holding a sound (as the patch's own
   copy of its settings, so editing a patch never changes the sound), plus the header knobs (volume, glide, mono/poly,
-  MPE + bend range, BPM, chorus / delay / reverb, global mod matrix). Selecting a patch loads those header settings;
+  MPE, BPM, chorus / delay / reverb, global mod matrix; MPE's bend range is the controller's and stays put). Selecting a patch loads those header settings;
   changing them while it's selected saves them into it. Clicking a patch card loads it and plays it (so it sounds with
   its own header); **☰** (or right-click) loads it and shows the rack, the one place a patch is edited — its title row
   has the name, tags, ♥, **DUPLICATE** (the rack then shows the copy) and **DELETE** (then the next patch).
@@ -317,7 +317,17 @@ instance in its own colour (hue by note, brightness by velocity) with a label: a
 voices, and for clouds each grain over the part of the sample it plays, at its pan (left up, right down), as tall as
 it is loud, hue-shifted by its pitch, notched when reversed, fading out after it ends.
 
-Its **2D / ISO** switch (top right; the header's VCO scopes follow it) turns it **isometric**: the wave stands as a wall
+Its view picker (top right; on the SCOPE, the set's channel plate; the header's VCO scopes follow it) chooses what it
+shows. Three views draw what the sound's voices play, live (post-filter, summed — as a VCO feeds the matrix; in the
+plugin the engine sends it ~30 times a second):
+
+- **SCOPE** (the default): a 1960s set — a phosphor trace with persistence and bloom, held still on the note's period,
+  behind a curved, vignetted, scan-lined tube in a walnut cabinet. Its front panel's tiny knobs set **BLOOM**,
+  **CONTRAST**, **TRAILS** and **TINT** (a 60s TV's tint: green to purple). Drag, scroll or double-click them.
+- **BARS**: a 90s spectrum analyser — LED segments that jump and fall, with peak caps that hang.
+- **SPECTRO**: a spectrogram, RX-style: time scrolling left, log frequency up, loudness as heat.
+
+**2D** and **ISO** show the sample, where the clip and the grain are dragged. **ISO** is isometric: the wave stands as a wall
 on a floor — a stereo sample's left at the back and its right at the front — the clip and the grain lie on the floor,
 grains stand where they play at their side's depth, and the playhead is a lit curtain across it. In either view, with
 GRAIN on, dragging edits the grain: the highlight is the stretch one grain plays from POS; drag its middle to move
@@ -357,10 +367,21 @@ turns the CRT lines on or off.
 
 ### MPE
 
-Turn on **MPE** (header PATCH group, or the matrix modal) for MPE controllers (lower zone). Channel 1 is the master
-channel: its bend, pressure, mod wheel and CC74 apply to every voice. Notes on channels 2–16 each get their own pitch
-bend (range set by NOTE BEND, default ±48), pressure (→ AFTERTOUCH) and CC74 (→ TIMBRE), including values sent just
-before the note starts. MPE is always polyphonic.
+Turn on **MPE** (header PATCH group, or the matrix modal) for MPE controllers. Channel 1 is the master channel: its
+bend, pressure, mod wheel and CC74 apply to every voice. Notes on channels 2–16 each get their own pitch bend,
+pressure (→ AFTERTOUCH in the matrix) and CC74 (→ TIMBRE), including values sent just before the note starts. MPE is
+always polyphonic.
+
+- **Bend range**: with MPE on, the button halves and a dropdown beside it sets the per-note bend range to match your
+  controller (±1 … ±96 semitones, default ±48, MPE's own default). It belongs to the controller, not the patch:
+  changing patches keeps it, and a plugin instance saves it with the session. A device that sends its range (RPN 0
+  on a member channel) sets it.
+- **Zones**: one lower zone of 15 member channels until a device's MPE Configuration Message (RPN 6) says otherwise;
+  an upper zone (channel 16 the master, 1–15 the notes) works too.
+- **Release**: a note keeps following its channel while it rings out, until a new note takes the channel; then it
+  keeps the bend it had (not the reset the controller sends just before the new note).
+- **In a DAW**: the AU / VST3 tells the host it takes MPE, so hosts that ask (Live, Logic) send a controller's
+  per-note channels instead of merging them onto one.
 
 ### Undo / presets
 

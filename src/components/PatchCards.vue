@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useBoard } from '../stores/board'
+import { rememberElementScroll } from '../lib/scrollMemory'
 import { padHue } from '../lib/format'
 import type { Patch } from '../types'
 import PatchButton from './PatchButton.vue'
@@ -12,6 +13,8 @@ const PAD_H = 104
 const TILE = 4 + 4 // tile padding + gap
 
 const wrap = ref<HTMLElement>()
+// where the list was scrolled, kept with a plugin instance's view
+rememberElementScroll(() => 'patches:cards', () => wrap.value?.querySelector<HTMLElement>('.v-virtual-scroll'))
 const width = ref(1200)
 let ro: ResizeObserver | undefined
 watch(wrap, (el) => {

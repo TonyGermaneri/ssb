@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue'
 import { activeVoices, clock, getBuffer, type VoiceInfo } from '../audio/engine'
 import { clipBounds, knobRate } from '../audio/timing'
 import { GRAIN_FREQ_MAX, grainFreqMin, type GrainEvent } from '../audio/grainMath'
@@ -7,6 +7,8 @@ import { computePeaks } from '../audio/peaks'
 import { useBoard } from '../stores/board'
 import { midiNoteName } from '../lib/format'
 import type { Sound } from '../types'
+import LiveView from './LiveView.vue'
+import WaveViewPicker from './WaveViewPicker.vue'
 
 /** seconds a grain stays visible after it ends (a one-sample grain would otherwise never be seen) */
 const GRAIN_FADE = 0.35
@@ -35,6 +37,8 @@ const Wr = ref(props.width ?? 386)
 const H = props.height ?? 52
 /** ISO: the waveform as a wall standing on a floor, the stereo field in depth (left at the back) */
 const iso = computed(() => board.master.waveView === 'iso')
+/** SCOPE, BARS, SPECTRO: what the voices play, drawn live (LiveView) instead of the sample */
+const live = computed(() => !['2d', 'iso'].includes(board.master.waveView))
 
 const peaks = computed(() => board.peaksOf(props.sound.audioId))
 const voices = computed(() => activeVoices.value.filter((v) => v.soundId === props.sound.id))
@@ -448,15 +452,20 @@ function drawIso(g: CanvasRenderingContext2D, W: number, p: Float32Array | undef
 }
 
 let ro: ResizeObserver | undefined
-onMounted(() => {
-  if (!props.width) {
-    const measure = () => (Wr.value = Math.max(160, wrap.value?.clientWidth ?? 386))
+// the canvas comes and goes with the view (the live ones are LiveView's): measure whichever is showing
+watch(
+  wrap,
+  (el) => {
+    ro?.disconnect()
+    if (props.width || !el) return
+    const measure = () => (Wr.value = Math.max(80, el.clientWidth || 386))
     measure()
     ro = new ResizeObserver(measure)
-    if (wrap.value) ro.observe(wrap.value)
-  }
-  watchEffect(draw)
-})
+    ro.observe(el)
+  },
+  { flush: 'post' },
+)
+onMounted(() => watchEffect(draw))
 onBeforeUnmount(() => ro?.disconnect())
 
 // ── dragging ─────────────────────────────────────────────────────────────────────
@@ -540,7 +549,6 @@ function onUp() {
   drag = null
 }
 
-const toggleView = () => (board.master.waveView = iso.value ? '2d' : 'iso')
 const tip = computed(() =>
   props.readonly
     ? undefined
@@ -551,7 +559,8 @@ const tip = computed(() =>
 </script>
 
 <template>
-  <div ref="wrap" class="wf" :style="{ width: props.width ? `${Wr}px` : '100%' }">
+  <LiveView v-if="live" :sound="sound" :hue="hue" :height="H" :width="props.width" :readonly="readonly" />
+  <div v-else ref="wrap" class="wf" :style="{ width: props.width ? `${Wr}px` : '100%' }">
     <canvas
       ref="canvas"
       class="waveform"
@@ -563,15 +572,7 @@ const tip = computed(() =>
       @pointerup="onUp"
       @pointercancel="onUp"
     />
-    <button
-      v-if="!readonly"
-      class="view"
-      :title="iso ? 'Isometric view — click for flat' : 'Flat view — click for isometric'"
-      @pointerdown.stop
-      @click.stop="toggleView"
-    >
-      {{ iso ? 'ISO' : '2D' }}
-    </button>
+    <WaveViewPicker v-if="!readonly" class="view" />
   </div>
 </template>
 
@@ -601,17 +602,5 @@ const tip = computed(() =>
   position: absolute;
   top: 3px;
   right: 3px;
-  padding: 0 4px;
-  border-radius: 2px;
-  font-family: 'VT323', monospace;
-  font-size: 12px;
-  line-height: 12px;
-  color: var(--c-secondary);
-  background: rgba(0, 0, 0, 0.6);
-  border: 1px solid #000;
-  opacity: 0.75;
-}
-.view:hover {
-  opacity: 1;
 }
 </style>

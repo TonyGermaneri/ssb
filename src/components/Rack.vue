@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, shallowReactive } from 'vue'
 import { useBoard } from '../stores/board'
+import { rememberElementScroll } from '../lib/scrollMemory'
 import { fmtCents, fmtPct, fmtSemis, midiNoteName, padHue } from '../lib/format'
 import { PATCH_SLOTS, TUNING_MODES, type PatchSlot, type Sound, type TuningMode } from '../types'
 import ControlPanel from './ControlPanel.vue'
@@ -30,6 +31,10 @@ const TUNING: Record<TuningMode, { chip: string; label: string; hint: string }> 
 }
 const TUNING_TITLE =
   'Tuning. ET is equal temperament; AJI (adaptive just intonation) retunes this VCO to each chord you hold, staying close to ET. Each VCO has its own'
+
+// each slot's panel scrolls on its own; where, is kept with a plugin instance's view
+const bodies = shallowReactive<(HTMLElement | null)[]>([null, null, null])
+for (const i of [0, 1, 2]) rememberElementScroll(() => `rack:${i}`, () => bodies[i])
 
 // ── drop sounds into slots ──
 const dropTarget = ref(-1)
@@ -142,7 +147,7 @@ function onDrop(e: DragEvent, i: number) {
             <v-icon size="14" icon="mdi-close" /> <span class="word">REMOVE</span>
           </button>
         </div>
-        <div class="body">
+        <div :ref="(el) => (bodies[i] = el as HTMLElement | null)" class="body">
           <ControlPanel v-if="x && layerOf(x)" :sound="layerOf(x)!" :hue="hue(layerOf(x)!)" :role="i === 0 ? 'patch' : 'vco'" :patch="patch ?? undefined" wide />
           <div v-else class="drop">
             <v-icon size="28" icon="mdi-tray-arrow-down" />
@@ -168,8 +173,9 @@ function onDrop(e: DragEvent, i: number) {
 .title {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   margin-bottom: 6px;
 }
 .lbl {
@@ -192,9 +198,11 @@ function onDrop(e: DragEvent, i: number) {
 }
 .title .name {
   width: 240px;
+  max-width: 100%;
 }
 .title .tags {
   width: 300px;
+  max-width: 100%;
   color: var(--c-secondary);
 }
 .heart {
@@ -231,10 +239,12 @@ function onDrop(e: DragEvent, i: number) {
 .bar {
   flex: none;
   display: flex;
+  /* a narrow slot: its chips and knobs wrap onto another line rather than spill out of the rack */
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 2px 6px;
   padding: 3px 6px;
-  height: 53px;
+  min-height: 53px;
   font-family: 'VT323', monospace;
   font-size: 15px;
   /* a dark strip (like the LCDs) so names and chips read on light themes too */

@@ -29,6 +29,9 @@ private:
     SsbProcessor& plugin;
     juce::WebBrowserComponent browser;
     std::vector<ssb::GrainView> grainViews;   // reused by every meter tick
+    bool scopeWanted { false };               // the page shows a live view (ssbScope)
+    std::vector<float> scopeBlock;            // reused by every meter tick
+    std::vector<int16_t> scopePcm;
 
     /** Held while a save dialog is open: it is asynchronous and outlives the call that opened it. */
     std::unique_ptr<juce::FileChooser> chooser;
