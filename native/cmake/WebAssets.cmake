@@ -60,6 +60,21 @@ function(ssb_bundle_web target)
         COMMENT "Copying the web build into ${target}"
         VERBATIM)
 
+    # the MCP bridge (native/mcp) rides along in every bundle, before the seal is remade
+    if(TARGET ssb-mcp)
+        if(APPLE)
+            set(_helpers "$<TARGET_BUNDLE_CONTENT_DIR:${target}>/Helpers")
+        else()
+            set(_helpers "$<TARGET_FILE_DIR:${target}>")
+        endif()
+        add_custom_command(TARGET ${target}_web POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${_helpers}"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:ssb-mcp>" "${_helpers}/"
+            COMMENT "Copying ssb-mcp into ${target}"
+            VERBATIM)
+        add_dependencies(${target}_web ssb-mcp)
+    endif()
+
     if(APPLE)
         add_custom_command(TARGET ${target}_web POST_BUILD
             COMMAND codesign --force --sign "${SSB_CODESIGN_IDENTITY}"

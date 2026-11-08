@@ -24,6 +24,10 @@ public:
 
 private:
     void timerCallback() override;
+    /** who this is, for the MCP discovery file ("SSB AU in Ableton Live") */
+    juce::String mcpName() const;
+    /** copies the MCP bridge to its fixed place; its path, or "" if this build has none */
+    juce::String installMcpBridge();
     std::optional<juce::WebBrowserComponent::Resource> provide (const juce::String& path);
 
     SsbProcessor& plugin;

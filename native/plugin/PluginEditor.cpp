@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 #include "PluginPaths.h"
+#include "McpCommon.h"
 
 #include <cstdio>
 
@@ -96,6 +97,34 @@ SsbEditor::SsbEditor (SsbProcessor& p)
           {
               // a live view (scope, spectrum) is showing: send what each sounding sound plays with the meters
               scopeWanted = ! args.isEmpty() && (bool) args[0];
+              complete (juce::var (true));
+          })
+          .withNativeFunction ("ssbMcp", [this] (const juce::Array<juce::var>& args, auto complete)
+          {
+              // the MCP switch: { on, port, token } -> { running, port, url, cli, error }
+              const auto o = args.isEmpty() ? juce::var() : args[0];
+              auto* r = new juce::DynamicObject();
+              if ((bool) o.getProperty ("on", false))
+              {
+                  const auto st = plugin.mcp.start (o.getProperty ("port", 6280), o.getProperty ("token", "").toString(), mcpName());
+                  r->setProperty ("running", st.running);
+                  r->setProperty ("port", st.port);
+                  r->setProperty ("url", st.running ? "http://127.0.0.1:" + juce::String (st.port) + "/mcp" : juce::String());
+                  r->setProperty ("cli", installMcpBridge());
+                  r->setProperty ("error", st.error);
+              }
+              else
+              {
+                  plugin.mcp.stop();
+                  r->setProperty ("running", false);
+              }
+              complete (juce::var (r));
+          })
+          .withNativeFunction ("ssbMcpReply", [this] (const juce::Array<juce::var>& args, auto complete)
+          {
+              // the page's answer to an MCP request: (id, status, body)
+              if (args.size() >= 3)
+                  plugin.mcp.reply ((int) args[0], (int) args[1], args[2].toString());
               complete (juce::var (true));
           })
           .withNativeFunction ("ssbLog", [] (const juce::Array<juce::var>& args, auto complete)
@@ -249,6 +278,16 @@ SsbEditor::SsbEditor (SsbProcessor& p)
     plugin.midiToPage.clear();
     startTimer (4);
 
+    // MCP requests go to this page while it is open (the server itself lives with the processor)
+    plugin.mcp.setForward ([this] (int id, const juce::String& body)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("id", id);
+        o->setProperty ("body", body);
+        browser.emitEventIfBrowserIsVisible ("ssbMcpRequest", juce::var (o));
+        return true;
+    });
+
     // SSB_PROBE=<javascript>: evaluate it in the page once it has had time to load, and print the
     // result. The page's inspector is not available in a release build, and this is the one way
     // to ask a running editor a question from a terminal. SSB_PROBE_DELAY_MS overrides the wait;
@@ -284,7 +323,39 @@ SsbEditor::SsbEditor (SsbProcessor& p)
 
 SsbEditor::~SsbEditor()
 {
+    plugin.mcp.setForward (nullptr);
     stopTimer();
+}
+
+juce::String SsbEditor::mcpName() const
+{
+    juce::String name = "SSB ";
+    name << juce::AudioProcessor::getWrapperTypeDescription (plugin.wrapperType);
+    if (plugin.wrapperType != juce::AudioProcessor::wrapperType_Standalone)
+        name << " in " << juce::PluginHostType().getHostDescription();
+    return name;
+}
+
+juce::String SsbEditor::installMcpBridge()
+{
+    // the bridge this build carries (Contents/Helpers in a bundle; beside the binary on Windows),
+    // copied to one fixed place so an MCP client's configuration keeps working across updates
+    const auto binary = juce::File::getSpecialLocation (juce::File::currentExecutableFile);
+   #if JUCE_WINDOWS
+    const auto carried = binary.getSiblingFile ("ssb-mcp.exe");
+   #else
+    const auto carried = binary.getParentDirectory().getSiblingFile ("Helpers").getChildFile ("ssb-mcp");
+   #endif
+    const auto installed = ssb::mcp::installedBridge();
+    if (carried.existsAsFile()
+        && (! installed.existsAsFile() || installed.getSize() != carried.getSize()
+            || installed.getLastModificationTime() < carried.getLastModificationTime()))
+    {
+        installed.getParentDirectory().createDirectory();
+        if (carried.copyFileTo (installed))
+            installed.setExecutePermission (true);
+    }
+    return installed.existsAsFile() ? installed.getFullPathName() : carried.existsAsFile() ? carried.getFullPathName() : juce::String();
 }
 
 void SsbEditor::paint (juce::Graphics& g)

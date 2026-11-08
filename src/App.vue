@@ -7,6 +7,7 @@ import { keyToMidi } from './lib/piano'
 import { fromInput } from './lib/dropFiles'
 import { forwardConsole, inNative, nativeEngine, routeExternalLinks } from './native/bridge'
 import { startEngineSync } from './native/engineSync'
+import { mcpSaved, mcpStatus } from './lib/ai/mcpStatus'
 import { activeVoices, getCtx, levels } from './audio/engine'
 import DropZone from './components/DropZone.vue'
 import MatrixDialog from './components/MatrixDialog.vue'
@@ -128,7 +129,7 @@ onMounted(() => {
   // for SSB_PROBE scripts (the native page has no inspector in a release build) and for poking at a dev server
   if (inNative() || import.meta.env.DEV) {
     const w = window as unknown as { __ssb: unknown }
-    w.__ssb = { board, audio: () => getCtx().state, voices: () => activeVoices.value.length, activeVoices, levels }
+    w.__ssb = { board, audio: () => getCtx().state, voices: () => activeVoices.value.length, activeVoices, levels, mcp: () => import('./lib/ai/mcpHost') }
   }
   // in the native app / plugin: MIDI comes from the host, links open in the system browser
   if (inNative()) {
@@ -137,6 +138,8 @@ onMounted(() => {
     routeExternalLinks()
     // in a DAW the native engine plays: keep it in step with the board
     if (nativeEngine()) startEngineSync(board)
+    // the MCP server, if it was left on (its code loads only then)
+    if (mcpSaved().enabled) void import('./lib/ai/mcpHost').then((m) => m.bootMcp())
   }
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('keyup', onKeyUp)
@@ -206,6 +209,20 @@ onBeforeUnmount(() => {
     <LibraryDialog v-if="libraryOpen" v-model="libraryOpen" :start="libraryTab" />
     <!-- kept once opened: a running request carries on with the dialog closed -->
     <AiDialog v-if="aiUsed" v-model="aiOpen" />
+    <!-- an agent connected over MCP wants to do something that needs a yes -->
+    <v-dialog :model-value="!!mcpStatus.approval" max-width="480" persistent>
+      <div v-if="mcpStatus.approval" class="mcp-ask">
+        <v-icon icon="mdi-connection" color="secondary" />
+        <div>
+          <b>AN AGENT CONNECTED OVER MCP ASKS</b>
+          <p>{{ mcpStatus.approval.question }}</p>
+        </div>
+        <div class="row">
+          <button class="hw-btn lit" @click="mcpStatus.approval.resolve(true)">ALLOW</button>
+          <button class="hw-btn" @click="mcpStatus.approval.resolve(false)">DENY</button>
+        </div>
+      </div>
+    </v-dialog>
     <input ref="fileInput" type="file" accept="audio/*,.mp3,.sfz,.zip" multiple hidden @change="onPick" />
     <!-- a folder picker keeps relative paths, which SFZ files use to find their samples -->
     <input ref="folderInput" type="file" webkitdirectory multiple hidden @change="onPick" />
@@ -272,6 +289,35 @@ onBeforeUnmount(() => {
 }
 .legend {
   flex: none;
+}
+.mcp-ask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  color: var(--text);
+  background: linear-gradient(180deg, var(--panel-hi), var(--panel-lo));
+  border: 1px solid #000;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
+}
+.mcp-ask b {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  color: var(--text-head);
+}
+.mcp-ask p {
+  margin: 2px 0 0;
+  font-family: 'VT323', monospace;
+  font-size: 19px;
+  color: var(--c-secondary);
+}
+.mcp-ask .row {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
 }
 .toast {
   font-family: 'VT323', monospace;

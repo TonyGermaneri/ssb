@@ -2,6 +2,9 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useAi, type Item } from '../lib/ai/store'
 import { PROVIDERS, type Effort, type ProviderKind } from '../lib/ai/types'
+import { mcpSaved, mcpStatus } from '../lib/ai/mcpStatus'
+import { newMcpToken, setMcp, setMcpPort } from '../lib/ai/mcpHost'
+import { inNative } from '../native/bridge'
 
 /**
  * The AI patch maker: a conversation with a model that makes, changes, studies and tidies the board's patches with
@@ -81,6 +84,42 @@ async function test() {
   }
 }
 const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+// ── the MCP server: the same tools, for agents outside SSB ──
+const mcp = ref(mcpSaved())
+const showToken = ref(false)
+const copied = ref('')
+const mcpOn = computed(() => mcpStatus.state === 'on' || mcpStatus.state === 'starting')
+async function toggleMcp() {
+  await setMcp(!mcpOn.value)
+  mcp.value = mcpSaved()
+}
+async function regenerate() {
+  await newMcpToken()
+  mcp.value = mcpSaved()
+}
+async function applyPort() {
+  const p = Math.round(Number(mcp.value.port))
+  if (p >= 1024 && p <= 65000) await setMcpPort(p)
+  mcp.value = mcpSaved()
+}
+const mcpUrl = computed(() => mcpStatus.url || `http://127.0.0.1:${mcp.value.port}/mcp`)
+const cliPath = computed(() => mcpStatus.cli || '<path to ssb-mcp>')
+const commands = computed(() => [
+  { id: 'stdio', label: 'CLAUDE CODE · STDIO', text: `claude mcp add ssb -- "${cliPath.value}"` },
+  { id: 'http', label: 'CLAUDE CODE · HTTP', text: `claude mcp add --transport http ssb ${mcpUrl.value} --header "Authorization: Bearer ${mcp.value.token}"` },
+  { id: 'json', label: 'JSON (CLAUDE DESKTOP, CURSOR, …)', text: JSON.stringify({ mcpServers: { ssb: { command: cliPath.value } } }) },
+])
+async function copy(id: string, text: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    copied.value = id
+    setTimeout(() => copied.value === id && (copied.value = ''), 1500)
+  } catch {
+    copied.value = ''
+  }
+}
+const ago = (t: number) => `${Math.max(0, Math.round((Date.now() - t) / 1000))}s ago`
 const when = (t: number) => new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 watch(open, (o) => o && !ai.current && ai.newConversation())
 </script>
@@ -93,6 +132,9 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
         <h3>AI PATCH MAKER</h3>
         <span class="chip on" :title="`Conversations stay with the provider and model they began with`">{{ providerName }} · {{ modelName || 'no model' }}</span>
         <span v-if="totals" class="usage" title="This conversation: input at full price · read from / written to the prompt cache · output">{{ totals }}</span>
+        <button v-if="mcpStatus.state === 'on'" class="chip on mcp-chip" :title="`MCP server on at ${mcpStatus.url}: agents outside SSB can use these tools`" @click="showSettings = true">
+          <i class="led" /> MCP
+        </button>
         <v-spacer />
         <button class="hw-btn icon" :class="{ lit: showSettings }" title="Settings: provider, key, model" @click="showSettings = !showSettings">
           <v-icon size="16" icon="mdi-cog" />
@@ -192,6 +234,45 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
           <p class="hint">
             Keys stay in this computer's browser storage: never in the board, its exports, or a plugin's saved session. Conversations keep the provider and model they began with.
           </p>
+
+          <h4 class="mcp-head">MCP SERVER</h4>
+          <p class="hint">
+            Lets an agent outside SSB (Claude Code, Claude Desktop, Cursor…) use these same tools on this board: over HTTP on this computer, or through
+            the <code>ssb-mcp</code> command. Off unless you turn it on; SSB's window (in a DAW, the plugin's editor) must be open while it works.
+          </p>
+          <div class="row">
+            <button class="hw-btn" :class="{ lit: mcpOn }" :disabled="!inNative()" @click="toggleMcp">{{ mcpOn ? 'ON' : 'OFF' }}</button>
+            <span class="mcp-state" :class="mcpStatus.state">
+              <template v-if="!inNative()">Needs the SSB app or plugin: a browser tab can't open a port.</template>
+              <template v-else-if="mcpStatus.state === 'on'">Serving at {{ mcpStatus.url }}</template>
+              <template v-else-if="mcpStatus.state === 'starting'">Starting…</template>
+              <template v-else-if="mcpStatus.state === 'error'">{{ mcpStatus.error }}</template>
+              <template v-else>Off</template>
+            </span>
+          </div>
+          <div class="grid">
+            <label>
+              PORT
+              <input v-model.number="mcp.port" type="number" min="1024" max="65000" @change="applyPort" />
+            </label>
+            <label>
+              TOKEN (HTTP)
+              <span class="row">
+                <input :value="mcp.token" :type="showToken ? 'text' : 'password'" readonly />
+                <button class="hw-btn icon" :title="showToken ? 'Hide' : 'Show'" @click="showToken = !showToken"><v-icon size="14" :icon="showToken ? 'mdi-eye-off' : 'mdi-eye'" /></button>
+                <button class="hw-btn icon" title="A new token (clients using the old one stop working)" @click="regenerate"><v-icon size="14" icon="mdi-refresh" /></button>
+              </span>
+            </label>
+          </div>
+          <div v-for="c in commands" :key="c.id" class="cmd">
+            <span>{{ c.label }}</span>
+            <code>{{ c.id === 'http' && !showToken ? c.text.replace(mcp.token, '•••') : c.text }}</code>
+            <button class="hw-btn" @click="copy(c.id, c.text)">{{ copied === c.id ? 'COPIED' : 'COPY' }}</button>
+          </div>
+          <p class="hint">More than one SSB with MCP on (several tracks in a DAW): each takes the next free port; <code>ssb-mcp</code> talks to the newest (<code>--list</code>, <code>--port N</code> to choose).</p>
+          <div v-if="mcpStatus.activity.length" class="activity">
+            <div v-for="(a, k) in mcpStatus.activity.slice(0, 8)" :key="k" :class="{ bad: !a.ok }">{{ a.ok ? '✓' : '✗' }} {{ a.tool }} · {{ a.ms }} ms · {{ ago(a.at) }}</div>
+          </div>
         </section>
 
         <!-- the conversation -->
@@ -498,6 +579,68 @@ textarea {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
   gap: 0 12px;
+}
+.mcp-head {
+  margin-top: 14px !important;
+}
+.mcp-state {
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  color: var(--text-mute);
+}
+.mcp-state.on {
+  color: var(--c-success);
+}
+.mcp-state.error {
+  color: #ff6b6b;
+}
+.cmd {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 6px;
+  align-items: center;
+  margin: 6px 0;
+}
+.cmd span {
+  grid-column: 1 / -1;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+  color: var(--text-head);
+}
+.cmd code,
+.settings .hint code {
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  color: var(--c-secondary);
+  overflow-wrap: anywhere;
+}
+.cmd code {
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.4);
+}
+.activity {
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  color: var(--c-success);
+}
+.activity .bad {
+  color: #ff8a8a;
+}
+.mcp-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.mcp-chip .led {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-success);
+  box-shadow: 0 0 5px var(--c-success);
 }
 .test {
   font-family: 'VT323', monospace;

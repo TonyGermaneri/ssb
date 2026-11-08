@@ -40,6 +40,7 @@ juce_add_plugin(SsbInstrument
     COPY_PLUGIN_AFTER_BUILD   FALSE)
 
 target_sources(SsbInstrument PRIVATE
+    ../mcp/McpServer.cpp
     PluginProcessor.cpp
     PluginEditor.cpp
     PluginPaths.cpp
@@ -55,6 +56,8 @@ target_compile_definitions(SsbInstrument PUBLIC
 if(WIN32)
     target_compile_definitions(SsbInstrument PUBLIC JUCE_USE_WIN_WEBVIEW2=1)
 endif()
+
+target_include_directories(SsbInstrument PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../mcp)
 
 target_link_libraries(SsbInstrument
   PRIVATE

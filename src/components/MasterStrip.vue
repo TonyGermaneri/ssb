@@ -10,6 +10,7 @@ import ThemePicker from './ThemePicker.vue'
 import StripSection from './StripSection.vue'
 import VcoScopes from './VcoScopes.vue'
 import { callNative, nativeEngine } from '../native/bridge'
+import { mcpStatus } from '../lib/ai/mcpStatus'
 
 const board = useBoard()
 const emit = defineEmits<{ add: []; addFolder: []; library: []; waves: []; ai: [] }>()
@@ -133,8 +134,14 @@ function onImport(e: Event) {
       >
         <v-icon size="16" icon="mdi-plus-box-multiple" />
       </button>
-      <button class="hw-btn icon ai" title="AI patch maker: describe a sound, and an AI model makes and refines patches with you" @click="emit('ai')">
+      <button
+        class="hw-btn icon ai"
+        :class="{ mcp: mcpStatus.state === 'on' }"
+        :title="`AI patch maker: describe a sound, and an AI model makes and refines patches with you${mcpStatus.state === 'on' ? ` · MCP server on at ${mcpStatus.url}` : ''}`"
+        @click="emit('ai')"
+      >
         <v-icon size="16" icon="mdi-creation" />
+        <i v-if="mcpStatus.state === 'on'" class="mcp-led" />
       </button>
       <button
         class="hw-btn icon play"
@@ -540,6 +547,20 @@ function onImport(e: Event) {
 }
 .chip.dim {
   color: var(--text-mute);
+}
+/* the MCP server is on: a small LED on the AI button */
+.ai {
+  position: relative;
+}
+.mcp-led {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--c-success);
+  box-shadow: 0 0 5px var(--c-success);
 }
 .chip.grow {
   flex: 1 1 0;

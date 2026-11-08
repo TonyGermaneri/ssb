@@ -80,8 +80,9 @@ sign_bundle() {
     # Innermost first: a bundle's signature seals everything inside it, so anything nested that
     # gets signed afterwards breaks that seal.
     if [ -d "$bundle/Contents" ]; then
+        # helper executables too (ssb-mcp in Contents/Helpers): notarisation wants each signed
         find "$bundle/Contents" \
-             \( -name '*.dylib' -o -name '*.framework' -o -name '*.bundle' \) -print0 2>/dev/null \
+             \( -name '*.dylib' -o -name '*.framework' -o -name '*.bundle' -o -path '*/Contents/Helpers/*' -type f \) -print0 2>/dev/null \
         | while IFS= read -r -d '' nested; do
             echo "  inner $(basename "$nested")"
             codesign --force --options runtime --timestamp \

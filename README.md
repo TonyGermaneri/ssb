@@ -152,6 +152,18 @@ tools:
   a server-side fallback when a request is declined. Local models that write a tool call into their text (Qwen3.5
   does, in its thinking) still get it run.
 
+**MCP server** (⚙ ▸ MCP SERVER, off until you turn it on; the app and the plugin, not a browser tab): the same tools
+for an agent outside SSB — Claude Code, Claude Desktop, Cursor, anything that speaks MCP — working on the board SSB
+shows. Two ways in, with copy-ready commands in the settings:
+- **HTTP** (Streamable HTTP) at `http://127.0.0.1:6280/mcp`, with a bearer token: local only, requests from web pages
+  refused. `claude mcp add --transport http ssb http://127.0.0.1:6280/mcp --header "Authorization: Bearer <token>"`
+- **stdio**, through the `ssb-mcp` command SSB installs (`~/Library/Application Support/WaveContour/SSB/bin/ssb-mcp`):
+  `claude mcp add ssb -- "<that path>"`. It finds the running SSB by itself (`--list`, `--port N` to choose one).
+
+SSB's window (in a DAW, the plugin's editor) has to be open while an agent works: the tools run there. Deleting asks
+you in SSB first (ASK BEFORE DELETING). Several SSBs with MCP on take ports 6280, 6281, …; the ✦ button's LED shows
+it's on.
+
 Contract tests against the real APIs: `SSB_AI_LIVE=1 npx vitest run src/lib/ai/providers.live.test.ts`, with
 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` set and LM Studio's server up (`LMSTUDIO_URL`).
 

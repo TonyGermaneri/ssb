@@ -112,6 +112,7 @@ add_subdirectory(core)
 # The sound engine (uses JUCE's DSP module): shared by the plugin, the tests and ssb-render.
 if(SSB_BUILD_PLUGIN)
     add_subdirectory(engine)
+    add_subdirectory(mcp)      # ssb-mcp, before the plugin: its bundles carry a copy
     add_subdirectory(plugin)
 endif()
 

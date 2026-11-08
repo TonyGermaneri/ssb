@@ -5,6 +5,7 @@
 #include <ssb/MidiQueue.h>
 
 #include "SoundLibrary.h"
+#include "McpServer.h"
 
 /**
     SSB as an instrument. The editor is the page; the sound depends on where SSB is running:
@@ -68,6 +69,10 @@ public:
     /** What the page asked to keep with this instance (opaque to C++). The board itself lives in
         the web view's IndexedDB, which every instance on the machine shares. */
     juce::String pageState;
+
+    /** SSB's MCP server for this instance: off until the page turns it on (AI ▸ ⚙ ▸ MCP SERVER).
+        It lives with the processor; its requests reach the page while the editor is open. */
+    ssb::McpServer mcp;
 
     /** This instance's board, as the page stores it: new instances get a new one, a session
         restores its own. Unused in the standalone, which has the one board. */
