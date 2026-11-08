@@ -120,6 +120,9 @@ const NEAREST_BIQUAD: Record<SvfType, BiquadFilterType> = {
   lp12: 'lowpass', lp24: 'lowpass', lphp: 'bandpass', lpnotch: 'lowpass', notch: 'notch', notch2: 'notch', hpnotch: 'highpass',
   hp12: 'highpass', hp24: 'highpass',
 }
+/** the ring modulator's MIX and carrier frequency, in range */
+const ringMix = (s: SoundSettings) => Math.min(1, Math.max(0, s.ringMix ?? 0))
+const ringFreq = (s: SoundSettings) => Math.min(5000, Math.max(20, s.ringFreq ?? 440))
 /** the grain processor's parameter for each grain destination (its right side's is this + 'R') */
 const GRAIN_PARAM: Partial<Record<ModDest, string>> = {
   grainPos: 'posMod', grainSize: 'freqMod', grainSkew: 'skewMod', grainVar: 'varMod', grainDetune: 'detuneMod', grainScan: 'scanMod',
@@ -191,6 +194,10 @@ export class Voice {
   private lo: BiquadFilterNode
   private mid: BiquadFilterNode
   private hi: BiquadFilterNode
+  /** the ring modulator: × ((1 − MIX) + MIX · sin), its carrier (made when MIX is first turned up) into the gain */
+  private ring: GainNode
+  private ringOsc?: OscillatorNode
+  private ringDepth?: GainNode
   private dry: GainNode
   private delay: DelayNode
   private feedback: GainNode
@@ -270,6 +277,7 @@ export class Voice {
     this.hi = c.createBiquadFilter()
     this.hi.type = 'highshelf'
     this.hi.frequency.value = 8000
+    this.ring = c.createGain()
     this.dry = c.createGain()
     this.delay = c.createDelay(2.5)
     this.feedback = c.createGain()
@@ -295,11 +303,12 @@ export class Voice {
     this.fenvSrc.connect(this.fenvCut).connect(this.cutBus)
     this.keySrc.connect(this.keyCut).connect(this.cutBus)
 
-    this.env.connect(this.filter).connect(this.lo).connect(this.mid).connect(this.hi)
-    this.hi.connect(this.dry).connect(this.out)
-    this.hi.connect(this.delay).connect(this.delayWet).connect(this.out)
+    // filter, EQ, the ring modulator, then the dry / delay / reverb paths into the level
+    this.env.connect(this.filter).connect(this.lo).connect(this.mid).connect(this.hi).connect(this.ring)
+    this.ring.connect(this.dry).connect(this.out)
+    this.ring.connect(this.delay).connect(this.delayWet).connect(this.out)
     this.delay.connect(this.feedback).connect(this.delay)
-    this.hi.connect(this.convolver).connect(this.reverbWet).connect(this.out)
+    this.ring.connect(this.convolver).connect(this.reverbWet).connect(this.out)
     this.out.connect(this.trem).connect(this.panner).connect(this.kill).connect(destination)
 
     this.midiNote = opts.midiNote
@@ -345,6 +354,8 @@ export class Voice {
 
     this.t0 = opts.at !== undefined ? Math.max(opts.at, c.currentTime) : c.currentTime + 0.005
     for (const k of [this.atSrc, this.bendSrc, this.velSrc, this.noteBendSrc, this.timbreSrc, this.fenvSrc, this.keySrc, this.rndSrc]) k.start(this.t0)
+    // the ring modulator's carrier starts with the note, at phase 0 (as the native engine's)
+    if (ringMix(s) > 0) this.startRing(this.t0)
     this.tuneSrc?.start(this.t0)
     this.wireRoutes()
     this.startZoneLfos()
@@ -401,9 +412,20 @@ export class Voice {
     return clipIn + ((x - clipIn) % clipLen)
   }
 
-  /** Post-envelope, post-filter signal: what this voice feeds a patch's matrix as a VCO. */
+  /** Post-envelope, post-filter, post-ring-modulator signal: what this voice feeds a patch's matrix as a VCO. */
   get tap(): AudioNode {
-    return this.hi
+    return this.ring
+  }
+
+  /** The ring modulator's carrier, from `at` (sin(0) there), into the ring's gain at MIX. */
+  private startRing(at: number) {
+    const s = this.settings
+    this.ringOsc = this.ctx.createOscillator()
+    this.ringOsc.frequency.value = ringFreq(s)
+    this.ringDepth = this.ctx.createGain()
+    this.ringDepth.gain.value = ringMix(s)
+    this.ringOsc.connect(this.ringDepth).connect(this.ring.gain)
+    this.ringOsc.start(at)
   }
 
   /** Length of the buffer this voice plays (zones each have their own). */
@@ -512,6 +534,8 @@ export class Voice {
       varVol: s.grainVarVol,
       detune: s.grainDetune,
       noteRnd: s.grainNoteRnd,
+      length: s.grainLength ?? 1,
+      backwards: !!s.grainBackwards,
       speed: s.speed,
       kRate: this.kRate,
       glide: { ...this.glide },
@@ -630,7 +654,13 @@ export class Voice {
     set(this.feedback.gain, Math.min(0.95, s.delayFeedback))
     set(this.delayWet.gain, s.delayMix)
     set(this.reverbWet.gain, s.reverbMix)
+    // ring modulator: the dry share as the gain, the carrier's depth added to it (MIX 0: exactly 1, no carrier)
+    const rm = ringMix(s)
+    set(this.ring.gain, 1 - rm)
+    if (this.ringDepth) set(this.ringDepth.gain, rm)
+    if (this.ringOsc) this.ringOsc.frequency.setValueAtTime(ringFreq(s), now)
     if (immediate || !this.playing) return
+    if (rm > 0 && !this.ringOsc) this.startRing(now)
 
     this.updatePadLfos()
     this.wireRoutes()
@@ -1023,6 +1053,8 @@ export class Voice {
     }
     for (const g of this.zoneLfoGains) g.disconnect()
     for (const n of [this.pitchBus, this.trem, ...consts]) n.disconnect()
+    this.ringOsc?.stop()
+    for (const n of [this.ringOsc, this.ringDepth, this.ring]) n?.disconnect()
     this.svf?.port.postMessage({ type: 'stop' } satisfies ToSvf)
     for (const n of [this.svf, this.cutBus, this.fenvCut, this.keyCut]) n?.disconnect()
     for (const n of [this.env, this.filter, this.lo, this.mid, this.hi, this.dry, this.delay, this.feedback,

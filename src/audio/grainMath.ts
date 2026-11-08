@@ -68,6 +68,8 @@ export interface GrainConfig {
   varVol: number // dB: a grain's level (× VARIATION), mostly quieter
   detune: number // semitones: left lower, right higher
   noteRnd: number // semitones: each note's pitch, ± at random
+  length: number // 0.02..1: a grain sounds for this share of its length, its window squeezed in (1: all of it)
+  backwards: boolean // grains read the sample backwards from where they start (LOOP: every segment reversed)
   speed: number // stretch: clip seconds per second
   kRate: number // the pad's PITCH / FINE as a playback rate
   glide: { from: number; to: number; start: number; dur: number } // semitones from ROOT
@@ -296,6 +298,31 @@ export function loopSegment(at: number, span: number, fade: number, lo: number, 
   }
   const start = Math.max(lo, Math.min(Math.max(at, lo + fade), hi - len))
   return { head: start + len, end: start, room: start - lo }
+}
+
+// ───────────────────────────────────────────────────────────────────────── grain length (SpaceCraft)
+
+/** LENGTH's floor: a grain sounds for at least this share of its length */
+export const GRAIN_LENGTH_MIN = 0.02
+
+/**
+ * A window's phase (0..1) with LENGTH: the window squeezed into the first `length` of the grain, -1 (silent) after.
+ * At 1, the phase as it is.
+ */
+export const lengthPhase = (phase: number, length: number) => (length >= 1 ? phase : phase < length ? phase / length : -1)
+
+/** the last share of what a LOOP segment sounds that fades out (a raised cosine) when LENGTH cuts it short */
+export const LENGTH_FADE = 0.1
+/**
+ * LOOP with LENGTH: a segment's level `u` (0..1) of the way through it -- whole for the first `length` of it, fading
+ * out over the last LENGTH_FADE of that, then silent. 1 throughout at LENGTH 1.
+ */
+export function lengthGate(u: number, length: number): number {
+  if (length >= 1) return 1
+  if (u >= length) return 0
+  const fade = LENGTH_FADE * length
+  const start = length - fade
+  return u <= start ? 1 : 0.5 + 0.5 * Math.cos((Math.PI * (u - start)) / fade)
 }
 
 // ───────────────────────────────────────────────────────────────────────── reading the sample

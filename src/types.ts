@@ -278,6 +278,12 @@ export interface SoundSettings {
   grainNoteRnd: number // [Random > Pitch] semitones: each note's pitch, ± at random
   grainScanLoop: boolean // [Loop] SCAN starts over at S.DIST
   grainScanKey: boolean // [Key > Scan] SCAN's speed follows the note
+  // SpaceCraft's grain controls (the VCO Play view)
+  grainLength: number // 0.02..1: a grain sounds for this share of its full length (its window squeezed in), then silence
+  grainBackwards: boolean // every grain reads the sample backwards from where it starts (LOOP: every segment reversed)
+  // ring modulator, after the filter and EQ: x × ((1 − mix) + mix × sin(2π · freq · t)), its phase 0 at the note
+  ringMix: number // 0..1 (0: off)
+  ringFreq: number // Hz 20..5000
   // delay
   delayTime: number // seconds
   delayFeedback: number // 0..0.9
@@ -423,6 +429,8 @@ export const GRAIN_DEFAULTS = {
   grainNoteRnd: 0,
   grainScanLoop: false,
   grainScanKey: false,
+  grainLength: 1,
+  grainBackwards: false,
 }
 
 export function defaultSettings(name = 'SOUND'): SoundSettings {
@@ -458,6 +466,8 @@ export function defaultSettings(name = 'SOUND'): SoundSettings {
     fRelease: 0.2,
     fEnvKey: 0,
     ...GRAIN_DEFAULTS,
+    ringMix: 0,
+    ringFreq: 440,
     delayTime: 0.25,
     delayFeedback: 0.35,
     delayMix: 0,
@@ -555,6 +565,8 @@ export interface MasterState {
   waveView: WaveView
   /** the vintage scope's knobs */
   scope: ScopeKnobs
+  /** which rack slots (VCO 1-3) show the Play view instead of their panel */
+  vcoPlay: boolean[]
   /** seconds to slide between notes */
   glide: number
   /** computer-keyboard piano octave shift */
@@ -614,6 +626,7 @@ export const defaultMaster = (): MasterState => ({
   hold: false,
   waveView: 'scope',
   scope: defaultScopeKnobs(),
+  vcoPlay: [false, false, false],
   glide: 0,
   octave: 0,
   selectedId: null,
@@ -629,7 +642,7 @@ export const defaultMaster = (): MasterState => ({
   gridPanel: true,
   list: true,
   listWidth: 0.33,
-  folded: ['eq', 'delay', 'reverb'],
+  folded: ['eq', 'ring', 'delay', 'reverb'],
   headerFolded: ['perform', 'chorus', 'reverb'],
   favSounds: false,
   favPatches: false,
@@ -647,6 +660,7 @@ export function migrateMaster(raw?: Partial<MasterState>): MasterState {
   // a board from before the live views opens on the vintage scope, their new default
   if (raw && !raw.scope) m.waveView = 'scope'
   m.scope = { ...defaultScopeKnobs(), ...raw?.scope }
+  m.vcoPlay = [0, 1, 2].map((i) => !!raw?.vcoPlay?.[i])
   return m
 }
 

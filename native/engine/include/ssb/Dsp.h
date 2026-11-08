@@ -482,6 +482,23 @@ inline double varPosOffset (float ms, float amount, float u) noexcept
     return ms > 0 && amount > 0 ? std::abs (2.0 * u - 1.0) * amount * amount * ms / 1000.0 : 0.0;
 }
 
+/** grainMath.ts lengthPhase(): a window's phase with LENGTH -- squeezed into the first `length` of the grain, -1
+    (silent) after; the phase itself at 1. */
+inline double lengthPhase (double phase, double length) noexcept
+{
+    return length >= 1 ? phase : phase < length ? phase / length : -1.0;
+}
+
+/** grainMath.ts lengthGate(): a LOOP segment's level `u` of the way through it with LENGTH (1 throughout at 1). */
+constexpr double lengthFade = 0.1;   // LENGTH_FADE
+inline double lengthGate (double u, double length) noexcept
+{
+    if (length >= 1) return 1.0;
+    if (u >= length) return 0.0;
+    const double fade = lengthFade * length, start = length - fade;
+    return u <= start ? 1.0 : 0.5 + 0.5 * std::cos (pi * (u - start) / fade);
+}
+
 /** A LOOP segment's crossfade, frames: SKEW of its span, no longer than the outgoing head's room. */
 inline double loopFade (float skew, double span, double room) noexcept
 {

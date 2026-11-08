@@ -200,10 +200,11 @@ struct Engine::Voice
     double noteSemis { 0 };                    // N<RND: this note's random pitch, semitones
     std::array<double, 2> scanX { 0, 0 };      // SCAN: how far each side has got, a share of S.DIST (before CURVE)
     std::array<double, 2> sizeVar { 1, 1 };    // CLASSIC: VARIATION on each side's grain length
-    struct Head { bool on { false }; double pos { 0 }, step { 1 }; float amp { 1 }; int dir { 1 }; double end { 0 }; };
+    struct Head { bool on { false }; double pos { 0 }, step { 1 }; float amp { 1 }; int dir { 1 }; double end { 0 }, u { 0 }, du { 0 }; };   // u: how far through its segment (LENGTH)
     struct LoopSide { Head cur, old; double xf { 1 }, xfStep { 1 }, room { 0 }; bool due { true }; };
     std::array<LoopSide, 2> loopSides {};      // LOOP: the segment playing and the one fading out
     struct CloudGrain { bool on { false }; double pos { 0 }, step { 0 }, phase { 0 }, phaseStep { 0 }; float amp { 0 }; };
+    double ringPhase { 0 };                    // the ring modulator's carrier, radians since the note
     std::array<std::array<CloudGrain, dsp::densityMax>, 2> cloudGrains {};
     int cloudCount { 0 };                      // CLOUD: grains a side, fixed when the note starts
     std::array<bool, 2> cloudLive {};          // CLOUD: a side's grains are set going
@@ -579,6 +580,7 @@ struct Engine::Impl
         ++v.generation;
         v.order = nextOrder++;
         v.sound = sound;
+        v.ringPhase = 0;
         scopeFrom[(size_t) index].store (clockSamples, std::memory_order_relaxed);
         scopeSound[(size_t) index].store (idHash (sound->id), std::memory_order_relaxed);
         v.sample = sample;
@@ -1747,6 +1749,9 @@ struct Engine::Impl
         grainViews.push (std::move (gv));   // full (no one reading): dropped
     }
 
+    /** grains.worklet.ts length(): the share of each grain that sounds. */
+    static double grainLength (const Voice& v) noexcept { return std::clamp ((double) v.s().grainLength, 0.02, 1.0); }
+
     /** grains.worklet.ts variation() / skew(): the knobs with their routes, 0..1. */
     static float variation (const Voice& v, int side) noexcept { return std::clamp (v.s().grainVariation + v.cGrainVar[(size_t) side], 0.0f, 1.0f); }
     static float skew (const Voice& v, int side) noexcept { return std::clamp (v.s().grainSkew + v.cGrainSkew[(size_t) side], 0.0f, 1.0f); }
@@ -1792,14 +1797,17 @@ struct Engine::Impl
         auto& sl = v.slots[(size_t) si];
         const double pos = grainAt (v, side, semis);
         const double rate = grainRate (v, side, semis);
-        sl.step = rate * sr / engine.rate;
+        const bool back = s.grainBackwards;
+        sl.step = (back ? -1.0 : 1.0) * rate * sr / engine.rate;
         sl.pos = pos * sr + sl.step * lead;
         sl.amp = grainGain (v, side);
         sl.on = true;
         sl.e = dsp::skewExponent (skew (v, side));
         v.sizeVar[(size_t) side] = dsp::varSizeRatio (s.grainVarSize, variation (v, side), random01());
-        const double dur = v.sizeVar[(size_t) side] / f;
-        report (v, at - lead / engine.rate, pos, dur * rate, dur, rate, side ? 0.5f : -0.5f, std::min (1.0f, sl.amp), side);
+        // what sounds of it: LENGTH of one period, read forwards or back from where it starts
+        const double dur = v.sizeVar[(size_t) side] / f * grainLength (v);
+        const double len = dur * rate;
+        report (v, at - lead / engine.rate, back ? pos - len : pos, len, dur, rate, side ? 0.5f : -0.5f, std::min (1.0f, sl.amp), side, back);
     }
 
     /** grains.worklet.ts classicSide(): Granulator II's phasor and its two slots, one side, one sample. */
@@ -1838,13 +1846,17 @@ struct Engine::Impl
             ph = next;
         }
         float y = 0;
+        const double length = grainLength (v);
         for (int k = 0; k < 2; ++k)
         {
             auto& sl = v.slots[(size_t) (a + k)];
             if (! sl.on) continue;
             const double p = ph + 0.5 * k;
-            y += dsp::windowAt (v.window, dsp::skewPhase (p - std::floor (p), sl.e)) * sl.amp
-               * dsp::readAt (x, sl.pos + fmOffset, lo, hi);
+            // LENGTH: the window squeezed into the first part of the period, silence after
+            const double q = dsp::lengthPhase (p - std::floor (p), length);
+            if (q >= 0)
+                y += dsp::windowAt (v.window, dsp::skewPhase (q, sl.e)) * sl.amp
+                   * dsp::readAt (x, sl.pos + fmOffset, lo, hi);
             sl.pos += sl.step;
         }
         return y;
@@ -1873,7 +1885,8 @@ struct Engine::Impl
                 cur.on = false;
             else
             {
-                const int dir = random01() < s.grainReverse ? -1 : 1;
+                // BACK: every segment backwards; otherwise REVERSE's chance
+                const int dir = s.grainBackwards ? -1 : random01() < s.grainReverse ? -1 : 1;
                 const double pos = grainAt (v, side, semis);
                 const double rate = grainRate (v, side, semis);
                 const double dur = dsp::varSizeRatio (s.grainVarSize, variation (v, side), random01()) / f;
@@ -1886,28 +1899,39 @@ struct Engine::Impl
                 cur.dir = dir;
                 cur.step = rate * sr / engine.rate;
                 cur.amp = grainGain (v, side);
+                cur.u = 0;
+                cur.du = cur.step / std::max (1.0, std::abs (seg.end - seg.head));
                 ls.room = seg.room;
                 ls.xf = old.on && fade > 0 ? 0.0 : 1.0;
                 ls.xfStep = fade > 0 ? cur.step / fade : 1.0;
-                report (v, at, std::min (seg.head, seg.end) / sr, (seg.end - seg.head) * dir / sr, span / (rate * sr), rate,
+                // what sounds of it: LENGTH of the segment, from its head
+                const double length = grainLength (v);
+                const double sounding = (seg.end - seg.head) * dir * length;
+                const double from = length >= 1 ? std::min (seg.head, seg.end) : dir > 0 ? seg.head : seg.head - sounding;
+                report (v, at, from / sr, sounding / sr, span / (rate * sr) * length, rate,
                         side ? 0.5f : -0.5f, std::min (1.0f, cur.amp), side, dir < 0);
             }
         }
+        // LENGTH: each head is heard for the first part of its segment, then fades out and stays silent
+        const double length = grainLength (v);
+        const auto gate = [length] (const Voice::Head& h) { return length >= 1 ? 1.0f : (float) dsp::lengthGate (h.u, length); };
         float y = 0;
         if (ls.xf < 1)
         {
             // equal power: the outgoing head falls along a cosine as the new one rises along a sine
             const double q = ls.xf * 0.5 * dsp::pi;
-            if (old.on) y += (float) std::cos (q) * old.amp * dsp::readAt (x, old.pos + fmOffset, lo, hi);
-            if (cur.on) y += (float) std::sin (q) * cur.amp * dsp::readAt (x, cur.pos + fmOffset, lo, hi);
+            if (old.on) y += (float) std::cos (q) * old.amp * gate (old) * dsp::readAt (x, old.pos + fmOffset, lo, hi);
+            if (cur.on) y += (float) std::sin (q) * cur.amp * gate (cur) * dsp::readAt (x, cur.pos + fmOffset, lo, hi);
             old.pos += old.dir * old.step;
+            old.u += old.du;
             ls.xf = std::min (1.0, ls.xf + ls.xfStep);
             if (ls.xf >= 1) old.on = false;
         }
         else if (cur.on)
-            y = cur.amp * dsp::readAt (x, cur.pos + fmOffset, lo, hi);
+            y = cur.amp * gate (cur) * dsp::readAt (x, cur.pos + fmOffset, lo, hi);
         if (cur.on)
         {
+            cur.u += cur.du;
             cur.pos += cur.dir * cur.step;
             if (cur.dir > 0 ? cur.pos > cur.end : cur.pos < cur.end)
             {
@@ -1926,6 +1950,7 @@ struct Engine::Impl
         const double sr = v.sample->rate;
         auto& grains = v.cloudGrains[(size_t) side];
         const int n = v.cloudCount;
+        const double length = grainLength (v);
         if (! v.cloudLive[(size_t) side])
         {
             // the note: staggered through their windows, silent until each first starts again (the first does at once)
@@ -1956,15 +1981,19 @@ struct Engine::Impl
                 const double ratio = dsp::varPitchRatio (s.grainVarPitch, variation (v, side), random01());
                 const double rate = grainRate (v, side, semis) * ratio;
                 const double dur = dsp::varSizeRatio (s.grainVarSize, variation (v, side), random01()) * dsp::cloudLength (i) / f;
+                const bool back = s.grainBackwards;
                 g.phase = 0;
                 g.phaseStep = ratio / (dur * engine.rate);
                 g.pos = pos * sr;
-                g.step = rate * sr / engine.rate;
+                g.step = (back ? -1.0 : 1.0) * rate * sr / engine.rate;
                 g.amp = grainGain (v, side);
-                report (v, at, pos, dur * rate / ratio, dur / ratio, rate, side ? 0.5f : -0.5f, std::min (1.0f, g.amp), side);
+                const double len = dur * rate / ratio * length;
+                report (v, at, back ? pos - len : pos, len, dur / ratio * length, rate, side ? 0.5f : -0.5f, std::min (1.0f, g.amp), side, back);
             }
-            if (g.amp > 0)
-                y += (float) std::sin (dsp::pi * g.phase) * g.amp * dsp::readAt (x, g.pos + fmOffset, lo, hi);
+            // LENGTH: the window squeezed into the first part of the grain's life, silence after
+            const double q = dsp::lengthPhase (g.phase, length);
+            if (g.amp > 0 && q >= 0)
+                y += (float) std::sin (dsp::pi * q) * g.amp * dsp::readAt (x, g.pos + fmOffset, lo, hi);
             g.pos += g.step;
             g.phase += g.phaseStep;
         }
@@ -2227,8 +2256,18 @@ struct Engine::Impl
             xl = v.hi[0].process (v.hiC, v.mid[0].process (v.midC, v.lo[0].process (v.loC, xl)));
             xr = oneSide ? xl : v.hi[1].process (v.hiC, v.mid[1].process (v.midC, v.lo[1].process (v.loC, xr)));
 
-            // what a patch reads when this voice is one of its VCOs: the post-EQ signal, as mono (and the editor's
-            // live views, the same)
+            // the ring modulator (voice.ts's ring): × ((1 − mix) + mix · sin), the carrier's phase 0 at the note
+            if (s.ringMix > 0)
+            {
+                const float r = (1.0f - s.ringMix) + s.ringMix * (float) std::sin (v.ringPhase);
+                xl *= r;
+                xr *= r;
+            }
+            v.ringPhase += 2.0 * dsp::pi * s.ringFreq / engine.rate;
+            if (v.ringPhase > 2.0 * dsp::pi) v.ringPhase -= 2.0 * dsp::pi;
+
+            // what a patch reads when this voice is one of its VCOs: the post-EQ (and ring) signal, as mono (and
+            // the editor's live views, the same)
             const float mono = v.monoSource ? xl : 0.5f * (xl + xr);
             if (! v.tap.empty())
                 v.tap[(size_t) i] = mono;

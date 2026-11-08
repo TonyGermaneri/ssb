@@ -19,7 +19,8 @@
  * (SvfProcessor), for the FILTER types that are its.
  */
 import {
-  cloudGain, cloudLength, DENSITY_MAX, DENSITY_MIN, FREQ_RND_RATE, FREQ_RND_SEMIS, grainLevel, hann, loopFade,
+  cloudGain, cloudLength, DENSITY_MAX, DENSITY_MIN, FREQ_RND_RATE, FREQ_RND_SEMIS, GRAIN_LENGTH_MIN, grainLevel, hann,
+  lengthGate, lengthPhase, loopFade,
   loopSegment, MAX_PHASE_STEP, readAt, scanRate, scanWrap, skewExponent, skewPhase, sprayOffset, STRETCH_GRAIN,
   STRETCH_OVERLAP, tuneRndRatio, varGain, varPitchRatio, varPosOffset, varSizeRatio, windowAt, windowTable,
   type FromGrains, type GrainConfig, type GrainEvent, type ToGrains,
@@ -54,16 +55,16 @@ const newSlot = (): Slot => ({ on: false, pos: 0, step: 1, amp: 1, e: 1 })
 
 /** LOOP, one side: the segment playing and the one fading out. */
 interface LoopSide {
-  cur: Slot & { dir: number; end: number }
-  old: Slot & { dir: number }
+  cur: Slot & { dir: number; end: number; u: number; du: number }
+  old: Slot & { dir: number; u: number; du: number }
   xf: number // crossfade 0..1 (1: done)
   xfStep: number
   room: number // frames free past the current segment's end, for the next crossfade
   due: boolean // the current segment has run out: the next starts
 }
 const newLoopSide = (): LoopSide => ({
-  cur: { ...newSlot(), dir: 1, end: 0 },
-  old: { ...newSlot(), dir: 1 },
+  cur: { ...newSlot(), dir: 1, end: 0, u: 0, du: 0 },
+  old: { ...newSlot(), dir: 1, u: 0, du: 0 },
   xf: 1,
   xfStep: 1,
   room: 0,
@@ -183,6 +184,11 @@ class GrainProcessor extends AudioWorkletProcessor {
     return Math.min(1, Math.max(0, this.cfg.variation + this.mVar[side]))
   }
 
+  /** LENGTH: the share of each grain that sounds (1: all of it) */
+  private length(): number {
+    return Math.min(1, Math.max(GRAIN_LENGTH_MIN, this.cfg.length ?? 1))
+  }
+
   /** SKEW, with its routes */
   private skew(side: number): number {
     return Math.min(1, Math.max(0, this.cfg.skew + this.mSkew[side]))
@@ -222,14 +228,17 @@ class GrainProcessor extends AudioWorkletProcessor {
     const slot = this.slots[si]
     const at = this.grainAt(side, semis, posMod)
     const rate = this.grainRate(side, semis)
-    slot.step = (rate * smp.rate) / sampleRate
+    const back = !!c.backwards
+    slot.step = ((back ? -1 : 1) * (rate * smp.rate)) / sampleRate
     slot.pos = at * smp.rate + slot.step * lead
     slot.amp = this.grainGain(side)
     slot.on = true
     slot.e = skewExponent(this.skew(side))
     this.sizeVar[side] = varSizeRatio(c.varSize, this.variation(side), Math.random())
-    const dur = this.sizeVar[side] / f
-    this.report({ when: t - lead / sampleRate, pos: at, len: dur * rate, dur, rate, reverse: false, pan: side ? 0.5 : -0.5, gain: Math.min(1, slot.amp), stream: side })
+    // what sounds of it: LENGTH of one period, read forwards or back from where it starts
+    const dur = (this.sizeVar[side] / f) * this.length()
+    const len = dur * rate
+    this.report({ when: t - lead / sampleRate, pos: back ? at - len : at, len, dur, rate, reverse: back, pan: side ? 0.5 : -0.5, gain: Math.min(1, slot.amp), stream: side })
   }
 
   /** CLASSIC, one side, one sample. */
@@ -261,16 +270,20 @@ class GrainProcessor extends AudioWorkletProcessor {
     }
     const ph = this.phase[side]
     const win = this.window
+    const length = this.length()
     let y = 0
     const sa = slots[a]
     if (sa.on) {
-      y += windowAt(win, skewPhase(ph, sa.e)) * sa.amp * readAt(x, sa.pos + fmOffset, lo, hi)
+      // LENGTH: the window squeezed into the first part of the period, silence after
+      const qa = lengthPhase(ph, length)
+      if (qa >= 0) y += windowAt(win, skewPhase(qa, sa.e)) * sa.amp * readAt(x, sa.pos + fmOffset, lo, hi)
       sa.pos += sa.step
     }
     const sb = slots[a + 1]
     if (sb.on) {
       const pb = ph + 0.5
-      y += windowAt(win, skewPhase(pb - Math.floor(pb), sb.e)) * sb.amp * readAt(x, sb.pos + fmOffset, lo, hi)
+      const qb = lengthPhase(pb - Math.floor(pb), length)
+      if (qb >= 0) y += windowAt(win, skewPhase(qb, sb.e)) * sb.amp * readAt(x, sb.pos + fmOffset, lo, hi)
       sb.pos += sb.step
     }
     return y
@@ -296,9 +309,12 @@ class GrainProcessor extends AudioWorkletProcessor {
       old.step = cur.step
       old.amp = cur.amp
       old.dir = cur.dir
+      old.u = cur.u
+      old.du = cur.du
       if (ending) cur.on = false
       else {
-        const dir = Math.random() < c.reverse ? -1 : 1
+        // BACK: every segment backwards; otherwise REVERSE's chance
+        const dir = c.backwards ? -1 : Math.random() < c.reverse ? -1 : 1
         const at = this.grainAt(side, semis, pm) * smp.rate
         const rate = this.grainRate(side, semis)
         const dur = varSizeRatio(c.varSize, this.variation(side), Math.random()) / f
@@ -311,24 +327,35 @@ class GrainProcessor extends AudioWorkletProcessor {
         cur.dir = dir
         cur.step = (rate * smp.rate) / sampleRate
         cur.amp = this.grainGain(side)
+        cur.u = 0
+        cur.du = cur.step / Math.max(1, Math.abs(seg.end - seg.head))
         s.room = seg.room
         s.xf = old.on && fade > 0 ? 0 : 1
         s.xfStep = fade > 0 ? cur.step / fade : 1
-        this.report({ when: t, pos: Math.min(seg.head, seg.end) / smp.rate, len: (seg.end - seg.head) * dir / smp.rate, dur: span / (rate * smp.rate), rate, reverse: dir < 0, pan: side ? 0.5 : -0.5, gain: Math.min(1, cur.amp), stream: side })
+        // what sounds of it: LENGTH of the segment, from its head
+        const length = this.length()
+        const sounding = (seg.end - seg.head) * dir * length
+        const from = length >= 1 ? Math.min(seg.head, seg.end) : dir > 0 ? seg.head : seg.head - sounding
+        this.report({ when: t, pos: from / smp.rate, len: sounding / smp.rate, dur: (span / (rate * smp.rate)) * length, rate, reverse: dir < 0, pan: side ? 0.5 : -0.5, gain: Math.min(1, cur.amp), stream: side })
       }
     }
     const { cur, old } = s
+    // LENGTH: each head is heard for the first part of its segment, then fades out and stays silent
+    const length = this.length()
+    const gate = (h: { u: number }) => (length >= 1 ? 1 : lengthGate(h.u, length))
     let y = 0
     if (s.xf < 1) {
       // equal power: the outgoing head falls along a cosine as the new one rises along a sine
       const q = s.xf * 0.5 * Math.PI
-      if (old.on) y += Math.cos(q) * old.amp * readAt(x, old.pos + fmOffset, lo, hi)
-      if (cur.on) y += Math.sin(q) * cur.amp * readAt(x, cur.pos + fmOffset, lo, hi)
+      if (old.on) y += Math.cos(q) * old.amp * gate(old) * readAt(x, old.pos + fmOffset, lo, hi)
+      if (cur.on) y += Math.sin(q) * cur.amp * gate(cur) * readAt(x, cur.pos + fmOffset, lo, hi)
       old.pos += old.dir * old.step
+      old.u += old.du
       s.xf = Math.min(1, s.xf + s.xfStep)
       if (s.xf >= 1) old.on = false
-    } else if (cur.on) y = cur.amp * readAt(x, cur.pos + fmOffset, lo, hi)
+    } else if (cur.on) y = cur.amp * gate(cur) * readAt(x, cur.pos + fmOffset, lo, hi)
     if (cur.on) {
+      cur.u += cur.du
       cur.pos += cur.dir * cur.step
       if (cur.dir > 0 ? cur.pos > cur.end : cur.pos < cur.end) {
         if (ending) cur.on = false
@@ -344,6 +371,7 @@ class GrainProcessor extends AudioWorkletProcessor {
     const c = this.cfg
     const grains = this.clouds[side]
     const n = this.cloudCount
+    const length = this.length()
     if (!this.cloudLive[side]) {
       // the note: staggered through their windows, silent until each first starts again (the first does at once)
       this.cloudLive[side] = true
@@ -369,14 +397,18 @@ class GrainProcessor extends AudioWorkletProcessor {
         const ratio = varPitchRatio(c.varPitch, this.variation(side), Math.random())
         const rate = this.grainRate(side, semis) * ratio
         const dur = (varSizeRatio(c.varSize, this.variation(side), Math.random()) * cloudLength(i)) / f
+        const back = !!c.backwards
         g.phase = 0
         g.phaseStep = ratio / (dur * sampleRate)
         g.pos = at * smp.rate
-        g.step = (rate * smp.rate) / sampleRate
+        g.step = ((back ? -1 : 1) * (rate * smp.rate)) / sampleRate
         g.amp = this.grainGain(side)
-        this.report({ when: t, pos: at, len: (dur * rate) / ratio, dur: dur / ratio, rate, reverse: false, pan: side ? 0.5 : -0.5, gain: Math.min(1, g.amp), stream: side })
+        const len = ((dur * rate) / ratio) * length
+        this.report({ when: t, pos: back ? at - len : at, len, dur: (dur / ratio) * length, rate, reverse: back, pan: side ? 0.5 : -0.5, gain: Math.min(1, g.amp), stream: side })
       }
-      if (g.amp > 0) y += Math.sin(Math.PI * g.phase) * g.amp * readAt(x, g.pos + fmOffset, lo, hi)
+      // LENGTH: the window squeezed into the first part of the grain's life, silence after
+      const q = lengthPhase(g.phase, length)
+      if (g.amp > 0 && q >= 0) y += Math.sin(Math.PI * q) * g.amp * readAt(x, g.pos + fmOffset, lo, hi)
       g.pos += g.step
       g.phase += g.phaseStep
     }

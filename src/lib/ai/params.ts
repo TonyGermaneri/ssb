@@ -131,6 +131,15 @@ export const SOUND_SECTIONS: { title: string; params: Param[] }[] = [
       n('grainVarVol', 0, 24, 'dB', 'level variation'),
       n('grainDetune', 0, 12, 'st', 'left lower, right higher'),
       n('grainNoteRnd', 0, 12, 'st', 'each note’s pitch randomly ±'),
+      n('grainLength', 0.02, 1, '', 'how much of each grain sounds (its window squeezed in), then silence: short = separate, arpeggio-like grains'),
+      b('grainBackwards', 'every grain reads the sample backwards from where it starts (LOOP: every segment reversed)'),
+    ],
+  },
+  {
+    title: 'RING MODULATOR (after the filter and EQ)',
+    params: [
+      n('ringMix', 0, 1, '', 'how much of the signal is multiplied by the carrier: 0 off, 1 only the sum and difference tones'),
+      n('ringFreq', 20, 5000, 'Hz', 'the carrier frequency'),
     ],
   },
   {

@@ -56,7 +56,7 @@ const INSTANCE_FIELDS = [
  */
 const VIEW_FIELDS = [
   'tab', 'view', 'patchView', 'gridPanel', 'list', 'listWidth', 'folded', 'headerFolded', 'rack', 'waveView', 'scope',
-  'favSounds', 'favPatches', 'scale',
+  'favSounds', 'favPatches', 'scale', 'vcoPlay',
 ] as const
 /** tells the other tabs / instances the library was saved, so they reload it */
 const libraryChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('ssb-library') : null

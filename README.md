@@ -91,6 +91,23 @@ The **rack** under the header shows the selected patch's three slots side by sid
   (follow the played key keeping TRANS / FINE, or always play NOTE) and **LEVEL**.
 - **Tuning** (the **ET** chip, on every VCO): equal temperament, or **adaptive just intonation**, which retunes that
   VCO to each chord you hold: pure fifths and thirds, while the keyboard stays close to equal temperament. See below.
+- **PLAY** (beside the tuning chip) turns a VCO's panel into a performance page, after SpaceCraft's: the clip big, and
+  four XY pads. Drag a crosshair anywhere; double-click a pad to reset it; ⚙ has its options.
+  - **The big view** is played like a pad: left / right is where in the clip the grains fire (POS), up / down how loud.
+    The squares are the grains as they play (where each is reading), the dotted line where the LFO has moved the firing
+    point. The strip above is the whole sample with the clip boxed: drag the box, or its edges. Its corner chip picks
+    the view (2D, or a live SCOPE / BARS / SPECTRO under the crosshair).
+  - **GRAIN**: up / down how often grains fire, left / right how long each lasts. Its lines are the grains in time
+    (one row per grain voice, as long as a grain lasts), the one just fired lit. Top right: smooth granular textures;
+    bottom right: long layered grains; middle left: short separate grains, arpeggios.
+  - **LFO**: swings where the grains fire — left / right how far (far left: off), up / down how fast (tempo divisions).
+    It is the layer's LFO 2, routed to POS. The trail is the firing point over the last moments.
+  - **FILTER · REVERB**: up / down the reverb; left / right the filter, bypassed in the middle, a low-pass closing to
+    the left, a high-pass opening to the right. The bright line is the filter's response, the copies behind it the reverb.
+  - **PITCH · RING**: fine pitch (±2 semitones) in the middle; coarse at the left (an octave up at the top, stopped
+    half-way, backwards below); the right brings in the ring modulator, its carrier rising with you. The lines are
+    contours of equal pitch: thick for the original pitch, red for stopped.
+  It's the same settings as the knobs (GRAIN, LENGTH, BACK, RING, filter, reverb, PITCH / FINE): PLAY again shows them.
 - The header's **VIEW** group picks what's under the header — **RACK**, **BOTH** (the rack with the list beside it)
   or **LIST**. Clicking a VCO in the header shows the rack too. The list's own bar, right of the SOUNDS / PATCHES
   tabs, shows it as **CARDS** or a **GRID** (each tab keeps its own) and sizes the cards (− 100% +). Beside the rack the list starts at a third of the window; drag the divider to resize it

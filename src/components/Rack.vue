@@ -5,6 +5,7 @@ import { rememberElementScroll } from '../lib/scrollMemory'
 import { fmtCents, fmtPct, fmtSemis, midiNoteName, padHue } from '../lib/format'
 import { PATCH_SLOTS, TUNING_MODES, type PatchSlot, type Sound, type TuningMode } from '../types'
 import ControlPanel from './ControlPanel.vue'
+import PlayView from './PlayView.vue'
 import Knob from './Knob.vue'
 
 /**
@@ -31,6 +32,14 @@ const TUNING: Record<TuningMode, { chip: string; label: string; hint: string }> 
 }
 const TUNING_TITLE =
   'Tuning. ET is equal temperament; AJI (adaptive just intonation) retunes this VCO to each chord you hold, staying close to ET. Each VCO has its own'
+
+// PLAY: a slot shows its Play view (the clip big and four XY pads) instead of its knobs; kept with the instance's view
+const playing = (i: number) => !!board.master.vcoPlay?.[i]
+function togglePlay(i: number) {
+  const next = [...(board.master.vcoPlay ?? [false, false, false])]
+  next[i] = !next[i]
+  board.master.vcoPlay = next
+}
 
 // each slot's panel scrolls on its own; where, is kept with a plugin instance's view
 const bodies = shallowReactive<(HTMLElement | null)[]>([null, null, null])
@@ -126,6 +135,15 @@ function onDrop(e: DragEvent, i: number) {
               </button>
             </div>
           </v-menu>
+          <button
+            v-if="x"
+            class="chip"
+            :class="{ on: playing(i) }"
+            :title="playing(i) ? 'PLAY view: the clip big and four XY pads — click for the knobs' : 'PLAY view: play this VCO from its clip and four XY pads (grain, LFO, filter · reverb, pitch · ring), SpaceCraft-style'"
+            @click="togglePlay(i)"
+          >
+            PLAY
+          </button>
           <v-spacer />
           <Knob
             v-if="x && x.tuning !== 'et'"
@@ -148,7 +166,8 @@ function onDrop(e: DragEvent, i: number) {
           </button>
         </div>
         <div :ref="(el) => (bodies[i] = el as HTMLElement | null)" class="body">
-          <ControlPanel v-if="x && layerOf(x)" :sound="layerOf(x)!" :hue="hue(layerOf(x)!)" :role="i === 0 ? 'patch' : 'vco'" :patch="patch ?? undefined" wide />
+          <PlayView v-if="x && layerOf(x) && playing(i)" :sound="layerOf(x)!" :slot="i" />
+          <ControlPanel v-else-if="x && layerOf(x)" :sound="layerOf(x)!" :hue="hue(layerOf(x)!)" :role="i === 0 ? 'patch' : 'vco'" :patch="patch ?? undefined" wide />
           <div v-else class="drop">
             <v-icon size="28" icon="mdi-tray-arrow-down" />
             <div>DRAG A SOUND HERE</div>

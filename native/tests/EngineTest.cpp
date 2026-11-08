@@ -1859,3 +1859,107 @@ TEST ("engine: readScope gives the editor a sound's voices, summed, as they play
     rig.render (0.2, { off (0.0, 69), off (0.0, 76) });
     CHECK (rig.engine.readScope (ssb::idHash ("a"), got.data(), (int) got.size()) == 0);
 }
+
+// ------------------------------------------------------------------ SpaceCraft's grain controls and the ring modulator
+
+TEST ("engine: grain LENGTH sounds each grain for that share of its period, its window squeezed in, then silence")
+{
+    auto silentShare = [] (const Rig& rig, double from, double to)
+    {
+        size_t quiet = 0, n = 0;
+        for (auto i = (size_t) (from * rate); i < (size_t) (to * rate); ++i, ++n)
+            if (std::abs (rig.left[i]) < 0.002f) ++quiet;
+        return (double) quiet / (double) n;
+    };
+    for (float length : { 1.0f, 0.25f })
+    {
+        Rig rig;
+        rig.add ("a", dc (0.5f, 3), [length] (auto& s) { cloud (s, 10); s.grainLength = length; });
+        rig.commit();
+        rig.press ("a");
+        rig.render (1.2);
+        // two slots half a period apart (every 50 ms), each heard for LENGTH of its 100 ms
+        CHECK_NEAR (envelopePeriod (rig.left, 0.1, 1.1), 0.05, 0.006);
+        CHECK_NEAR (silentShare (rig, 0.1, 1.1), length < 1 ? 0.5 : 0.0, 0.06);
+        std::vector<ssb::GrainView> grains;
+        rig.engine.readGrains (grains, 1000);
+        for (const auto& g : grains)
+            CHECK_NEAR (g.dur, 0.1 * length, 1e-4);
+    }
+    // LOOP: a segment heard for its first quarter (fading out at the end of it), then silent until the next
+    Rig loop;
+    loop.add ("a", dc (0.5f, 3), [] (auto& s) { cloud (s, 10); s.grainMode = ssb::GrainMode::loop; s.grainSkew = 0; s.grainLength = 0.25f; });
+    loop.commit();
+    loop.press ("a");
+    loop.render (1.2);
+    CHECK_NEAR (silentShare (loop, 0.1, 1.1), 0.75, 0.06);
+}
+
+TEST ("engine: BACK reads every grain backwards from where it starts")
+{
+    // 1 s grains heard for half their period, so one slot at a time; a rising sweep falls when read backwards
+    auto play = [] (bool back, ssb::GrainMode mode)
+    {
+        auto rig = std::make_unique<Rig>();
+        rig->add ("a", sweep(), [back, mode] (auto& s) { cloud (s, 1); s.grainLength = 0.5f; s.grainPos = 0.5f; s.grainBackwards = back; s.grainMode = mode; });
+        rig->commit();
+        rig->press ("a");
+        rig->render (0.5);
+        std::vector<ssb::GrainView> grains;
+        rig->engine.readGrains (grains, 1000);
+        return std::make_pair (rig->hz (0.05, 0.15) / rig->hz (0.35, 0.45), grains);
+    };
+    const auto [forwards, fGrains] = play (false, ssb::GrainMode::classic);
+    const auto [backwards, bGrains] = play (true, ssb::GrainMode::classic);
+    CHECK (forwards < 0.8);     // pitch rising through the grain
+    CHECK (backwards > 1.25);   // falling
+    CHECK (! fGrains.empty() && ! bGrains.empty());
+    for (const auto& g : fGrains) CHECK (! g.reverse);
+    for (const auto& g : bGrains)
+    {
+        CHECK (g.reverse);
+        CHECK_NEAR (g.pos + g.len, 1.0, 0.02);   // it reads down from POS (1 s into the 2 s sweep)
+    }
+    // CLOUD and LOOP report every grain reversed too
+    for (auto mode : { ssb::GrainMode::cloud, ssb::GrainMode::loop })
+    {
+        const auto [ratio, grains] = play (true, mode);
+        CHECK (! grains.empty());
+        for (const auto& g : grains) CHECK (g.reverse);
+        juce::ignoreUnused (ratio);
+    }
+}
+
+TEST ("engine: the ring modulator multiplies by a sine: sum and difference, and at MIX 1 none of what went in")
+{
+    auto play = [] (float mix)
+    {
+        auto rig = std::make_unique<Rig>();
+        rig->add ("a", sine (1000, 2), [mix] (auto& s) { s.ringMix = mix; s.ringFreq = 300; });
+        rig->commit();
+        rig->press ("a");
+        rig->render (0.6);
+        return std::array<double, 3> { level (*rig, 0.1, 0.5, 700), level (*rig, 0.1, 0.5, 1000), level (*rig, 0.1, 0.5, 1300) };
+    };
+    const auto full = play (1);
+    CHECK_NEAR (full[0] / full[2], 1.0, 0.05);
+    CHECK (full[1] < 0.02 * full[0]);
+    const auto half = play (0.5f);
+    CHECK_NEAR (half[1] / half[0], 2.0, 0.1);   // (1 − mix) of the input, mix / 2 in each sideband
+    const auto off = play (0);
+    CHECK (off[0] < 0.01 * off[1]);
+    CHECK (off[2] < 0.01 * off[1]);
+}
+
+TEST ("engine: grain LENGTH / BACK and the ring modulator come from the page's JSON, in range")
+{
+    const auto s = ssb::settingsFromJson (juce::JSON::parse (R"({"grain": true, "grainFreq": 8, "grainLength": 0.001, "grainBackwards": true, "ringMix": 3, "ringFreq": 5})"));
+    CHECK_NEAR (s.grainLength, 0.02, 1e-6);
+    CHECK (s.grainBackwards);
+    CHECK_NEAR (s.ringMix, 1.0, 1e-6);
+    CHECK_NEAR (s.ringFreq, 20.0, 1e-6);
+    const auto d = ssb::settingsFromJson (juce::JSON::parse (R"({"grain": true, "grainFreq": 8})"));
+    CHECK_NEAR (d.grainLength, 1.0, 1e-6);
+    CHECK (! d.grainBackwards);
+    CHECK_NEAR (d.ringMix, 0.0, 1e-6);
+}

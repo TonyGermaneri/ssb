@@ -15,8 +15,7 @@ import {
 import {
   DENSITY_MAX, DENSITY_MIN, DETUNE_MAX, FM_AMOUNT_MAX, FM_FREQ_MAX, FM_FREQ_MIN, GRAIN_FREQ_MAX, GRAIN_MODES,
   grainFreqMin, NOTE_RND_MAX, SCAN_DIST_MIN, SCAN_TIME_MAX, SCAN_TIME_MIN, SPRAY_MAX, SPRAY_SIGNS, SYMMETRIES,
-  VAR_PITCH_MAX, VAR_POS_MAX, VAR_SIZE_MAX, VAR_VOL_MAX,
-} from '../audio/grainMath'
+  VAR_PITCH_MAX, VAR_POS_MAX, VAR_SIZE_MAX, VAR_VOL_MAX, GRAIN_LENGTH_MIN } from '../audio/grainMath'
 import { isSvfType, SVF_TABLE } from '../audio/svfMath'
 import { capture, CAPTURE_SECONDS } from '../audio/capture'
 import Knob from './Knob.vue'
@@ -273,6 +272,16 @@ function doReset() {
         </div>
       </section>
 
+      <section class="module" :class="{ folded: isFolded('ring') }">
+        <h4>RING
+          <button class="fold" :title="isFolded('ring') ? 'Show' : 'Fold'" @click="toggleFold('ring')"><i /></button>
+        </h4>
+        <div class="row">
+          <Knob v-model="s.ringMix" label="MIX" :default="0" :format="fmtPct" color="secondary" title="Ring modulation: how much of the signal is multiplied by the carrier (0: off)" />
+          <Knob v-model="s.ringFreq" label="FREQ" :min="20" :max="5000" curve="log" :default="440" :format="fmtHz" color="secondary" :class="{ dim: !s.ringMix }" title="The ring modulator's carrier frequency" />
+        </div>
+      </section>
+
       <section class="module wide" :class="{ folded: isFolded('grain'), off: !s.grain }">
         <h4>GRAIN
           <button
@@ -303,10 +312,12 @@ function doReset() {
           <button class="chip" :class="{ on: s.grainScanOn }" title="SCAN: from each note, POS travels S.DIST of the clip; S.TIME 100 % is real time, 200 % half speed" @click="s.grainScanOn = !s.grainScanOn">SCAN</button>
           <button class="chip" :class="{ on: s.grainScanLoop, dim: !s.grainScanOn }" title="S.LOOP: SCAN starts over each time it has travelled S.DIST, instead of stopping there" @click="s.grainScanLoop = !s.grainScanLoop">S.LOOP</button>
           <button class="chip" :class="{ on: s.grainScanKey, dim: !s.grainScanOn }" title="S.KEY: SCAN goes faster for higher notes (an octave up, twice as fast)" @click="s.grainScanKey = !s.grainScanKey">S.KEY</button>
+          <button class="chip" :class="{ on: s.grainBackwards }" title="BACK: every grain reads the sample backwards from where it starts (in LOOP, every segment reversed)" @click="s.grainBackwards = !s.grainBackwards">BACK</button>
           <button class="fold" :title="isFolded('grain') ? 'Show' : 'Fold'" @click="toggleFold('grain')"><i /></button>
         </h4>
         <div class="row">
           <Knob v-model="s.grainFreq" label="GRAIN" :min="grainMin()" :max="GRAIN_FREQ_MAX" curve="pow" :default="GRAIN_DEFAULTS.grainFreq" :format="fmtGrainHz" color="accent" />
+          <Knob v-model="s.grainLength" label="LENGTH" :min="GRAIN_LENGTH_MIN" :max="1" curve="pow" :default="1" :format="fmtPct" color="accent" title="LENGTH: how much of each grain sounds, its window squeezed into it, then silence (short: separate, arpeggio-like grains)" />
           <Knob v-model="s.grainFreqKey" label="G<KEY" :default="GRAIN_DEFAULTS.grainFreqKey" :format="fmtPct" color="accent" />
           <Knob v-model="s.grainFreqRnd" label="G<RND" curve="pow2" :default="0" :format="fmtPct" color="accent" />
           <Knob v-model="s.grainStereo" label="SPREAD" curve="pow" :default="0" :format="fmtPct" color="accent" />

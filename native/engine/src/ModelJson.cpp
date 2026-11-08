@@ -295,6 +295,9 @@ Settings settingsFromJson (const juce::var& o)
         s.grainNoteRnd = num (o, "grainNoteRnd", s.grainNoteRnd);
         s.grainScanLoop = flag (o, "grainScanLoop", false);
         s.grainScanKey = flag (o, "grainScanKey", false);
+        // SpaceCraft's (absent before 0.11: whole forward grains, as they were)
+        s.grainLength = std::clamp (num (o, "grainLength", 1.0f), 0.02f, 1.0f);   // GRAIN_LENGTH_MIN
+        s.grainBackwards = flag (o, "grainBackwards", false);
     }
     else
     {
@@ -315,6 +318,8 @@ Settings settingsFromJson (const juce::var& o)
     s.eqLow = num (o, "eqLow", 0);
     s.eqMid = num (o, "eqMid", 0);
     s.eqHigh = num (o, "eqHigh", 0);
+    s.ringMix = std::clamp (num (o, "ringMix", 0), 0.0f, 1.0f);
+    s.ringFreq = std::clamp (num (o, "ringFreq", 440), 20.0f, 5000.0f);
     s.rootNote = num (o, "rootNote", 60);
     s.velAmount = num (o, "velAmount", 1);
     s.bendRange = num (o, "bendRange", 2);
