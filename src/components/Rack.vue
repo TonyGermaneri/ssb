@@ -113,8 +113,7 @@ function onDrop(e: DragEvent, i: number) {
         @drop="(e) => onDrop(e, i)"
       >
         <div class="bar">
-          <b :class="{ main: i === 0 }">VCO {{ i + 1 }}</b>
-          <span class="src">{{ x ? sourceName(x) : 'empty' }}</span>
+          <span class="src" :class="{ main: i === 0 }" :title="`VCO ${i + 1}${x ? ': ' + sourceName(x) : ''}`">{{ x ? sourceName(x) : 'empty' }}</span>
           <template v-if="x && i > 0">
             <button class="chip" :class="{ on: x.audible }" :title="x.audible ? 'Heard — click for MOD only' : 'Mod source only — click to hear it'" @click="x.audible = !x.audible">
               {{ x.audible ? 'MIX' : 'MOD' }}
@@ -261,7 +260,7 @@ function onDrop(e: DragEvent, i: number) {
   /* a narrow slot: its chips and knobs wrap onto another line rather than spill out of the rack */
   flex-wrap: wrap;
   align-items: center;
-  gap: 2px 6px;
+  gap: 2px 4px;
   padding: 3px 6px;
   min-height: 53px;
   font-family: 'VT323', monospace;
@@ -274,32 +273,14 @@ function onDrop(e: DragEvent, i: number) {
   border-bottom: 1px solid rgba(0, 0, 0, 0.5);
   container-type: inline-size;
 }
-/* beside the list a slot is narrow, and tuning adds a knob: everything still fits */
-@container (max-width: 560px) {
-  .bar > .remove {
-    min-width: 0;
-    padding: 0 5px;
-  }
-  .bar > .remove .word {
-    display: none;
-  }
-}
 .bar :deep(.knob .label) {
   color: var(--ink-dim);
 }
-.bar b {
-  flex: none;
-  white-space: nowrap;
-  font-family: 'Orbitron', sans-serif;
-  font-size: 10px;
-  letter-spacing: 0.15em;
-  color: var(--c-accent);
-}
-.bar b.main {
-  color: var(--c-primary);
-}
+/* the sound's name gives way first (to … then a few letters) before anything wraps onto a second line */
 .src {
-  min-width: 0;
+  flex: 1 1 4ch;
+  max-width: max-content;
+  min-width: 4ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -327,6 +308,24 @@ function onDrop(e: DragEvent, i: number) {
 }
 .chip.dim {
   color: var(--text-mute);
+}
+/* beside the list a slot is narrow, and tuning adds a knob: everything still fits on one line (after the rules above) */
+@container (max-width: 560px) {
+  .bar > .remove {
+    min-width: 0;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+  }
+  .bar > .remove .word {
+    display: none;
+  }
+  .bar :deep(.knob) {
+    width: 30px;
+  }
+  .chip {
+    padding: 0 3px;
+  }
 }
 .tuning-menu {
   display: grid;
