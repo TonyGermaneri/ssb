@@ -1,0 +1,768 @@
+<script setup lang="ts">
+import { computed, nextTick, ref, watch } from 'vue'
+import { useAi, type Item } from '../lib/ai/store'
+import { PROVIDERS, type Effort, type ProviderKind } from '../lib/ai/types'
+
+/**
+ * The AI patch maker: a conversation with a model that makes, changes, studies and tidies the board's patches with
+ * tools (lib/ai/tools.ts), its saved conversations (★ keeps one), and its settings.
+ */
+const open = defineModel<boolean>({ required: true })
+const ai = useAi()
+const showSettings = ref(!ai.configured)
+const draft = ref('')
+const listEl = ref<HTMLElement>()
+const zoom = ref<string | null>(null)
+const renaming = ref<string | null>(null)
+const renameText = ref('')
+const testing = ref('')
+const showKey = ref(false)
+
+const items = computed<Item[]>(() => ai.current?.items ?? [])
+const fmtK = (n: number) => (n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`)
+/** a local server reports no cache use: say nothing rather than "0" */
+const reportsCache = computed(() => (ai.current?.transcript?.provider ?? ai.settings.provider) !== 'lmstudio')
+const usageLine = (u?: { input: number; output: number; cacheRead: number; cacheWrite: number }) =>
+  u
+    ? `in ${fmtK(u.input)}${reportsCache.value || u.cacheRead ? ` · cache ${fmtK(u.cacheRead)} read${u.cacheWrite ? ` / ${fmtK(u.cacheWrite)} written` : ''}` : ''} · out ${fmtK(u.output)}`
+    : ''
+const totals = computed(() => usageLine(ai.current?.usage))
+const providerName = computed(() => PROVIDERS[(ai.current?.transcript?.provider ?? ai.settings.provider) as ProviderKind].label)
+const modelName = computed(() => ai.current?.transcript?.model ?? ai.settings.model)
+
+/** text as HTML: escaped, then **bold**, `code` and headings; line breaks kept by the CSS */
+function md(text: string) {
+  const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return esc
+    .replace(/^#{1,4} (.*)$/gm, '<b class="h">$1</b>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .trim()
+}
+
+// keep the newest message in view while it streams
+watch(
+  () => [items.value.length, items.value.at(-1)],
+  () => void nextTick(() => listEl.value && (listEl.value.scrollTop = listEl.value.scrollHeight)),
+  { deep: true },
+)
+
+function onKey(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    send()
+  }
+}
+function send(text = draft.value) {
+  if (!text.trim() || ai.running) return
+  draft.value = ''
+  void ai.send(text)
+}
+const STARTERS = [
+  'Make a warm, slowly evolving analog pad and check how it sounds.',
+  'Make a punchy FM bass for techno; keep it mono with a short glide.',
+  'Look at the selected patch: what does it sound like, and how could it be better?',
+  'Find three bell-like waves and build a glassy keys patch from them.',
+]
+function startRename(id: string, title: string) {
+  renaming.value = id
+  renameText.value = title
+}
+function finishRename() {
+  if (renaming.value) void ai.rename(renaming.value, renameText.value)
+  renaming.value = null
+}
+async function test() {
+  testing.value = 'Testing…'
+  try {
+    testing.value = `✓ ${await ai.testConnection()}`
+  } catch (e) {
+    testing.value = `✗ ${e instanceof Error ? e.message : String(e)}`
+  }
+}
+const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+const when = (t: number) => new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+watch(open, (o) => o && !ai.current && ai.newConversation())
+</script>
+
+<template>
+  <v-dialog v-model="open" max-width="1180" scrollable>
+    <div class="ai" @keydown.stop>
+      <header>
+        <v-icon icon="mdi-creation" color="primary" />
+        <h3>AI PATCH MAKER</h3>
+        <span class="chip on" :title="`Conversations stay with the provider and model they began with`">{{ providerName }} · {{ modelName || 'no model' }}</span>
+        <span v-if="totals" class="usage" title="This conversation: input at full price · read from / written to the prompt cache · output">{{ totals }}</span>
+        <v-spacer />
+        <button class="hw-btn icon" :class="{ lit: showSettings }" title="Settings: provider, key, model" @click="showSettings = !showSettings">
+          <v-icon size="16" icon="mdi-cog" />
+        </button>
+        <button class="hw-btn icon" title="Close (a running request carries on)" @click="open = false"><v-icon size="16" icon="mdi-close" /></button>
+      </header>
+
+      <div class="body">
+        <!-- saved conversations: starred first -->
+        <aside class="convos">
+          <button class="hw-btn new" :disabled="ai.running" @click="ai.newConversation()"><v-icon size="14" icon="mdi-plus" /> NEW</button>
+          <div
+            v-for="c in [...ai.list].sort((a, b) => Number(b.starred) - Number(a.starred) || b.updated - a.updated)"
+            :key="c.id"
+            class="convo"
+            :class="{ on: ai.current?.id === c.id }"
+            @click="ai.open(c.id)"
+          >
+            <button class="star" :class="{ on: c.starred }" :title="c.starred ? 'Starred: kept for good' : 'Star it to keep it (unstarred ones go after 30)'" @click.stop="ai.toggleStar(c.id)">
+              {{ c.starred ? '★' : '☆' }}
+            </button>
+            <input v-if="renaming === c.id" v-model="renameText" class="rename" @click.stop @keydown.enter="finishRename" @blur="finishRename" />
+            <span v-else class="title" :title="`${c.title} — double-click to rename`" @dblclick.stop="startRename(c.id, c.title)">{{ c.title }}</span>
+            <small>{{ PROVIDERS[c.provider].label }} · {{ when(c.updated) }}</small>
+            <button class="del" title="Delete this conversation" @click.stop="ai.remove(c.id)">✕</button>
+          </div>
+          <p v-if="!ai.list.length" class="empty">Conversations are kept here. ★ keeps one for good.</p>
+        </aside>
+
+        <!-- settings -->
+        <section v-if="showSettings" class="settings">
+          <h4>PROVIDER</h4>
+          <div class="seg">
+            <button v-for="(p, k) in PROVIDERS" :key="k" :class="{ on: ai.settings.provider === k }" @click="ai.switchProvider(k)">{{ p.label }}</button>
+          </div>
+          <p class="hint">{{ PROVIDERS[ai.settings.provider].hint }}</p>
+          <label>ENDPOINT <input v-model.trim="ai.settings.endpoint" spellcheck="false" :placeholder="PROVIDERS[ai.settings.provider].endpoint" /></label>
+          <label>
+            API KEY{{ PROVIDERS[ai.settings.provider].needsKey ? '' : ' (usually none)' }}
+            <span class="row">
+              <input v-model.trim="ai.settings.apiKey" :type="showKey ? 'text' : 'password'" spellcheck="false" autocomplete="off" placeholder="kept on this computer only" />
+              <button class="hw-btn icon" :title="showKey ? 'Hide' : 'Show'" @click="showKey = !showKey"><v-icon size="14" :icon="showKey ? 'mdi-eye-off' : 'mdi-eye'" /></button>
+            </span>
+          </label>
+          <label>
+            MODEL
+            <span class="row">
+              <input v-model.trim="ai.settings.model" list="ai-models" spellcheck="false" :placeholder="PROVIDERS[ai.settings.provider].model || 'fetch the list →'" />
+              <datalist id="ai-models"><option v-for="m in ai.models" :key="m" :value="m" /></datalist>
+              <button class="hw-btn" title="Ask the provider which models this key can use" @click="ai.fetchModels()">LIST</button>
+            </span>
+          </label>
+          <p v-if="ai.modelsError" class="err">{{ ai.modelsError }}</p>
+          <p v-else-if="ai.models.length" class="hint">{{ ai.models.length }} models: pick one in the field.</p>
+          <div class="grid">
+            <label>MAX TOKENS <input v-model.number="ai.settings.maxTokens" type="number" min="1000" max="128000" step="1000" /></label>
+            <template v-if="ai.settings.provider === 'anthropic'">
+              <label>
+                EFFORT
+                <select v-model="ai.settings.effort"><option v-for="e in EFFORTS" :key="e" :value="e">{{ e }}</option></select>
+              </label>
+              <label>
+                THINKING
+                <select v-model="ai.settings.thinking"><option value="summarized">show a summary</option><option value="omitted">hidden</option></select>
+              </label>
+              <label title="How long the cached instructions, tools and pinned turns live between requests: 1 hour costs more to write, pays off when you pause for longer than 5 minutes">
+                CACHE
+                <select v-model="ai.settings.cacheTtl"><option value="5m">5 minutes</option><option value="1h">1 hour</option></select>
+              </label>
+              <label class="check" title="If the model declines a request, the API retries it on a fallback model"><input v-model="ai.settings.fallback" type="checkbox" /> REFUSAL FALLBACK</label>
+            </template>
+            <template v-else>
+              <label>
+                TEMPERATURE
+                <input
+                  :value="ai.settings.temperature ?? ''"
+                  type="number"
+                  min="0"
+                  max="2"
+                  step="0.1"
+                  placeholder="default"
+                  @input="(e) => (ai.settings.temperature = (e.target as HTMLInputElement).value === '' ? null : Number((e.target as HTMLInputElement).value))"
+                />
+              </label>
+              <label v-if="ai.settings.provider === 'openai'">
+                REASONING
+                <select v-model="ai.settings.reasoningEffort"><option value="">default</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select>
+              </label>
+            </template>
+            <label class="check"><input v-model="ai.settings.confirmDeletes" type="checkbox" /> ASK BEFORE DELETING</label>
+          </div>
+          <div class="row">
+            <button class="hw-btn" :disabled="!ai.configured" @click="test">TEST</button>
+            <button class="hw-btn lit" @click="showSettings = false">DONE</button>
+            <span class="test" :class="{ err: testing.startsWith('✗') }">{{ testing }}</span>
+          </div>
+          <p class="hint">
+            Keys stay in this computer's browser storage: never in the board, its exports, or a plugin's saved session. Conversations keep the provider and model they began with.
+          </p>
+        </section>
+
+        <!-- the conversation -->
+        <section v-else class="chat">
+          <div ref="listEl" class="messages">
+            <div v-if="!items.length" class="welcome">
+              <p>Describe a sound, or ask about a patch. The agent can find waves, read, make, change and delete patches, and render notes to look at their waveform and spectrogram.</p>
+              <button v-for="s in STARTERS" :key="s" class="starter" :disabled="!ai.configured" @click="send(s)">{{ s }}</button>
+              <p v-if="!ai.configured" class="err">Set up a provider first (⚙).</p>
+            </div>
+            <template v-for="(it, i) in items" :key="i">
+              <div v-if="it.kind === 'user'" class="msg user">
+                <div class="text">{{ it.text }}</div>
+                <button
+                  v-if="ai.pinnable"
+                  class="pin"
+                  :class="{ on: ai.pins.has(it.msg) }"
+                  :title="ai.pins.has(it.msg) ? 'A cache checkpoint: everything up to here stays cached between requests. Click to unpin.' : 'Pin as a cache checkpoint (at most two): keeps the conversation up to here cached, cheaper and faster to continue'"
+                  @click="ai.togglePin(it.msg)"
+                >
+                  <v-icon size="13" :icon="ai.pins.has(it.msg) ? 'mdi-pin' : 'mdi-pin-outline'" />
+                </button>
+              </div>
+              <div v-else-if="it.kind === 'assistant'" class="msg assistant" :class="{ streaming: it.streaming, bare: !it.text && !it.thinking && !it.streaming }">
+                <details v-if="it.thinking" class="thinking">
+                  <summary>THINKING</summary>
+                  <div class="text">{{ it.thinking }}</div>
+                </details>
+                <!-- eslint-disable-next-line vue/no-v-html -- escaped by md() -->
+                <div v-if="it.text" class="text" v-html="md(it.text)" />
+                <div v-if="it.streaming && !it.text" class="dots">…</div>
+                <small v-if="it.usage" class="turn-usage">{{ usageLine(it.usage) }}</small>
+              </div>
+              <details v-else-if="it.kind === 'tool'" class="tool" :class="it.status" :open="it.status === 'error'">
+                <summary>
+                  <v-icon size="13" :icon="it.status === 'running' ? 'mdi-cog-sync' : it.status === 'error' ? 'mdi-alert' : 'mdi-check'" />
+                  <b>{{ it.name }}</b>
+                  <span class="brief">{{ it.output?.split('\n')[0].slice(0, 110) }}</span>
+                </summary>
+                <pre v-if="it.input" class="io">{{ it.input }}</pre>
+                <pre v-if="it.output" class="io out">{{ it.output }}</pre>
+              </details>
+              <div v-if="it.kind === 'tool' && it.images?.length" class="images">
+                <img v-for="(im, k) in it.images" :key="k" :src="`data:image/png;base64,${im}`" alt="render" title="Click to enlarge" @click="zoom = im" />
+              </div>
+              <div v-else-if="it.kind === 'note'" class="note" :class="it.level">{{ it.text }}</div>
+            </template>
+          </div>
+
+          <div v-if="ai.confirming" class="confirm">
+            <v-icon icon="mdi-help-circle" color="secondary" />
+            <span>{{ ai.confirming.question }}</span>
+            <v-spacer />
+            <button class="hw-btn lit" @click="ai.confirming.resolve(true)">YES</button>
+            <button class="hw-btn" @click="ai.confirming.resolve(false)">NO</button>
+          </div>
+
+          <footer>
+            <textarea
+              v-model="draft"
+              rows="2"
+              :placeholder="ai.running ? 'Working…' : 'Describe a sound, or ask about a patch (Enter sends, Shift+Enter: new line)'"
+              spellcheck="false"
+              @keydown="onKey"
+            />
+            <button v-if="ai.running" class="hw-btn send stop" title="Stop" @click="ai.stop()"><v-icon size="16" icon="mdi-stop" /> STOP</button>
+            <button v-else class="hw-btn send lit" :disabled="!draft.trim()" title="Send (Enter)" @click="send()"><v-icon size="16" icon="mdi-send" /> SEND</button>
+          </footer>
+        </section>
+      </div>
+
+      <div v-if="zoom" class="zoom" @click="zoom = null"><img :src="`data:image/png;base64,${zoom}`" alt="render" /></div>
+    </div>
+  </v-dialog>
+</template>
+
+<style scoped>
+.ai {
+  display: flex;
+  flex-direction: column;
+  height: min(86vh, 900px);
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: var(--text);
+  background:
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.015) 0 1px, transparent 1px 3px),
+    linear-gradient(180deg, var(--panel-hi) 0%, var(--panel-lo) 100%);
+  border: 1px solid #000;
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.8),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  position: relative;
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+h3 {
+  margin: 0;
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 900;
+  font-size: 15px;
+  letter-spacing: 0.18em;
+  color: var(--c-primary);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--c-primary) 50%, transparent);
+}
+.chip {
+  padding: 1px 8px;
+  border-radius: 2px;
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  color: var(--ink-dim);
+  background: #111;
+  border: 1px solid #000;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip.on {
+  color: var(--c-secondary);
+}
+.usage {
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  color: var(--text-mute);
+}
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 10px;
+}
+/* ── conversations ── */
+.convos {
+  flex: 0 0 210px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+}
+.convo {
+  position: relative;
+  display: grid;
+  grid-template-columns: 16px 1fr 14px;
+  grid-template-rows: auto auto;
+  gap: 0 4px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.convo.on {
+  border-color: color-mix(in srgb, var(--c-primary) 50%, transparent);
+  background: rgba(0, 0, 0, 0.45);
+}
+.convo .star {
+  grid-row: 1 / 3;
+  align-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-mute);
+  font-size: 14px;
+  line-height: 16px;
+}
+.convo .star.on {
+  color: #ffc23d;
+  text-shadow: 0 0 5px rgba(255, 194, 61, 0.6);
+}
+.convo .title,
+.convo .rename {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  line-height: 16px;
+  color: var(--ink-dim);
+}
+.convo .rename {
+  color: var(--c-primary);
+  background: var(--lcd-bg);
+  border: 1px solid #000;
+  outline: none;
+}
+.convo small {
+  grid-column: 2 / 4;
+  font-family: 'VT323', monospace;
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.convo .del {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-mute);
+  font-size: 11px;
+  opacity: 0;
+}
+.convo:hover .del {
+  opacity: 1;
+}
+.new {
+  justify-content: center;
+}
+.empty,
+.hint {
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  color: var(--text-mute);
+  margin: 4px 0;
+}
+.err {
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  color: #ff6b6b;
+  margin: 4px 0;
+}
+/* ── settings ── */
+.settings {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 6px 12px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.2);
+}
+.settings h4 {
+  margin: 4px 0;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  color: var(--text-head);
+}
+.seg {
+  display: flex;
+  gap: 4px;
+}
+.seg button {
+  padding: 3px 14px;
+  border-radius: 3px;
+  font-family: 'VT323', monospace;
+  font-size: 17px;
+  color: var(--ink-mute);
+  background: #111;
+  border: 1px solid #000;
+}
+.seg button.on {
+  color: var(--c-secondary);
+  text-shadow: 0 0 5px color-mix(in srgb, var(--c-secondary) 70%, transparent);
+}
+.settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 8px 0;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+  color: var(--text-head);
+}
+.settings label.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.settings input:not([type='checkbox']),
+.settings select,
+textarea {
+  font-family: 'VT323', monospace;
+  font-size: 17px;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  color: var(--c-primary);
+  background: var(--lcd-bg);
+  border: 1px solid #000;
+  outline: none;
+  min-width: 0;
+}
+.settings select option {
+  color: #000;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.row input {
+  flex: 1;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 0 12px;
+}
+.test {
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  color: var(--c-success);
+}
+.test.err {
+  color: #ff6b6b;
+}
+/* ── the conversation ── */
+.chat {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.6);
+  scrollbar-width: thin;
+}
+.welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px;
+  font-family: 'VT323', monospace;
+  font-size: 17px;
+  color: var(--ink-dim);
+}
+.starter {
+  padding: 3px 10px;
+  border-radius: 3px;
+  font-family: 'VT323', monospace;
+  font-size: 16px;
+  text-align: left;
+  color: var(--c-secondary);
+  background: #111;
+  border: 1px solid #000;
+}
+.starter:hover:not(:disabled) {
+  color: var(--c-primary);
+}
+.starter:disabled {
+  opacity: 0.4;
+}
+.msg {
+  position: relative;
+  max-width: 88%;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-family: 'VT323', monospace;
+  font-size: 17px;
+  line-height: 19px;
+}
+.msg .text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.msg.user {
+  align-self: flex-end;
+  padding-right: 26px;
+  color: #000;
+  background: color-mix(in srgb, var(--c-primary) 85%, #fff);
+}
+.msg.assistant {
+  align-self: flex-start;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.msg.assistant :deep(code) {
+  padding: 0 3px;
+  border-radius: 2px;
+  color: var(--c-secondary);
+  background: rgba(0, 0, 0, 0.4);
+}
+.msg.assistant :deep(.h) {
+  color: var(--c-primary);
+}
+.pin {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  padding: 1px;
+  border: 0;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.15);
+  color: rgba(0, 0, 0, 0.55);
+}
+.pin.on {
+  color: #000;
+  background: rgba(255, 255, 255, 0.6);
+}
+.thinking summary {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+  color: var(--text-mute);
+  cursor: pointer;
+}
+.thinking .text {
+  color: var(--text-mute);
+  font-size: 15px;
+  line-height: 16px;
+  margin-bottom: 4px;
+}
+.dots {
+  color: var(--text-mute);
+  animation: blink 1s steps(2) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0.2;
+  }
+}
+/* a turn that only called tools: just its usage, quietly */
+.msg.assistant.bare {
+  padding: 0 4px;
+  background: none;
+  border: 0;
+}
+.msg.assistant.bare .turn-usage {
+  margin: 0;
+}
+.turn-usage {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.tool {
+  align-self: flex-start;
+  max-width: 92%;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  color: var(--ink-dim);
+  background: rgba(0, 0, 0, 0.35);
+  border-left: 2px solid var(--c-success);
+}
+.tool.running {
+  border-left-color: var(--c-secondary);
+}
+.tool.error {
+  border-left-color: #ff6b6b;
+}
+.tool summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.tool b {
+  font-weight: 400;
+  color: var(--c-secondary);
+}
+.tool .brief {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-mute);
+}
+.io {
+  max-height: 220px;
+  overflow: auto;
+  margin: 3px 0;
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  line-height: 15px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: rgba(0, 0, 0, 0.35);
+}
+.io.out {
+  color: var(--ink);
+}
+.images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-self: flex-start;
+}
+.images img {
+  width: 300px;
+  max-width: 100%;
+  border-radius: 3px;
+  border: 1px solid #000;
+  cursor: zoom-in;
+}
+.note {
+  align-self: center;
+  padding: 2px 10px;
+  border-radius: 3px;
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  color: var(--text-mute);
+  background: rgba(0, 0, 0, 0.3);
+}
+.note.error {
+  color: #ff8a8a;
+}
+.confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-family: 'VT323', monospace;
+  font-size: 18px;
+  color: var(--c-secondary);
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid color-mix(in srgb, var(--c-secondary) 50%, transparent);
+}
+footer {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+textarea {
+  flex: 1;
+  resize: none;
+  font-size: 18px;
+}
+.send {
+  flex: none;
+  min-width: 90px;
+  justify-content: center;
+}
+.stop {
+  color: #ff8a8a;
+}
+.zoom {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.85);
+  cursor: zoom-out;
+}
+.zoom img {
+  max-width: 96%;
+  max-height: 96%;
+}
+@media (max-width: 760px) {
+  .convos {
+    display: none;
+  }
+}
+</style>

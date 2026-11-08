@@ -241,7 +241,7 @@ export class Voice {
   private disposed = false
 
   constructor(
-    private ctx: AudioContext,
+    private ctx: BaseAudioContext,
     private buffer: AudioBuffer,
     private audioId: string,
     readonly soundId: string,
@@ -523,7 +523,7 @@ export class Voice {
   /** The grain processor starts as soon as the worklet module is there (at once, after the first notes). */
   private startGrains() {
     if (this.disposed || !this.playing) return
-    if (!grainsLoaded()) {
+    if (!grainsLoaded(this.ctx)) {
       void loadGrains(this.ctx).then(() => this.startGrains())
       return
     }
@@ -559,7 +559,7 @@ export class Voice {
       return this.svf
     }
     if (type) {
-      if (!grainsLoaded()) return undefined
+      if (!grainsLoaded(this.ctx)) return undefined
       const node = new AudioWorkletNode(this.ctx, 'ssb-svf', {
         numberOfInputs: 1,
         numberOfOutputs: 1,

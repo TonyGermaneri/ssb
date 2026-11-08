@@ -34,6 +34,20 @@ let bpm = 120
 let silentBus: GainNode
 const voices = new Set<Voice>() // includes voices whose tails are still ringing
 
+/**
+ * An offline render being built (renderOffline): while one is set, startVoice builds voices in its context, with its
+ * own modulation hub and output, and keeps them in its own set -- the live engine never sees them (no sound, no LEDs,
+ * no adaptive tuning). It works in the plugin too, where the live engine is the native one.
+ */
+interface RenderTarget {
+  ctx: BaseAudioContext
+  hub: ModHub
+  input: AudioNode
+  silent: AudioNode
+  voices: Set<Voice>
+}
+let target: RenderTarget | null = null
+
 /** Decoded audio by audioId. Not reactive — AudioBuffers are big. */
 export const buffers = new Map<string, AudioBuffer>()
 /** Voices whose source is still playing (drives LEDs, marquee, progress). */
@@ -323,10 +337,17 @@ export const voiceTime = () => getCtx().currentTime
 export const keyboardVoices = () => [...voices].filter((v) => v.tuning && v.playing)
 
 export function startVoice(sound: Sound, opts: VoiceOptions & { silent?: boolean } = {}): Voice | null {
-  if (external) return null
+  const t = target
+  if (external && !t) return null
   const audioId = opts.zone?.audioId ?? sound.audioId
   const buffer = getBuffer(audioId)
   if (!buffer) return null
+  if (t) {
+    const v = new Voice(t.ctx, buffer, audioId, sound.id, sound.settings, opts.silent ? t.silent : t.input, opts, t.hub,
+      () => {}, (dead) => t.voices.delete(dead))
+    t.voices.add(v)
+    return v
+  }
   const c = getCtx()
   const v = new Voice(
     c,
@@ -626,6 +647,95 @@ export function setExternalScopes(scopes: Record<string, string>, rate: number) 
     }
     extScopes.set(id, { data, seq: extScopeSeq, at: now })
   }
+}
+
+// ── offline renders (the AI agent's ears): a note of a patch or sound, faster than real time, heard by nobody ──
+export interface OfflineRender {
+  /** left, right */
+  channels: Float32Array[]
+  sampleRate: number
+}
+export interface OfflineOptions {
+  /** seconds rendered in all */
+  seconds: number
+  /** when the note is let go (every voice the build started is released then) */
+  releaseAt: number
+  sampleRate?: number
+  /** the global mod matrix it plays under (a patch's header's); default: the live one */
+  matrix?: ModMatrix
+  bpm?: number
+  /** master chorus / delay / reverb to play through (a patch's header FX); null: dry */
+  fx?: GlobalFx | null
+}
+
+/**
+ * Render whatever `build` starts (with startVoice: board.startNote for a keyboard note) into an OfflineAudioContext.
+ * The render is at unity gain -- before master volume, mute and the header's VOLUME -- and neutral: mod wheel, bend,
+ * pressure and timbre at rest, CCs at MIDI's power-on values. Voices' own delay / reverb are part of their sound;
+ * `fx` adds the patch's master effects. Live voices, the live hub and master FX are untouched.
+ */
+export async function renderOffline(build: () => unknown, o: OfflineOptions): Promise<OfflineRender> {
+  const rate = o.sampleRate ?? 48000
+  const c = new OfflineAudioContext({ numberOfChannels: 2, length: Math.max(128, Math.ceil(o.seconds * rate)), sampleRate: rate })
+  await loadGrains(c)
+  const matrix = o.matrix ?? globalMatrix
+  const tempo = o.bpm ?? bpm
+  const constant = (v: number) => {
+    const n = c.createConstantSource()
+    n.offset.value = v
+    n.start(0)
+    return n
+  }
+  const cc = new Float32Array(128)
+  cc[7] = 100 / 127
+  cc[10] = 64 / 127
+  cc[11] = 1
+  const renderHub: ModHub = {
+    globalLfos: [matrix.lfo1, matrix.lfo2].map((l) => new LfoSource(c, lfoConfig(l, tempo), 0, 0)),
+    bpm: () => tempo,
+    modWheel: constant(0),
+    state: { mod: 0, bend: 0, pressure: 0, timbre: 0 },
+    cc,
+    matrix: () => matrix,
+    mpeBendRange: () => mpeBendRange,
+    zero: constant(0),
+  }
+  let input: AudioNode
+  if (o.fx) {
+    const mfx = new MasterFx(c)
+    mfx.apply(o.fx)
+    mfx.output.connect(c.destination)
+    input = mfx.input
+  } else {
+    input = c.createGain()
+    input.connect(c.destination)
+  }
+  const silent = c.createGain()
+  silent.gain.value = 0
+  silent.connect(c.destination)
+  const t: RenderTarget = { ctx: c, hub: renderHub, input, silent, voices: new Set() }
+  const was = target
+  target = t
+  try {
+    build()
+  } finally {
+    target = was
+  }
+  // pad LFOs attach once the worklet module is there (it is): let those callbacks run before rendering starts
+  await loadGrains(c)
+  const startedVoices = [...t.voices]
+  const quantum = 128 / rate
+  const off = Math.max(quantum, Math.round(o.releaseAt / quantum) * quantum)
+  if (off < o.seconds) {
+    void c.suspend(off).then(() => {
+      for (const v of startedVoices) v.release()
+      void c.resume()
+    })
+  }
+  const out = await c.startRendering()
+  for (const v of t.voices) v.stop(0)
+  for (const l of renderHub.globalLfos) l.stop()
+  return { channels: [out.getChannelData(0), out.getChannelData(1)], sampleRate: rate }
 }
 
 /** Also send the master output to `node` (measurements: comparing this engine with the plugin's). */

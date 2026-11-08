@@ -123,6 +123,38 @@ Each VCO's live signal (after its own envelope and filter) is a mod-matrix sourc
 VCO 2 → pitch for FM, → volume for AM, → cutoff for audio-rate filter sweeps. VCOs are full sounds, so SFZ instruments
 and grain clouds work as oscillators too. Note-offs, STOP, choke and PANIC treat the patch as one group.
 
+### AI patch maker
+
+**✦** in the header's PATCH group opens a conversation with an AI model that designs patches with you: describe a
+sound ("a glassy FM bell that blooms slowly") or ask about the selected patch, and it works with the board through
+tools:
+
+| Tool | What it does |
+|---|---|
+| `list_sounds` / `list_patches` | finds waves, samples and patches, ordered by likeness to a description (the semantic search) |
+| `read_patch` | a patch in the compact form the built-ins are written in: each slot's sound and only the knobs that differ |
+| `create_patch` / `update_patch` | makes or changes a patch: everything checked against the knobs' real ranges first (unknown names refused with suggestions, numbers clamped and reported), one undo step, and the patch selected so you can play it |
+| `delete_patch` | asks you first (a setting) |
+| `render_patch` | plays a note offline and silently, and hands the model its measurements (level, pitch, brightness, envelope times, harmonics, noise, clipping) and two pictures: the waveform with a zoom on a few cycles, and a spectrogram |
+
+- **Providers** (⚙): **Anthropic** (Claude; an API key), **OpenAI** (an API key), or **LM Studio** on this computer
+  (no key; turn its server's CORS on, and load a model that does tool calling — with vision, for the pictures). Each
+  provider keeps its own endpoint, key and model; **LIST** asks it which models there are, **TEST** sends a tiny request.
+  Keys stay in this computer's browser storage, never in the board, its exports or a plugin's saved session.
+- **Conversations** are saved; **★** keeps one for good (the 30 most recent unstarred ones are kept). A conversation
+  stays with the provider and model it began with.
+- **Prompt caching** (Anthropic): the instructions and tools never change, so they are read from the cache after the
+  first request (5-minute or 1-hour lifetime, a setting), and the conversation's tail is cached as it grows. **📌** on
+  one of your messages makes it a cache checkpoint (up to two), so a long session with pictures stays cheap to
+  continue. Each reply shows its tokens: at full price, read from the cache, written to it, and output. OpenAI
+  caches by itself; LM Studio reuses its own context.
+- Claude runs with adaptive thinking (**EFFORT**, and its summary shown or hidden) and, on the models that have it,
+  a server-side fallback when a request is declined. Local models that write a tool call into their text (Qwen3.5
+  does, in its thinking) still get it run.
+
+Contract tests against the real APIs: `SSB_AI_LIVE=1 npx vitest run src/lib/ai/providers.live.test.ts`, with
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` set and LM Studio's server up (`LMSTUDIO_URL`).
+
 ### Semantic search
 
 The list's bar has a description field, **≈ SIMILAR** and, in the Patches tab, **MAKE**:

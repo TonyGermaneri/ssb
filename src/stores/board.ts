@@ -14,6 +14,7 @@ import { THEMES, themeById } from '../theme/themes'
 import { AdaptiveTuner } from '../audio/adaptiveTuning'
 import { MpeZones } from '../audio/mpe'
 import type { Voice, VoiceOptions, VoiceTuning, ZonePlay } from '../audio/voice'
+import type { SoundRef } from '../lib/ai/patchSpec'
 import { basename, dirname, type PathFile } from '../lib/dropFiles'
 import { addTags, passesTags, tagFacets } from '../lib/tags'
 import { normalisePath, parseSfz } from '../lib/sfz'
@@ -1547,6 +1548,46 @@ export const useBoard = defineStore('board', () => {
   /** layer ids of a patch (for LEDs) */
   const patchLayerIds = (p: Patch) => new Set(patchLayers(p).map((l) => l.id))
 
+  /**
+   * One note of a patch (as the keyboard plays it: slot 1 with its VCOs) or of a sound, rendered offline and silently
+   * with the page's engine (engine.renderOffline): held for `hold` s, then `tail` s after the release. At unity gain
+   * (the header's VOLUME and the master volume are left out), dry unless `wet` (the patch header's chorus / delay /
+   * reverb). Works in the plugin too. For the AI agent's analysis tools (lib/ai/analysis.ts).
+   */
+  async function renderOffline(req: {
+    patchId?: string
+    soundId?: string
+    note?: number
+    velocity?: number
+    hold?: number
+    tail?: number
+    wet?: boolean
+    sampleRate?: number
+  }): Promise<{ channels: Float32Array[]; sampleRate: number; noteOffAt: number }> {
+    const note = Math.round(req.note ?? 60)
+    const velocity = Math.min(1, Math.max(0.01, req.velocity ?? 0.9))
+    const hold = Math.min(30, Math.max(0.05, req.hold ?? 1.5))
+    const tail = Math.min(30, Math.max(0, req.tail ?? 1))
+    const patch = req.patchId ? patchById(req.patchId) : undefined
+    if (req.patchId && !patch) throw new Error(`no patch ${req.patchId}`)
+    const main = patch ? carrierSlot(patch) : null
+    const sound = patch ? (main ? layerSound(main.layer) : undefined) : req.soundId ? resolveSound(req.soundId) : undefined
+    if (!sound) throw new Error(patch ? `patch ${patch.name} has no sound in its slots` : `no sound ${req.soundId ?? ''}`)
+    const layers = patch ? patchLayers(patch).map((l) => byId(l.soundId)).filter((x): x is Sound => !!x) : [sound]
+    // AKWF waves are made from the waves in memory: have them before the voices look for their buffers
+    if (layers.some(isWaveSound) && !akwfReady.value) await loadAkwf()
+    const h = patch?.header
+    const r = await engine.renderOffline(() => startNote(sound, note, velocity, { midiNote: note, glideTime: 0, at: 0 }), {
+      seconds: hold + tail,
+      releaseAt: hold,
+      sampleRate: req.sampleRate,
+      matrix: h?.mod,
+      bpm: h?.bpm,
+      fx: req.wet ? (h?.fx ?? master.fx) : null,
+    })
+    return { ...r, noteOffAt: hold }
+  }
+
   // ── factory content ──
   /** The board's sound for each AKWF wave, by audio id (the first, if it has two). */
   function waveSounds(): Map<string, Sound> {
@@ -1641,6 +1682,48 @@ export const useBoard = defineStore('board', () => {
     const p = patches.value[patches.value.length - 1]
     selectPatch(p.id)
     return p
+  }
+
+  // ── the AI agent's patch access (lib/ai/tools.ts, lib/ai/patchSpec.ts) ──
+  /** a sound as a patch spec names it: an AKWF wave by its name, anything else by its id */
+  function soundRef(id: string): SoundRef | null {
+    const x = byId(id)
+    if (!x) return null
+    return { id: x.id, ref: isWaveSound(x) ? waveNameOf(x.audioId) : x.id, name: x.settings.name, settings: x.settings }
+  }
+  /**
+   * The sound a spec names: a sound's id, an AKWF wave's name (with or without "AKWF_"; added to the board if it
+   * isn't there), or a sound's exact name.
+   */
+  async function resolveSoundRef(ref: string): Promise<SoundRef | null> {
+    const r = ref.trim()
+    if (byId(r)) return soundRef(r)
+    const { waves } = await loadAkwf()
+    const name = [...waves.keys()].find((w) => w.toLowerCase() === r.toLowerCase() || w.toLowerCase() === `akwf_${r.toLowerCase()}`)
+    if (name) {
+      let snd = waveSounds().get(waveAudioId(name))
+      if (!snd) addSound((snd = newWaveSound(name, waves.get(name)!.folder)))
+      return soundRef(snd.id)
+    }
+    const named = sounds.value.find((x) => x.settings.name.toLowerCase() === r.toLowerCase())
+    return named ? soundRef(named.id) : null
+  }
+  /** a patch the agent made, into the catalog after the others, and selected (so the keys play it) */
+  function addAgentPatch(p: Patch): Patch {
+    patches.value.push(tracked(p))
+    const added = patches.value[patches.value.length - 1]
+    selectPatch(added.id)
+    return added
+  }
+  /** a patch's content replaced by the agent's version of it (one undo step); voices of layers it dropped stop */
+  function replacePatch(id: string, next: Patch) {
+    const p = patchById(id)
+    if (!p) throw new Error(`no patch ${id}`)
+    const keep = new Set(patchLayers(next).map((l) => l.id))
+    for (const l of patchLayers(p)) if (!keep.has(l.id)) engine.stopSound(l.id)
+    Object.assign(p, { name: next.name, tag: next.tag, slots: next.slots, header: next.header })
+    // the selected patch's header is the header knobs: they follow
+    if (master.patchId === id) selectPatch(id)
   }
 
   /**
@@ -2212,7 +2295,7 @@ export const useBoard = defineStore('board', () => {
     semantic, similarTo, showSimilar, showMatching, clearSimilar, soundScores, patchScores, shownSounds, shownPatches,
     candidate, candidateInfo, describePatch, rerollCandidate, saveCandidate, discardCandidate,
     installFactory, addFactoryPatch, selectPatch, editPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, removePatches, assignSlot, slotsOf, toggleSlot, toggleFav,
-    pressPatch, releasePatch, patchIdOfLayer,
+    pressPatch, releasePatch, patchIdOfLayer, soundRef, resolveSoundRef, addAgentPatch, replacePatch, renderOffline,
     tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
     addFiles, addCapture, load, press, release, panic, noteOn, noteOff,
     select, selectStep, togglePanel, cycleMode, cycleFilter, toggleGrain, addWaves, resetSettings, duplicate, remove, removeSounds, move,

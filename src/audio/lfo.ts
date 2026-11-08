@@ -47,7 +47,7 @@ export class LfoSource {
     this.outputR = ctx.createGain()
     this.rateIn = ctx.createGain()
     this.depthIn = ctx.createGain()
-    void loadGrains(ctx as AudioContext).then(() => this.attach())
+    void loadGrains(ctx).then(() => this.attach())
   }
 
   private attach() {

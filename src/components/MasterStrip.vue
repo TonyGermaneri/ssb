@@ -12,7 +12,7 @@ import VcoScopes from './VcoScopes.vue'
 import { callNative, nativeEngine } from '../native/bridge'
 
 const board = useBoard()
-const emit = defineEmits<{ add: []; addFolder: []; library: []; waves: [] }>()
+const emit = defineEmits<{ add: []; addFolder: []; library: []; waves: []; ai: [] }>()
 const importInput = ref<HTMLInputElement>()
 const themeMenu = ref(false)
 
@@ -132,6 +132,9 @@ function onImport(e: Event) {
         @click="newPatch"
       >
         <v-icon size="16" icon="mdi-plus-box-multiple" />
+      </button>
+      <button class="hw-btn icon ai" title="AI patch maker: describe a sound, and an AI model makes and refines patches with you" @click="emit('ai')">
+        <v-icon size="16" icon="mdi-creation" />
       </button>
       <button
         class="hw-btn icon play"

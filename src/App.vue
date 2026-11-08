@@ -22,6 +22,11 @@ import { defineAsyncComponent } from 'vue'
 // canvas-datagrid is only loaded when grid mode is first opened
 const GridView = defineAsyncComponent(() => import('./components/GridView.vue'))
 const LibraryDialog = defineAsyncComponent(() => import('./components/LibraryDialog.vue'))
+// the AI patch maker (and the provider SDKs it brings) loads when first opened
+const AiDialog = defineAsyncComponent(() => import('./components/AiDialog.vue'))
+const aiOpen = ref(false)
+const aiUsed = ref(false)
+const openAi = () => ((aiUsed.value = true), (aiOpen.value = true))
 const libraryOpen = ref(false)
 /** the library's tab when it opens: the AKWF waves, or the online sources */
 const libraryTab = ref<'akwf' | 'sfz'>('akwf')
@@ -60,7 +65,7 @@ function onKeyDown(e: KeyboardEvent) {
     else board.undo()
     return
   }
-  if (mod || e.altKey || board.matrixScope || libraryOpen.value) return
+  if (mod || e.altKey || board.matrixScope || libraryOpen.value || aiOpen.value) return
   if (e.code === 'Space') {
     e.preventDefault()
     board.panic()
@@ -146,7 +151,7 @@ onBeforeUnmount(() => {
   <v-app>
     <div class="console" :class="{ scanlines: board.master.scanlines }">
       <div class="chrome">
-        <MasterStrip @add="fileInput?.click()" @add-folder="folderInput?.click()" @library="openLibrary('sfz')" @waves="openLibrary('akwf')" />
+        <MasterStrip @add="fileInput?.click()" @add-folder="folderInput?.click()" @library="openLibrary('sfz')" @waves="openLibrary('akwf')" @ai="openAi" />
       </div>
       <CandidateBar />
       <!-- rack (the selected patch's three VCO slots) on the left, the sounds / patches list on the right third -->
@@ -199,6 +204,8 @@ onBeforeUnmount(() => {
     <DropZone />
     <MatrixDialog />
     <LibraryDialog v-if="libraryOpen" v-model="libraryOpen" :start="libraryTab" />
+    <!-- kept once opened: a running request carries on with the dialog closed -->
+    <AiDialog v-if="aiUsed" v-model="aiOpen" />
     <input ref="fileInput" type="file" accept="audio/*,.mp3,.sfz,.zip" multiple hidden @change="onPick" />
     <!-- a folder picker keeps relative paths, which SFZ files use to find their samples -->
     <input ref="folderInput" type="file" webkitdirectory multiple hidden @change="onPick" />

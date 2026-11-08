@@ -29,7 +29,7 @@ export class MasterFx {
   private impulseTimer?: ReturnType<typeof setTimeout>
   private fx?: GlobalFx
 
-  constructor(private ctx: AudioContext) {
+  constructor(private ctx: BaseAudioContext) {
     const c = ctx
     this.input = c.createGain()
     this.output = c.createGain()

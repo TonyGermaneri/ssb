@@ -1,0 +1,281 @@
+/**
+ * What the agent can do to the board: find sounds and patches, read a patch as a spec, create / change / delete
+ * patches (every change one undo step, checked before anything moves), select one for the user to play, and render
+ * a note offline into measurements and pictures it can look at.
+ */
+import type { useBoard } from '../../stores/board'
+import { patchLayers, type Patch, type Sound } from '../../types'
+import type { AgentTool, ToolReply } from './agent'
+import { analyse } from './analysis'
+import { applyChange, fromSpec, toSpec, type PatchChange, type PatchSpec } from './patchSpec'
+import type { JsonSchema } from './types'
+
+type Board = ReturnType<typeof useBoard>
+
+const json = (v: unknown) => JSON.stringify(v)
+const uid = () => crypto.randomUUID()
+
+const routeSchema: JsonSchema = {
+  type: 'object',
+  properties: { source: { type: 'string' }, dest: { type: 'string' }, amount: { type: 'number', minimum: -1, maximum: 1 } },
+  required: ['source', 'dest', 'amount'],
+}
+const values = (description: string): JsonSchema => ({ type: 'object', description, additionalProperties: true })
+const slotSchema = (forUpdate: boolean): JsonSchema => ({
+  type: ['object', 'null'],
+  description: forUpdate
+    ? 'Changes to the slot: settings / slot / lfo1 / lfo2 merge into what is there; routes replaces the list; a new "sound" swaps the sound (a fresh layer). null empties the slot.'
+    : 'A slot: its sound and the knobs that differ from the sound\'s own. null = empty.',
+  properties: {
+    sound: { type: 'string', description: 'an AKWF wave name (e.g. "AKWF_saw") or a sound id from list_sounds' },
+    settings: values('layer settings (see the parameter reference): only what differs from the sound\'s own'),
+    slot: values('level, audible, track, transpose, fine, fixedNote, tuning, tuningDepth'),
+    lfo1: values('the layer\'s LFO 1: shape, rate, sync, division, amount, …'),
+    lfo2: values('the layer\'s LFO 2'),
+    routes: { type: 'array', items: routeSchema, description: 'the layer\'s mod routes' },
+  },
+  ...(forUpdate ? {} : { required: ['sound'] }),
+})
+const headerSchema: JsonSchema = {
+  type: 'object',
+  description: 'volume, mono, glide, mpe, bpm; fx: master chorus/delay/reverb; mod: {lfo1, lfo2, routes} (global)',
+  properties: {
+    volume: { type: 'number' },
+    mono: { type: 'boolean' },
+    glide: { type: 'number' },
+    mpe: { type: 'boolean' },
+    bpm: { type: 'number' },
+    fx: values('chorusRate, chorusDepth, chorusMix, delayTime, delaySync, delayDivision, delayFeedback, delayMix, reverbSize, reverbDecay, reverbMix'),
+    mod: { type: 'object', properties: { lfo1: values('global LFO 1'), lfo2: values('global LFO 2'), routes: { type: 'array', items: routeSchema } } },
+  },
+}
+
+export interface ToolOptions {
+  /** ask before delete_patch */
+  confirmDeletes: boolean
+}
+
+export function createTools(board: Board, o: ToolOptions): AgentTool[] {
+  const patchOf = (id?: string): Patch => {
+    const p = id ? board.patchById(id) : board.selectedPatch
+    if (!p) throw new Error(id ? `no patch with id ${id} (list_patches shows them)` : 'no patch is selected; give a patch_id')
+    return p
+  }
+  const slotNames = (p: Patch) => p.slots.map((x) => (x ? (board.byId(x.layer.soundId)?.settings.name ?? '?') : null))
+  /** the semantic index, loaded (for ordering by a description) */
+  const semantic = async () => {
+    await board.semantic.load().catch(() => {})
+    return board.semantic.ready.value ? board.semantic : null
+  }
+  const page = <T>(list: T[], offset = 0, limit = 20) => list.slice(Math.max(0, offset), Math.max(0, offset) + Math.min(50, Math.max(1, limit)))
+
+  const tools: AgentTool[] = [
+    {
+      name: 'board_state',
+      description: 'What is on the board now: the selected patch, how many patches and sounds, and the AKWF wave categories (with counts) list_sounds can filter by.',
+      schema: { type: 'object', properties: {}, additionalProperties: false },
+      run: () => {
+        const cats = new Map<string, number>()
+        for (const s of board.sounds) for (const t of s.settings.tag.split(',').map((x) => x.trim())) if (t.startsWith('akwf_')) cats.set(t, (cats.get(t) ?? 0) + 1)
+        const sel = board.selectedPatch
+        return {
+          text: json({
+            selected_patch: sel ? { id: sel.id, name: sel.name } : null,
+            patches: board.patches.length,
+            sounds: board.sounds.length,
+            own_samples: board.sounds.filter((s) => !s.audioId.startsWith('akwf-') && !s.audioId.startsWith('synth:')).length,
+            wave_categories: Object.fromEntries([...cats].sort((a, b) => b[1] - a[1])),
+          }),
+        }
+      },
+    },
+    {
+      name: 'list_sounds',
+      description:
+        'Find sounds for patch slots. With a query, ordered by how well each matches it (what it sounds like, its name and tags: "bright buzzy saw", "breathy choir", "glassy bell"); a category (e.g. "akwf_epiano") narrows to one. Returns each sound\'s "sound" reference for specs, its name and tags.',
+      schema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'what you are looking for, in words' },
+          category: { type: 'string', description: 'a tag to filter by, e.g. akwf_saw (board_state lists them)' },
+          limit: { type: 'integer', minimum: 1, maximum: 50 },
+          offset: { type: 'integer', minimum: 0 },
+        },
+        additionalProperties: false,
+      },
+      run: async (input: { query?: string; category?: string; limit?: number; offset?: number }) => {
+        let list: Sound[] = board.sounds
+        if (input.category) {
+          const c = input.category.toLowerCase()
+          list = list.filter((s) => s.settings.tag.toLowerCase().split(',').some((t) => t.trim() === c))
+        }
+        if (input.query?.trim()) {
+          const idx = await semantic()
+          if (idx) {
+            const scores = idx.matchText('sound', input.query, list)
+            list = [...list].sort((a, b) => (scores.get(b.id) ?? -2) - (scores.get(a.id) ?? -2))
+          } else {
+            const words = input.query.toLowerCase().split(/\s+/).filter(Boolean)
+            list = list.filter((s) => words.some((w) => `${s.settings.name} ${s.settings.tag}`.toLowerCase().includes(w)))
+          }
+        }
+        const shown = page(list, input.offset, input.limit ?? 20).map((s) => {
+          const r = board.soundRef(s.id)!
+          return { sound: r.ref, name: s.settings.name, tags: s.settings.tag }
+        })
+        return { text: json({ total: list.length, sounds: shown }) }
+      },
+    },
+    {
+      name: 'list_patches',
+      description: 'The board\'s patches: id, name, tags and the sounds in their slots. With a query, ordered by likeness to it; with a tag, only those carrying it (e.g. "factory", "ai", "pad").',
+      schema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+          tag: { type: 'string' },
+          limit: { type: 'integer', minimum: 1, maximum: 50 },
+          offset: { type: 'integer', minimum: 0 },
+        },
+        additionalProperties: false,
+      },
+      run: async (input: { query?: string; tag?: string; limit?: number; offset?: number }) => {
+        let list: Patch[] = board.patches
+        if (input.tag) {
+          const t = input.tag.toLowerCase()
+          list = list.filter((p) => p.tag.toLowerCase().split(',').some((x) => x.trim() === t))
+        }
+        if (input.query?.trim()) {
+          const idx = await semantic()
+          if (idx) {
+            const scores = idx.matchText('patch', input.query, list)
+            list = [...list].sort((a, b) => (scores.get(b.id) ?? -2) - (scores.get(a.id) ?? -2))
+          } else {
+            const words = input.query.toLowerCase().split(/\s+/).filter(Boolean)
+            list = list.filter((p) => words.some((w) => `${p.name} ${p.tag}`.toLowerCase().includes(w)))
+          }
+        }
+        const shown = page(list, input.offset, input.limit ?? 20).map((p) => ({ id: p.id, name: p.name, tags: p.tag, slots: slotNames(p) }))
+        return { text: json({ total: list.length, selected: board.master.patchId, patches: shown }) }
+      },
+    },
+    {
+      name: 'read_patch',
+      description: 'A patch as a spec (the form create_patch and update_patch take): each slot\'s sound and the knobs that differ from it, the header\'s changes from a new patch. Without patch_id, the selected patch.',
+      schema: { type: 'object', properties: { patch_id: { type: 'string' } }, additionalProperties: false },
+      run: (input: { patch_id?: string }) => ({ text: json(toSpec(patchOf(input.patch_id), board.soundRef)) }),
+    },
+    {
+      name: 'create_patch',
+      description: 'Make a new patch from a spec, add it to the board and select it (the user can play it at once). Answers its id. Check it with render_patch.',
+      schema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'UPPER CASE, evocative, like the built-ins (e.g. "VELVET HAMMER KEYS")' },
+          tags: { type: 'string', description: 'comma separated: kind (pad, lead, bass, keys, pluck, fx…), character, technique' },
+          slots: { type: 'array', minItems: 1, maxItems: 3, items: slotSchema(false) },
+          header: headerSchema,
+        },
+        required: ['name', 'slots'],
+        additionalProperties: false,
+      },
+      run: async (input: PatchSpec) => {
+        const { patch, issues } = await fromSpec(input, board.resolveSoundRef, uid)
+        if (!patch) throw new Error(`nothing was created:\n- ${issues.errors.join('\n- ')}`)
+        const added = board.addAgentPatch(patch)
+        return { text: json({ created: added.id, name: added.name, notes: issues.notes }) }
+      },
+    },
+    {
+      name: 'update_patch',
+      description:
+        'Change a patch: name, tags, header (merged; fx merged; mod.routes replaced if given) and slots by number ("1".."3": settings / slot / lfo1 / lfo2 merge, routes replace, a new sound swaps the layer, null empties). All of it is checked first; nothing changes unless all of it is valid. One undo step.',
+      schema: {
+        type: 'object',
+        properties: {
+          patch_id: { type: 'string' },
+          name: { type: 'string' },
+          tags: { type: 'string' },
+          header: headerSchema,
+          slots: { type: 'object', properties: { '1': slotSchema(true), '2': slotSchema(true), '3': slotSchema(true) }, additionalProperties: false },
+        },
+        required: ['patch_id'],
+        additionalProperties: false,
+      },
+      run: async (input: PatchChange & { patch_id: string }) => {
+        const p = patchOf(input.patch_id)
+        const { patch_id: _id, ...change } = input
+        const { patch, issues } = await applyChange(p, change, board.resolveSoundRef, uid)
+        if (!patch) throw new Error(`nothing was changed:\n- ${issues.errors.join('\n- ')}`)
+        board.replacePatch(p.id, patch)
+        if (board.master.patchId !== p.id) board.selectPatch(p.id)
+        return { text: json({ updated: p.id, name: patch.name, notes: issues.notes }) }
+      },
+    },
+    {
+      name: 'delete_patch',
+      description: 'Delete a patch (only when the user asks). It can be undone.',
+      schema: { type: 'object', properties: { patch_id: { type: 'string' } }, required: ['patch_id'], additionalProperties: false },
+      confirm: (input: { patch_id: string }) => {
+        if (!o.confirmDeletes) return null
+        const p = board.patchById(input.patch_id)
+        return p ? `Delete the patch “${p.name}”?` : null
+      },
+      run: (input: { patch_id: string }) => {
+        const p = patchOf(input.patch_id)
+        board.removePatches([p.id])
+        return { text: json({ deleted: p.id, name: p.name }) }
+      },
+    },
+    {
+      name: 'select_patch',
+      description: 'Select a patch, so the keyboard plays it and the rack shows it.',
+      schema: { type: 'object', properties: { patch_id: { type: 'string' } }, required: ['patch_id'], additionalProperties: false },
+      run: (input: { patch_id: string }) => {
+        const p = patchOf(input.patch_id)
+        board.selectPatch(p.id)
+        return { text: json({ selected: p.id, name: p.name }) }
+      },
+    },
+    {
+      name: 'render_patch',
+      description:
+        'Play one note of a patch (or a single sound) offline and silently, then measure it: peak / RMS level, pitch, brightness (spectral centroid), attack / decay / release, harmonics, noise, stereo, clipping; and return a waveform picture (with a zoom on a few cycles) and a spectrogram (log frequency, dB colour) to look at. Without patch_id or sound, the selected patch.',
+      schema: {
+        type: 'object',
+        properties: {
+          patch_id: { type: 'string' },
+          sound: { type: 'string', description: 'render a single sound instead (an AKWF wave name or sound id)' },
+          note: { type: 'integer', minimum: 0, maximum: 127, description: 'MIDI note (60 = C4, default)' },
+          velocity: { type: 'number', minimum: 0.01, maximum: 1 },
+          hold: { type: 'number', minimum: 0.05, maximum: 10, description: 'seconds the key is held (default 1.5)' },
+          tail: { type: 'number', minimum: 0, maximum: 10, description: 'seconds after release (default 1)' },
+          wet: { type: 'boolean', description: 'include the header\'s master chorus/delay/reverb (default false: dry)' },
+          images: { type: 'array', items: { type: 'string', enum: ['waveform', 'spectrogram'] }, description: 'which pictures (default both; [] for numbers only)' },
+        },
+        additionalProperties: false,
+      },
+      run: async (input: { patch_id?: string; sound?: string; note?: number; velocity?: number; hold?: number; tail?: number; wet?: boolean; images?: string[] }): Promise<ToolReply> => {
+        let title = ''
+        let req: Parameters<Board['renderOffline']>[0]
+        if (input.sound) {
+          const s = await board.resolveSoundRef(input.sound)
+          if (!s) throw new Error(`no sound "${input.sound}"`)
+          req = { soundId: s.id }
+          title = s.name
+        } else {
+          const p = patchOf(input.patch_id)
+          if (!patchLayers(p).length) throw new Error(`patch ${p.name} has no sounds`)
+          req = { patchId: p.id }
+          title = p.name
+        }
+        const r = await board.renderOffline({ ...req, note: input.note, velocity: input.velocity, hold: input.hold, tail: input.tail, wet: input.wet })
+        const a = analyse(r, title)
+        const want = input.images ?? ['waveform', 'spectrogram']
+        const images = (['waveform', 'spectrogram'] as const).filter((k) => want.includes(k)).map((k) => ({ mediaType: 'image/png' as const, data: a.images[k] }))
+        return { text: `${title}${input.wet ? ' (wet)' : ' (dry)'}\n${a.summary}`, images }
+      },
+    },
+  ]
+  return tools
+}
