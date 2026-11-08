@@ -64,12 +64,18 @@ function(ssb_bundle_web target)
     if(TARGET ssb-mcp)
         if(APPLE)
             set(_helpers "$<TARGET_BUNDLE_CONTENT_DIR:${target}>/Helpers")
+            # signed on its own first: the linker ad-hoc signs only a universal binary's arm64 slice, and a
+            # bundle can't be sealed around nested code that isn't signed ("not signed at all: In subcomponent")
+            set(_sign_helper COMMAND codesign --force --sign "${SSB_CODESIGN_IDENTITY}" --timestamp=none
+                             "${_helpers}/$<TARGET_FILE_NAME:ssb-mcp>")
         else()
             set(_helpers "$<TARGET_FILE_DIR:${target}>")
+            set(_sign_helper "")
         endif()
         add_custom_command(TARGET ${target}_web POST_BUILD
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${_helpers}"
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:ssb-mcp>" "${_helpers}/"
+            ${_sign_helper}
             COMMENT "Copying ssb-mcp into ${target}"
             VERBATIM)
         add_dependencies(${target}_web ssb-mcp)
