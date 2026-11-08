@@ -117,9 +117,34 @@ function confirmDelete() {
 function onEnter(e: KeyboardEvent) {
   if ((e.target as HTMLElement).tagName !== 'BUTTON') confirmDelete()
 }
-/** the prompt opens with DELETE focused (Enter confirms, Esc cancels); the grid has the keys again after */
+/**
+ * The prompt opens with DELETE focused (Enter confirms, Esc cancels); the grid has the keys again once it has gone
+ * (`after-leave`: earlier, the closing dialog's focus trap takes focus back and drops it on the page).
+ */
 const deleteButton = ref<HTMLButtonElement>()
-watch(asking, (open) => setTimeout(() => (open ? deleteButton.value?.focus() : grid?.focus()), 60))
+watch(asking, (open) => open && setTimeout(() => deleteButton.value?.focus(), 60))
+const refocus = () => grid?.focus()
+/** Delete / Backspace: ask to remove the selected rows */
+function askDelete(ids: string[]) {
+  if (!ids.length || asking.value) return
+  doomed.value = ids
+  asking.value = true
+}
+/**
+ * Delete / Backspace with the keys somewhere else (on the page itself, after a dialog or a click outside): the grid
+ * showing, its rows selected, nothing being typed into -- still asks. (The grid's own handler takes them when it has
+ * focus, and marks them handled.)
+ */
+function onWindowKey(e: KeyboardEvent) {
+  if (e.defaultPrevented || (e.key !== 'Delete' && e.key !== 'Backspace') || e.metaKey || e.ctrlKey || e.altKey) return
+  const t = e.target as HTMLElement | null
+  if (t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(t.tagName))) return
+  if (!grid || !root.value?.offsetParent || document.querySelector('.v-overlay--active')) return
+  const ids = (grid.selectedRows as (GridRow | undefined)[]).flatMap((r) => (r?.id ? [r.id] : []))
+  if (!ids.length) return
+  e.preventDefault()
+  askDelete(ids)
+}
 
 /** the source row each grid row was last copied from: rows a parent keeps (unchanged) aren't copied again */
 const pushed = new Map<string, GridRow>()
@@ -240,6 +265,10 @@ onMounted(() => {
   // else still does, so the grid never sees it; the canvas is draggable only while the pointer is over a grip.
   const canvas = g.canvas
   let dragRow: GridRow | null = null
+  // a press on the grid gives it the keys: canvas-datagrid only takes focus from a press when it already has it, so
+  // once something else took focus (the delete prompt, a panel) a click on a row would leave the keys with the page
+  host.value!.addEventListener('pointerdown', () => g.hasFocus || g.focus(), { capture: true })
+  window.addEventListener('keydown', onWindowKey)
   g.addEventListener('mousedown', (e) => {
     const kind = kindOf(e.cell)
     dragRow = kind === 'grip' ? (e.cell.data as GridRow) : null
@@ -382,11 +411,8 @@ onMounted(() => {
     // Delete / Backspace remove the selected rows (after asking), never blank their cells
     if (k === 'Delete' || k === 'Backspace') {
       e.preventDefault()
-      const ids = selectedIds()
-      if (ids.length) {
-        doomed.value = ids
-        asking.value = true
-      }
+      e.NativeEvent?.preventDefault()
+      askDelete(selectedIds())
       return
     }
     // ↑ / ↓ move the selection (⇧ stretches it); the board's selection follows
@@ -524,6 +550,7 @@ let sizeObserver: ResizeObserver | undefined
 /** stops following the pointer for the grip's cursor */
 let unhover = () => {}
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onWindowKey)
   unhover()
   stopTicking()
   backObserver?.disconnect()
@@ -541,7 +568,7 @@ onBeforeUnmount(() => {
     </div>
     <div ref="ghost" class="drag-ghost" aria-hidden="true" />
     <slot :narrow="narrow" />
-    <v-dialog v-model="asking" max-width="420">
+    <v-dialog v-model="asking" max-width="420" @after-leave="refocus">
       <div class="ask" tabindex="-1" @keydown.stop @keydown.enter="onEnter" @keydown.esc="asking = false">
         <h3><v-icon icon="mdi-delete-alert" color="error" size="20" /> DELETE</h3>
         <p>Are you sure you want to delete {{ doomed.length }} {{ noun[doomed.length === 1 ? 0 : 1] }}?</p>

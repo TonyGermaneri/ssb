@@ -400,7 +400,8 @@ markers' flags along the top still grab them too).
 
 **GRID** in the list's bar (each tab has its own) switches it to a spreadsheet (canvas-datagrid, loaded on first use).
 Click a row to select that sound, **☰** shows its full control panel beside the grid (under it when the list is
-narrow; ☰ on that row again, or Esc, puts it away), click **▷** or double-click a read-only cell to play, double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type a
+narrow; ☰ on that row again, or Esc, puts it away), click **▷** or double-click a read-only cell to play, **Delete** or **Backspace** removes the selected rows (after
+asking; ⌘Z brings them back), double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type a
 value, and click a column title to sort. Drag a row by its **⠿** into a VCO slot (dragging anywhere else selects
 rows) or onto another row to move it there (while the grid isn't sorted), and **1 2 3** put the sound into that VCO
 of the patch or take it out, as on the cards. **WAVE** draws each sound's waveform, with a playhead while it plays.
