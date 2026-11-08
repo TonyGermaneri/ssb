@@ -8,7 +8,7 @@ describe('grain LENGTH', () => {
     expect(lengthPhase(0.2499, 0.25)).toBeCloseTo(0.9996, 12)
     expect(lengthPhase(0.25, 0.25)).toBe(-1)
     expect(lengthPhase(0.9, 0.25)).toBe(-1)
-    expect(GRAIN_LENGTH_MIN).toBe(0.02)
+    expect(GRAIN_LENGTH_MIN).toBe(0.01)
   })
 
   it("gates a LOOP segment: whole, then a raised-cosine fade over the end of what sounds, then silence; 1 at LENGTH 1", () => {

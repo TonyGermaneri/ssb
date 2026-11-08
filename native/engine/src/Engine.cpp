@@ -163,6 +163,7 @@ struct Engine::Voice
         ModSource source { ModSource::lfo1 };
         ModDest dest { ModDest::pitch };
         float gain { 0 };
+        float dc { 0 };   // a unipolar route's constant half: gain·x + dc = amount·(x + 1) / 2 (voice.ts wireRoutes)
     };
     std::array<Route, 32> routes {};
     int routeCount { 0 };
@@ -506,7 +507,7 @@ struct Engine::Impl
         {
             const auto& r = v.routes[(size_t) i];
             if (! r.pad || ! audioRateLfo (v, r.source) || ! isGrainDest (r.dest)) continue;
-            const float x = r.gain * sourceValue (v, true, r.source), xr = r.gain * sourceValue (v, true, r.source, 1);
+            const float x = r.gain * sourceValue (v, true, r.source) + r.dc, xr = r.gain * sourceValue (v, true, r.source, 1) + r.dc;
             auto& g = r.dest == ModDest::grainPos ? v.cGrainPos : r.dest == ModDest::grainSize ? v.cGrainSize
                     : r.dest == ModDest::grainSkew ? v.cGrainSkew : r.dest == ModDest::grainVar ? v.cGrainVar
                     : r.dest == ModDest::grainDetune ? v.cGrainDetune : v.cGrainScan;
@@ -551,16 +552,23 @@ struct Engine::Impl
                 }
                 float gain = r.amount * modScale (r.dest)
                            * (r.dest == ModDest::pitch ? 100.0f : r.dest == ModDest::cutoff ? 1200.0f : 1.0f);
+                float dc = 0;
                 if (r.dest == ModDest::volume && isBipolar (r.source))
                 {
                     gain /= 2;
                     v.tremBase += gain;
                 }
+                else if (r.unipolar && isBipolar (r.source))
+                {
+                    // UNIPOLAR: the source's -1..1 taken as 0..1 -- half the swing, and as much again held constant
+                    gain /= 2;
+                    dc = gain;
+                }
                 if (r.source == ModSource::vco1 || r.source == ModSource::vco2 || r.source == ModSource::vco3)
                     v.vcoRoutes = true;
                 if (scope == 1 && v.kind == Voice::Kind::cloud && audioRateLfo (v, r.source) && isGrainDest (r.dest))
                     v.audioLfo = true;
-                v.routes[(size_t) v.routeCount++] = { scope == 1, r.source, r.dest, gain };
+                v.routes[(size_t) v.routeCount++] = { scope == 1, r.source, r.dest, gain, dc };
             }
     }
 
@@ -1636,10 +1644,10 @@ struct Engine::Impl
                 continue;   // audio rate, per sample
             if (v.audioLfo && r.pad && audioRateLfo (v, r.source) && isGrainDest (r.dest))
                 continue;   // every sample (audioLfoRoutes)
-            const float x = r.gain * sourceValue (v, r.pad, r.source);
+            const float x = r.gain * sourceValue (v, r.pad, r.source) + r.dc;
             // the grains' right side reads an LFO's right side
             const bool lfo = r.source == ModSource::lfo1 || r.source == ModSource::lfo2;
-            const float xr = lfo ? r.gain * sourceValue (v, r.pad, r.source, 1) : x;
+            const float xr = lfo ? r.gain * sourceValue (v, r.pad, r.source, 1) + r.dc : x;
             const auto both = [x, xr] (std::array<float, 2>& g) { g[0] += x; g[1] += xr; };
             switch (r.dest)
             {
@@ -1750,7 +1758,7 @@ struct Engine::Impl
     }
 
     /** grains.worklet.ts length(): the share of each grain that sounds. */
-    static double grainLength (const Voice& v) noexcept { return std::clamp ((double) v.s().grainLength, 0.02, 1.0); }
+    static double grainLength (const Voice& v) noexcept { return std::clamp ((double) v.s().grainLength, 0.01, 1.0); }
 
     /** grains.worklet.ts variation() / skew(): the knobs with their routes, 0..1. */
     static float variation (const Voice& v, int side) noexcept { return std::clamp (v.s().grainVariation + v.cGrainVar[(size_t) side], 0.0f, 1.0f); }
@@ -2146,8 +2154,9 @@ struct Engine::Impl
                 {
                     const auto& rt = v.routes[(size_t) r];
                     int slot = rt.source == ModSource::vco1 ? 0 : rt.source == ModSource::vco2 ? 1 : rt.source == ModSource::vco3 ? 2 : -1;
-                    if (slot < 0 || ! taps[slot]) continue;
-                    const float x = rt.gain * taps[slot][i];
+                    if (slot < 0) continue;
+                    // a VCO that isn't sounding reads as silence (the page's hub.zero); a unipolar route's half still holds
+                    const float x = (taps[slot] ? rt.gain * taps[slot][i] : 0.0f) + rt.dc;
                     switch (rt.dest)
                     {
                         case ModDest::pitch:     vPitch += x; break;

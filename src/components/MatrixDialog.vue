@@ -6,7 +6,7 @@ import { fmtPct, fmtRate } from '../lib/format'
 import { fmtRouteAmount, lfoValue } from '../lib/modulation'
 import { isRandomShape } from '../audio/lfoMath'
 import {
-  DIVISIONS, lfoHz, LFO_PHASES, LFO_RATIO_MAX, LFO_RATIO_MIN, LFO_SHAPES, MOD_DEST_IDS, MOD_DESTS, MOD_SOURCES, type Lfo,
+  BIPOLAR_SOURCES, DIVISIONS, lfoHz, LFO_PHASES, LFO_RATIO_MAX, LFO_RATIO_MIN, LFO_SHAPES, MOD_DEST_IDS, MOD_DESTS, MOD_SOURCES, type Lfo,
   type LfoShape, type ModDest, type ModMatrix, type ModSource,
 } from '../types'
 import Knob from './Knob.vue'
@@ -80,6 +80,15 @@ function setAmount(src: ModSource, dest: ModDest, v: number) {
     if (v === 0) m.routes.splice(i, 1)
     else m.routes[i].amount = v
   } else if (v !== 0) m.routes.push({ source: src, dest, amount: v })
+}
+const routeOf = (src: ModSource, dest: ModDest) => matrix.value?.routes.find((r) => r.source === src && r.dest === dest)
+/** ± / +: a two-sided source (LFO, bend, random, a VCO) swings both ways, or (UNIPOLAR) only up from where it's set */
+const canUnipolar = (src: ModSource, dest: ModDest) => BIPOLAR_SOURCES.includes(src) && dest !== 'volume'
+function toggleUnipolar(src: ModSource, dest: ModDest) {
+  const r = routeOf(src, dest)
+  if (!r) return
+  if (r.unipolar) delete r.unipolar
+  else r.unipolar = true
 }
 function clearAll() {
   if (matrix.value) matrix.value.routes.splice(0)
@@ -241,6 +250,17 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
                   :format="(v: number) => (v ? fmtRouteAmount(d, v) : '·')"
                   @update:model-value="(v: number) => setAmount(src.id, d, v)"
                 />
+                <button
+                  v-if="amount(src.id, d) !== 0 && canUnipolar(src.id, d)"
+                  class="uni"
+                  :class="{ on: routeOf(src.id, d)?.unipolar }"
+                  :title="routeOf(src.id, d)?.unipolar
+                    ? 'UNIPOLAR: the source counts 0..1, so it only pushes one way from where the destination is set — click for both ways (±)'
+                    : 'BIPOLAR: the source swings both ways around where the destination is set — click to push one way only (+)'"
+                  @click="toggleUnipolar(src.id, d)"
+                >
+                  {{ routeOf(src.id, d)?.unipolar ? '+' : '±' }}
+                </button>
               </td>
             </tr>
           </tbody>
@@ -250,7 +270,7 @@ const routeCount = computed(() => matrix.value?.routes.length ?? 0)
 
       <footer>
         <span class="count">{{ routeCount }} ROUTE{{ routeCount === 1 ? '' : 'S' }}</span>
-        <span class="hint">Double-click a cell to clear it · Bend always bends pitch (pad BEND range; MPE notes use NOTE BEND)</span>
+        <span class="hint">Double-click a cell to clear it · ± / + on a cell: both ways, or one way only (UNIPOLAR) · Bend always bends pitch (pad BEND range; MPE notes use NOTE BEND)</span>
         <v-spacer />
         <button class="hw-btn" :disabled="!routeCount" @click="clearAll">CLEAR ALL</button>
       </footer>
@@ -417,9 +437,30 @@ h3 {
   color: var(--c-accent);
 }
 .grid td {
+  position: relative;
   padding: 2px 1px 0;
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.02);
+}
+.uni {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 11px;
+  height: 11px;
+  padding: 0;
+  border-radius: 3px;
+  font-family: 'VT323', monospace;
+  font-size: 11px;
+  line-height: 10px;
+  color: var(--text-dim);
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.uni.on {
+  color: #000;
+  background: var(--c-primary);
+  border-color: var(--c-primary);
 }
 .grid td:not(.active) :deep(.readout) {
   color: #444;

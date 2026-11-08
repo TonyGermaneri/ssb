@@ -11,7 +11,7 @@ const reference = [
   ...SLOT_PARAMS.map(paramLine),
   '## LFOs (a slot\'s "lfo1" / "lfo2"; the header\'s global ones in header.mod)',
   ...LFO_PARAMS.map(paramLine),
-  '## Mod routes ({source, dest, amount}: a slot\'s "routes", or header.mod.routes for every voice)',
+  '## Mod routes ({source, dest, amount, unipolar?}: a slot\'s "routes", or header.mod.routes for every voice)',
   ...ROUTE_PARAMS.map(paramLine),
   '## Header (the patch\'s "header")',
   ...HEADER_PARAMS.map(paramLine),

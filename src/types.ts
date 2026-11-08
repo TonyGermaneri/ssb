@@ -51,6 +51,8 @@ export type ModDest =
   | 'pitch' | 'cutoff' | 'resonance' | 'volume' | 'pan' | 'grainPos' | 'grainSize' | 'grainSkew' | 'grainVar'
   | 'grainDetune' | 'grainScan' | 'lfo1Rate' | 'lfo1Amt' | 'lfo2Rate' | 'lfo2Amt' | 'delayMix' | 'reverbMix'
 export type LfoShape = 'sine' | 'triangle' | 'square' | 'sawtooth' | 'rampDown' | 'random' | 'smooth' | 'wander'
+/** sources that swing both ways (-1..1); the rest are 0..1. A route's UNIPOLAR only changes these. */
+export const BIPOLAR_SOURCES: ModSource[] = ['lfo1', 'lfo2', 'bend', 'random', 'vco1', 'vco2', 'vco3']
 
 export const MOD_SOURCES: { id: ModSource; label: string }[] = [
   { id: 'lfo1', label: 'LFO 1' },
@@ -181,6 +183,9 @@ export interface ModRoute {
   source: ModSource
   dest: ModDest
   amount: number // -1..1 of the destination's scale
+  /** a two-sided source (an LFO, bend) taken as 0..1 instead of -1..1: it only pushes one way (the Play view's LFO
+   *  sweeps POS forward of where it's set, never back) */
+  unipolar?: boolean
 }
 export interface ModMatrix {
   lfo1: Lfo
@@ -279,7 +284,7 @@ export interface SoundSettings {
   grainScanLoop: boolean // [Loop] SCAN starts over at S.DIST
   grainScanKey: boolean // [Key > Scan] SCAN's speed follows the note
   // SpaceCraft's grain controls (the VCO Play view)
-  grainLength: number // 0.02..1: a grain sounds for this share of its full length (its window squeezed in), then silence
+  grainLength: number // 0.01..1: a grain sounds for this share of its full length (its window squeezed in), then silence
   grainBackwards: boolean // every grain reads the sample backwards from where it starts (LOOP: every segment reversed)
   // ring modulator, after the filter and EQ: x × ((1 − mix) + mix × sin(2π · freq · t)), its phase 0 at the note
   ringMix: number // 0..1 (0: off)

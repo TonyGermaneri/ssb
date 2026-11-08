@@ -68,7 +68,7 @@ export interface GrainConfig {
   varVol: number // dB: a grain's level (× VARIATION), mostly quieter
   detune: number // semitones: left lower, right higher
   noteRnd: number // semitones: each note's pitch, ± at random
-  length: number // 0.02..1: a grain sounds for this share of its length, its window squeezed in (1: all of it)
+  length: number // 0.01..1: a grain sounds for this share of its length, its window squeezed in (1: all of it)
   backwards: boolean // grains read the sample backwards from where they start (LOOP: every segment reversed)
   speed: number // stretch: clip seconds per second
   kRate: number // the pad's PITCH / FINE as a playback rate
@@ -303,7 +303,7 @@ export function loopSegment(at: number, span: number, fade: number, lo: number, 
 // ───────────────────────────────────────────────────────────────────────── grain length (SpaceCraft)
 
 /** LENGTH's floor: a grain sounds for at least this share of its length */
-export const GRAIN_LENGTH_MIN = 0.02
+export const GRAIN_LENGTH_MIN = 0.01
 
 /**
  * A window's phase (0..1) with LENGTH: the window squeezed into the first `length` of the grain, -1 (silent) after.

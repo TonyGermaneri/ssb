@@ -1,5 +1,5 @@
 import {
-  MOD_DESTS, type ModDest, type ModMatrix, type ModSource, type SoundSettings, type ZoneCcMod, type ZoneLfo,
+  BIPOLAR_SOURCES, MOD_DESTS, type ModDest, type ModMatrix, type ModSource, type SoundSettings, type ZoneCcMod, type ZoneLfo,
 } from '../types'
 import { lfoConfig, LfoSource } from './lfo'
 import { isSvfType, type SvfType } from './svfMath'
@@ -107,7 +107,7 @@ type Scope = 'global' | 'pad'
 const LFO_INDEX = { lfo1: 0, lfo2: 1 } as const
 /** matrix units → AudioParam units */
 const PARAM_UNIT: Partial<Record<ModDest, number>> = { pitch: 100, cutoff: 1200 }
-const BIPOLAR = new Set<ModSource>(['lfo1', 'lfo2', 'bend', 'random', 'vco1', 'vco2', 'vco3'])
+const BIPOLAR = new Set<ModSource>(BIPOLAR_SOURCES)
 const VCO_INDEX = { vco1: 0, vco2: 1, vco3: 2 } as const
 /** KEY on an envelope: its times ÷ 2^(key × semis / 12), so higher notes run it faster (Granulator III's Key > Env) */
 const keyEnv = (e: Env, key: number | undefined, semis: number): Env => {
@@ -237,6 +237,8 @@ export class Voice {
   private lfoKeyLinks: (GainNode | null)[] = [null, null]
   private links: { from: AudioNode; gain: GainNode }[] = []
   private routeSig = ''
+  /** a constant 1: unipolar routes' held half (made the first time one is wired) */
+  private dcSrc?: ConstantSourceNode
   private atValue = 0
   private bendValue = 0
   private src?: AudioBufferSourceNode
@@ -845,13 +847,21 @@ export class Voice {
         const to = this.destTarget(r.dest)
         if (!to) continue
         let gain = r.amount * MOD_DESTS[r.dest].scale * (PARAM_UNIT[r.dest] ?? 1)
+        // UNIPOLAR: a two-sided source taken as 0..1 -- half its swing, and as much again held (amount·(x+1)/2);
+        // volume already reads two-sided sources that way
+        const uni = !!r.unipolar && BIPOLAR.has(r.source) && r.dest !== 'volume'
         if (r.dest === 'volume' && BIPOLAR.has(r.source)) {
           gain /= 2
           tremBase += gain
-        }
-        wanted.push({ from: this.sourceNode(scope, r.source), to, gain, key: `${scope}:${r.source}>${r.dest}` })
+        } else if (uni) gain /= 2
+        const key = `${scope}:${r.source}>${r.dest}${uni ? '+' : ''}`
+        wanted.push({ from: this.sourceNode(scope, r.source), to, gain, key })
+        if (uni) wanted.push({ from: this.dc(), to, gain, key: `${key}:dc` })
         const toR = this.destTargetR(r.dest)
-        if (toR) wanted.push({ from: this.sourceNodeR(scope, r.source), to: toR, gain, key: `${scope}:${r.source}>${r.dest}:R` })
+        if (toR) {
+          wanted.push({ from: this.sourceNodeR(scope, r.source), to: toR, gain, key: `${key}:R` })
+          if (uni) wanted.push({ from: this.dc(), to: toR, gain, key: `${key}:R:dc` })
+        }
       }
     }
     const now = this.ctx.currentTime
@@ -870,6 +880,15 @@ export class Voice {
       this.links.push({ from: w.from, gain: g })
     }
     this.routeSig = sig
+  }
+
+  private dc(): ConstantSourceNode {
+    if (!this.dcSrc) {
+      this.dcSrc = this.ctx.createConstantSource()
+      this.dcSrc.offset.value = 1
+      this.dcSrc.start(this.t0)
+    }
+    return this.dcSrc
   }
 
   private unwire() {
@@ -1047,7 +1066,7 @@ export class Voice {
     for (const n of consts) n.stop()
     for (const n of this.padLfos) n?.stop()
     for (const n of this.lfoKeyLinks) n?.disconnect()
-    for (const n of [...this.zoneLfoNodes, this.ccPitch, this.ccCut, this.tuneSrc]) {
+    for (const n of [...this.zoneLfoNodes, this.ccPitch, this.ccCut, this.tuneSrc, this.dcSrc]) {
       n?.stop()
       n?.disconnect()
     }

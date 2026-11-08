@@ -1954,7 +1954,9 @@ TEST ("engine: the ring modulator multiplies by a sine: sum and difference, and 
 TEST ("engine: grain LENGTH / BACK and the ring modulator come from the page's JSON, in range")
 {
     const auto s = ssb::settingsFromJson (juce::JSON::parse (R"({"grain": true, "grainFreq": 8, "grainLength": 0.001, "grainBackwards": true, "ringMix": 3, "ringFreq": 5})"));
-    CHECK_NEAR (s.grainLength, 0.02, 1e-6);
+    CHECK_NEAR (s.grainLength, 0.01, 1e-6);
+    CHECK_NEAR (ssb::settingsFromJson (juce::JSON::parse (R"({"grain": true, "grainFreq": 8, "grainLength": 0.005})")).grainLength, 0.01, 1e-6);
+    CHECK_NEAR (ssb::settingsFromJson (juce::JSON::parse (R"({"grain": true, "grainFreq": 8, "grainLength": 0.01})")).grainLength, 0.01, 1e-6);
     CHECK (s.grainBackwards);
     CHECK_NEAR (s.ringMix, 1.0, 1e-6);
     CHECK_NEAR (s.ringFreq, 20.0, 1e-6);
@@ -1962,4 +1964,103 @@ TEST ("engine: grain LENGTH / BACK and the ring modulator come from the page's J
     CHECK_NEAR (d.grainLength, 1.0, 1e-6);
     CHECK (! d.grainBackwards);
     CHECK_NEAR (d.ringMix, 0.0, 1e-6);
+}
+
+TEST ("engine: LENGTH 1% -- a grain heard for 1% of its period")
+{
+    Rig rig;
+    auto silentShare = [] (const Rig& r, double from, double to)
+    {
+        size_t quiet = 0, n = 0;
+        for (auto i = (size_t) (from * rate); i < (size_t) (to * rate); ++i, ++n)
+            if (std::abs (r.left[i]) < 0.002f) ++quiet;
+        return (double) quiet / (double) n;
+    };
+    // CLASSIC: two slots half a period apart, each heard for 1% of its 100 ms
+    rig.add ("a", dc (0.5f, 3), [] (auto& s) { cloud (s, 10); s.grainLength = 0.01f; });
+    rig.commit();
+    rig.press ("a");
+    rig.render (1.2);
+    CHECK_NEAR (silentShare (rig, 0.1, 1.1), 0.98, 0.015);
+    std::vector<ssb::GrainView> grains;
+    rig.engine.readGrains (grains, 1000);
+    CHECK (! grains.empty());
+    for (const auto& g : grains)
+        CHECK_NEAR (g.dur, 0.1 * 0.01, 2e-4);
+}
+
+TEST ("engine: a UNIPOLAR route pushes one way: LFO 2 sweeps grains forward of GRAIN POS, never back")
+{
+    // 25 grains a second, POS 0.3 of a 2 s sweep (0.6 s); LFO 2 a 3 Hz sine into POS at 0.5 (±0.25 of the clip)
+    auto play = [] (bool unipolar)
+    {
+        auto rig = std::make_unique<Rig>();
+        rig->add ("a", sweep(), [unipolar] (auto& s)
+        {
+            cloud (s, 25);
+            s.grainPos = 0.3f;
+            s.mod.lfo2.shape = ssb::LfoShape::sine;
+            s.mod.lfo2.sync = false;
+            s.mod.lfo2.rate = 3.0f;
+            s.mod.lfo2.amount = 1.0f;
+            s.mod.routes = { { ssb::ModSource::lfo2, ssb::ModDest::grainPos, 0.5f, unipolar } };
+        });
+        rig->commit();
+        rig->press ("a");
+        rig->render (1.0);
+        std::vector<ssb::GrainView> grains;
+        rig->engine.readGrains (grains, 1000);
+        double lo = 1e9, hi = -1e9;
+        for (const auto& g : grains) { lo = std::min (lo, (double) g.pos); hi = std::max (hi, (double) g.pos); }
+        return std::make_tuple (lo, hi, grains.size());
+    };
+    const auto [uLo, uHi, uCount] = play (true);
+    CHECK (uCount > 20);
+    CHECK (uLo >= 0.6 - 0.01);   // never before POS
+    CHECK (uHi > 0.6 + 0.35);    // well forward of it: 0..0.25 of the clip (0..0.5 s)
+    CHECK (uHi <= 0.6 + 0.5 + 0.01);
+    // without the flag the same route swings both ways, as before
+    const auto [bLo, bHi, bCount] = play (false);
+    CHECK (bCount > 20);
+    CHECK (bLo < 0.6 - 0.35);
+    CHECK (bHi > 0.6 + 0.35);
+}
+
+TEST ("engine: UNIPOLAR comes from the page's JSON (absent: both ways)")
+{
+    const auto s = ssb::settingsFromJson (juce::JSON::parse (R"({"mod": {"routes": [
+        {"source": "lfo2", "dest": "grainPos", "amount": 0.4, "unipolar": true},
+        {"source": "lfo1", "dest": "cutoff", "amount": 0.2}]}})"));
+    CHECK (s.mod.routes.size() == 2);
+    CHECK (s.mod.routes[0].unipolar);
+    CHECK_NEAR (s.mod.routes[0].amount, 0.4, 1e-6);
+    CHECK (! s.mod.routes[1].unipolar);
+}
+
+TEST ("engine: a UNIPOLAR LFO into pitch only bends up")
+{
+    // LFO 1 a 4 Hz square into pitch at 1 (±12 st... scale): bipolar alternates above and below; unipolar, at and above
+    auto play = [] (bool unipolar)
+    {
+        auto rig = std::make_unique<Rig>();
+        rig->add ("a", sine (440, 2), [unipolar] (auto& s)
+        {
+            s.mod.lfo1.shape = ssb::LfoShape::square;
+            s.mod.lfo1.sync = false;
+            s.mod.lfo1.rate = 2.0f;
+            s.mod.lfo1.amount = 1.0f;
+            s.mod.routes = { { ssb::ModSource::lfo1, ssb::ModDest::pitch, 0.1f, unipolar } };
+        });
+        rig->commit();
+        rig->press ("a");
+        rig->render (1.0);
+        return std::make_pair (rig->hz (0.05, 0.2), rig->hz (0.3, 0.45));   // the square's first half, then its second
+    };
+    const auto [uHigh, uLow] = play (true);
+    const auto [bHigh, bLow] = play (false);
+    CHECK (uHigh > 445.0);              // up
+    CHECK_NEAR (uLow, 440.0, 3.0);      // and back to where it's set, not below
+    CHECK (bHigh > 445.0);
+    CHECK (bLow < 435.0);               // both ways
+    CHECK_NEAR (uHigh, bHigh, 3.0);     // the same top
 }

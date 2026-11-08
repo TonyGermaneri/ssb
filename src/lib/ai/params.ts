@@ -131,7 +131,7 @@ export const SOUND_SECTIONS: { title: string; params: Param[] }[] = [
       n('grainVarVol', 0, 24, 'dB', 'level variation'),
       n('grainDetune', 0, 12, 'st', 'left lower, right higher'),
       n('grainNoteRnd', 0, 12, 'st', 'each note’s pitch randomly ±'),
-      n('grainLength', 0.02, 1, '', 'how much of each grain sounds (its window squeezed in), then silence: short = separate, arpeggio-like grains'),
+      n('grainLength', 0.01, 1, '', 'how much of each grain sounds (its window squeezed in), then silence: short = separate, arpeggio-like grains'),
       b('grainBackwards', 'every grain reads the sample backwards from where it starts (LOOP: every segment reversed)'),
     ],
   },
@@ -185,6 +185,7 @@ export const ROUTE_PARAMS: Param[] = [
   e('source', MOD_SOURCES.map((s) => s.id), 'lfo1 lfo2 (the layer’s, or the header’s global ones in header.mod), mod wheel, aftertouch, velocity, key (octaves from root), random (per note), bend, timbre (CC74), fenv (filter envelope), vco1..vco3 (the patch slots’ audio, audio-rate)'),
   e('dest', Object.keys(MOD_DESTS), Object.entries(MOD_DESTS).map(([k, d]) => `${k}${d.unit ? ` (±1 = ${d.scale} ${d.unit})` : ''}`).join(', ')),
   n('amount', -1, 1, '', 'of the destination’s scale'),
+  b('unipolar', 'optional: a two-sided source (lfo1, lfo2, bend, random, vco1..vco3) counts 0..1 instead of -1..1, so it only pushes one way from where the destination is set (e.g. lfo2 → grainPos sweeping forward of the position, never back); no effect on one-sided sources or volume'),
 ]
 
 export const HEADER_PARAMS: Param[] = [

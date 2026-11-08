@@ -39,6 +39,19 @@ describe('patch specs', () => {
     expect(back.header).toEqual({ mono: true, fx: { reverbMix: 0.3 } })
   })
 
+  it("takes a route's UNIPOLAR flag, keeps it, and refuses a non-boolean", async () => {
+    const routes = [
+      { source: 'lfo2' as const, dest: 'grainPos' as const, amount: 0.4, unipolar: true },
+      { source: 'lfo1' as const, dest: 'cutoff' as const, amount: 0.1 },
+    ]
+    const { patch, issues } = await fromSpec({ name: 'UNI', slots: [{ sound: 'AKWF_saw', settings: { grain: true }, routes }] }, byRef, uid)
+    expect(issues.errors).toEqual([])
+    expect(patch!.slots[0]!.layer.settings.mod.routes).toEqual(routes)
+    expect(toSpec(patch!, byId).slots[0]!.routes).toEqual(routes)
+    const bad = await fromSpec({ name: 'X', slots: [{ sound: 'AKWF_saw', routes: [{ source: 'lfo2', dest: 'grainPos', amount: 0.4, unipolar: 'yes' as unknown as boolean }] }] }, byRef, uid)
+    expect(bad.issues.errors.join('\n')).toMatch(/unipolar must be true or false/)
+  })
+
   it('refuses unknown knobs and sounds, naming the nearest', async () => {
     const { patch, issues } = await fromSpec({ name: 'X', slots: [{ sound: 'AKWF_nope', settings: {} }, { sound: 'AKWF_saw', settings: { cuttoff: 300 } }] }, byRef, uid)
     expect(patch).toBeUndefined()

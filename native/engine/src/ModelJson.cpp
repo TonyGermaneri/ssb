@@ -204,7 +204,7 @@ ModMatrix matrixFromJson (const juce::var& o)
             const auto src = modSource (str (r, "source"));
             const auto dst = modDest (str (r, "dest"));
             if (src && dst)
-                m.routes.push_back ({ *src, *dst, num (r, "amount", 0) });
+                m.routes.push_back ({ *src, *dst, num (r, "amount", 0), flag (r, "unipolar", false) });
         }
     return m;
 }
@@ -296,7 +296,7 @@ Settings settingsFromJson (const juce::var& o)
         s.grainScanLoop = flag (o, "grainScanLoop", false);
         s.grainScanKey = flag (o, "grainScanKey", false);
         // SpaceCraft's (absent before 0.11: whole forward grains, as they were)
-        s.grainLength = std::clamp (num (o, "grainLength", 1.0f), 0.02f, 1.0f);   // GRAIN_LENGTH_MIN
+        s.grainLength = std::clamp (num (o, "grainLength", 1.0f), 0.01f, 1.0f);   // GRAIN_LENGTH_MIN
         s.grainBackwards = flag (o, "grainBackwards", false);
     }
     else

@@ -68,6 +68,7 @@ struct ModRoute
     ModSource source { ModSource::lfo1 };
     ModDest dest { ModDest::pitch };
     float amount { 0.0f };   // -1..1 of the destination's scale
+    bool unipolar { false }; // a two-sided source taken as 0..1, not -1..1: it pushes one way only (not for volume)
 };
 
 struct ModMatrix
@@ -175,7 +176,7 @@ struct Settings
     bool grainScanLoop { false };   // [Loop]
     bool grainScanKey { false };    // [Key > Scan]
     // SpaceCraft's grain controls (the page's VCO Play view)
-    float grainLength { 1 };        // 0.02..1: the share of each grain that sounds, its window squeezed in
+    float grainLength { 1 };        // 0.01..1: the share of each grain that sounds, its window squeezed in
     bool grainBackwards { false };  // grains read backwards from where they start (LOOP: every segment reversed)
     // ring modulator after the filter and EQ: × ((1 − mix) + mix · sin(2π · freq · t)), phase 0 at the note
     float ringMix { 0 }, ringFreq { 440 };
