@@ -1,17 +1,17 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Point } from '../lib/play/pads'
 
 /**
- * One of the Play view's XY pads: a canvas the parent draws (`draw`, again on every `frame`), a crosshair dragged
- * anywhere on it (`move`, with y = 1 at the top), a double-click for its starting point (`reset`), and its settings
- * behind ⚙ (the `settings` slot).
+ * One of the Play view's XY pads: a canvas the parent paints (`draw`, when the parent calls `paint()` -- it knows
+ * when the picture changed -- and on a resize), a crosshair dragged anywhere on it (`move`, y = 1 at the top, as
+ * fast as the pointer moves: the parent takes the latest once a frame), a double-click for its starting point
+ * (`reset`), and its settings behind ⚙ (the `settings` slot).
  */
 const props = defineProps<{
   label: string
   title: string
   color: string
-  frame: number
   draw: (g: CanvasRenderingContext2D, w: number, h: number, dpr: number) => void
   square?: boolean
 }>()
@@ -19,55 +19,63 @@ const emit = defineEmits<{ move: [Point]; reset: []; end: [] }>()
 const wrap = ref<HTMLDivElement>()
 const canvas = ref<HTMLCanvasElement>()
 const showSettings = ref(false)
-const size = ref({ w: 100, h: 100 })
+let size = { w: 100, h: 100 }
+let g: CanvasRenderingContext2D | null = null
 
 function paint() {
   const c = canvas.value
   if (!c) return
   const dpr = window.devicePixelRatio || 1
-  const w = Math.max(1, Math.round(size.value.w * dpr))
-  const h = Math.max(1, Math.round(size.value.h * dpr))
+  const w = Math.max(1, Math.round(size.w * dpr))
+  const h = Math.max(1, Math.round(size.h * dpr))
   if (c.width !== w || c.height !== h) {
     c.width = w
     c.height = h
   }
-  const g = c.getContext('2d')!
+  g ??= c.getContext('2d')
+  if (!g) return
   g.setTransform(1, 0, 0, 1, 0, 0)
   g.clearRect(0, 0, w, h)
   props.draw(g, w, h, dpr)
 }
-watch(() => props.frame, paint)
+defineExpose({ paint })
 
 let ro: ResizeObserver | undefined
 onMounted(() => {
   ro = new ResizeObserver(([e]) => {
-    size.value = { w: e.contentRect.width, h: e.contentRect.height }
+    size = { w: e.contentRect.width, h: e.contentRect.height }
     paint()
   })
   if (wrap.value) ro.observe(wrap.value)
 })
 onBeforeUnmount(() => ro?.disconnect())
 
+let box: DOMRect | null = null
 const point = (e: PointerEvent): Point => {
-  const r = canvas.value!.getBoundingClientRect()
+  const r = box ?? canvas.value!.getBoundingClientRect()
   return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, 1 - (e.clientY - r.top) / r.height)) }
 }
 function down(e: PointerEvent) {
   if (showSettings.value) return
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  // measured once per drag, not on every move (a layout read each time)
+  box = canvas.value!.getBoundingClientRect()
   emit('move', point(e))
 }
 function move(e: PointerEvent) {
   if ((e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) emit('move', point(e))
 }
-function up(e: PointerEvent) {
-  if ((e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) emit('end')
+/** the drag's over: released, cancelled, or the capture lost */
+function up() {
+  if (!box) return
+  box = null
+  emit('end')
 }
 </script>
 
 <template>
   <div ref="wrap" class="pad" :class="{ square }" :style="{ '--line': color }" :title="title">
-    <canvas ref="canvas" @pointerdown.stop="down" @pointermove="move" @pointerup="up" @pointercancel="up" @dblclick.stop="emit('reset')" />
+    <canvas ref="canvas" @pointerdown.stop="down" @pointermove="move" @pointerup="up" @pointercancel="up" @lostpointercapture="up" @dblclick.stop="emit('reset')" />
     <span class="label">{{ label }}</span>
     <button v-if="$slots.settings" class="gear" :class="{ on: showSettings }" title="Settings" @pointerdown.stop @click.stop="showSettings = !showSettings">
       <v-icon size="12" icon="mdi-cog" />
@@ -78,7 +86,6 @@ function up(e: PointerEvent) {
     </div>
   </div>
 </template>
-
 <style scoped>
 .pad {
   position: relative;

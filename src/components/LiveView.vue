@@ -24,6 +24,13 @@ const knobs = computed(() => board.master.scope ?? defaultScopeKnobs())
 const H = computed(() => props.height)
 const wrap = ref<HTMLDivElement>()
 const W = ref(props.width ?? 386)
+// a given width (the Play view's big view) is followed as it changes: the set takes whatever shape it's given
+watch(
+  () => props.width,
+  (w) => {
+    if (w) W.value = w
+  },
+)
 const cv = ref<HTMLCanvasElement>()
 const grat = ref<HTMLCanvasElement>()
 

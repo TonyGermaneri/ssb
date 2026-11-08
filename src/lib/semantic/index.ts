@@ -66,6 +66,9 @@ export interface SemanticHost {
   audioOf(sound: Sound): { cycle: Float32Array } | { data: Float32Array; rate: number; from: number; to: number } | null
 }
 
+/** how long edits must stop before the index catches up with them */
+export const QUIET_MS = 600
+
 export class SemanticIndex {
   model: TextModel | null = null
   /** true once the text model is in (text search and ranking by words need it) */
@@ -275,9 +278,27 @@ export class SemanticIndex {
 
   // ── indexing in the background ──
   private idle = 0
-  /** make every missing entry soon, a slice at a time (after a load, an import, the factory install) */
-  soon() {
-    if (this.idle || !this.model) return
+  private waiting = 0
+  private again = false
+  /**
+   * Make every missing entry, a slice at a time (after a load, an import, the factory install, an edit), `wait` ms
+   * after the last call: edits arrive a frame apart while a knob or a Play pad moves, and a pass walks every sound
+   * and patch, so it runs once they stop rather than once a step.
+   */
+  soon(wait = 0) {
+    if (!this.model) return
+    if (this.idle) {
+      // a pass is under way: another after it, for what changed meanwhile
+      this.again = true
+      return
+    }
+    clearTimeout(this.waiting)
+    this.waiting = window.setTimeout(() => {
+      this.waiting = 0
+      this.pass()
+    }, wait)
+  }
+  private pass() {
     const todo: (Sound | Patch)[] = [...this.host.sounds(), ...this.host.patches()]
     let i = 0
     const step = () => {
@@ -291,6 +312,10 @@ export class SemanticIndex {
       else {
         this.idle = 0
         this.version.value++
+        if (this.again) {
+          this.again = false
+          this.soon(QUIET_MS)
+        }
       }
     }
     this.idle = window.setTimeout(step, 0)

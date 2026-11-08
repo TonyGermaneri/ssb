@@ -27,7 +27,7 @@ import {
   akwfReady, boardOrder, CYCLE_ROOT, isWaveAudioId, loadAkwf, waveAudioId, waveChannels, waveFolder, waveNameOf,
   waveSoundSettings, type AkwfWave,
 } from '../lib/akwf'
-import { SemanticIndex } from '../lib/semantic'
+import { QUIET_MS, SemanticIndex } from '../lib/semantic'
 import { makeCandidate, type CandidateInfo } from '../lib/semantic/candidate'
 import { stripExt } from '../lib/format'
 import {
@@ -1854,7 +1854,7 @@ export const useBoard = defineStore('board', () => {
   // ── semantic search: "similar to", descriptions, candidates ──
   // the index fills in as things arrive: after the board loads (the model is fetched then, in the background), after
   // imports and new patches (any change), and once the waves are in memory (their spectra)
-  watch(changes, () => loaded.value && semantic.soon())
+  watch(changes, () => loaded.value && semantic.soon(QUIET_MS))
   watch(akwfReady, (ready) => ready && semantic.audioChanged())
   watch(loaded, (ok) => ok && window.setTimeout(() => void semantic.load().catch((e) => console.warn('semantic search:', e)), 1200))
 

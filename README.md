@@ -95,13 +95,14 @@ The **rack** under the header shows the selected patch's three slots side by sid
   four XY pads. Drag a crosshair anywhere; double-click a pad to reset it; ⚙ has its options.
   - **The big view** is played like a pad: left / right is where in the clip the grains fire (POS), up / down how loud.
     The squares are the grains as they play (where each is reading), the dotted line where the LFO has moved the firing
-    point. The strip above is the whole sample with the clip boxed: drag the box, or its edges. Its corner chip picks
-    the view (2D, or a live SCOPE / BARS / SPECTRO under the crosshair).
-  - **GRAIN**: up / down how often grains fire, left / right how long each lasts. Its lines are the grains in time
-    (one row per grain voice, as long as a grain lasts), the one just fired lit. Top right: smooth granular textures;
-    bottom right: long layered grains; middle left: short separate grains, arpeggios.
+    point. Its corner chip picks the view (2D, or a live SCOPE / BARS / SPECTRO under the crosshair, the TV stretched
+    to the view's shape); **GRAIN ON / OFF** in the other corner switches grains.
+  - **GRAIN**: up / down how often grains fire, left / right how long each lasts. Its lines are the grains one after
+    another down the pad, each as long as it sounds (more rows the faster they fire), the one firing now lit: long
+    ones overlap the next (a smooth texture), short ones are dashes or dots apart. Top right: smooth granular
+    textures; bottom right: long layered grains; middle left: short separate grains, arpeggios.
   - **LFO**: swings where the grains fire — left / right how far (far left: off), up / down how fast (tempo divisions).
-    It is the layer's LFO 2, routed to POS. The trail is the firing point over the last moments.
+    It is the layer's LFO 2, routed to POS. The trail of dots is the firing point over the last cycle and a half.
   - **FILTER · REVERB**: up / down the reverb; left / right the filter, bypassed in the middle, a low-pass closing to
     the left, a high-pass opening to the right. The bright line is the filter's response, the copies behind it the reverb.
   - **PITCH · RING**: fine pitch (±2 semitones) in the middle; coarse at the left (an octave up at the top, stopped

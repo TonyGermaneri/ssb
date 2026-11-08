@@ -35,43 +35,51 @@ export function crosshair(g: G, w: number, h: number, p: Point, c: Colors, dpr: 
   g.fill()
 }
 
-// ── GRAIN: each line a grain, its length how long it lasts, rows the grain voices, the stagger how often they fire ──
-const ROWS = 16
-/** seconds across the pad */
-const GRAIN_WINDOW = 0.8
-export function drawGrain(
-  g: G,
-  w: number,
-  h: number,
-  o: { freq: number; length: number; overlap: number; now: number; sounding: boolean; colors: Colors; dpr: number },
-) {
+// ── GRAIN: the grains in turn, one per row (top first), each as long as it sounds ──
+/**
+ * How many grains the picture shows: more as they fire faster (the pad's height), so the staircase always fills the
+ * pad, steep and sparse at the bottom, a dense run at the top.
+ */
+export const grainRows = (y: number) => Math.round(5 + 19 * Math.min(1, Math.max(0, y)))
+/** which row lights: the grain firing now (-1 when nothing sounds) */
+export function grainHot(o: { freq: number; overlap: number; now: number; rows: number; sounding: boolean }) {
+  if (!o.sounding) return -1
+  const step = 1 / Math.max(0.01, o.freq) / Math.max(1, o.overlap)
+  return ((Math.floor(o.now / step) % o.rows) + o.rows) % o.rows
+}
+/**
+ * Time runs left to right over the run of grains: each starts one firing after the last, and lasts its LENGTH share
+ * of the grain period. Long grains overlap the next rows' (a smooth texture), short ones are dots apart (separate
+ * grains, arpeggios).
+ */
+export function drawGrain(g: G, w: number, h: number, o: { freq: number; length: number; overlap: number; rows: number; hot: number; colors: Colors; dpr: number }) {
   const period = 1 / Math.max(0.01, o.freq)
-  const step = period / Math.max(1, o.overlap) // a grain fires this often
-  const len = Math.max(0.0005, o.length * period)
-  const cycle = ROWS * step
-  const rowH = h / ROWS
-  const thick = Math.max(1.5 * o.dpr, rowH * 0.32)
-  const fired = Math.floor(o.now / step)
-  const hotRow = ((fired % ROWS) + ROWS) % ROWS
+  const step = period / Math.max(1, o.overlap)
+  const len = Math.max(0, o.length) * period
+  const rows = Math.max(1, o.rows)
+  const rowH = h / rows
+  const thick = Math.min(4 * o.dpr, Math.max(1.5 * o.dpr, rowH * 0.22))
+  const pad = thick
+  const span = (rows - 1) * step + len || 1
+  const xs = (t: number) => pad + (t / span) * (w - 2 * pad)
   g.lineCap = 'round'
-  for (let r = 0; r < ROWS; r++) {
+  for (let r = 0; r < rows; r++) {
     const y = (r + 0.5) * rowH
-    const t0 = r * step
-    // every firing of this row's voice that overlaps the window (a long grain from an earlier cycle reaches in)
-    const kFirst = Math.floor((-len - t0) / cycle)
-    for (let k = kFirst; t0 + k * cycle < GRAIN_WINDOW; k++) {
-      const a = t0 + k * cycle
-      const b = a + len
-      if (b <= 0) continue
-      const x0 = Math.max(0, (a / GRAIN_WINDOW) * w)
-      const x1 = Math.min(w, (b / GRAIN_WINDOW) * w)
-      if (x1 <= x0) continue
-      const hot = o.sounding && r === hotRow && k === 0
-      g.strokeStyle = hot ? o.colors.cross : o.colors.line
-      g.lineWidth = hot ? thick * 1.6 : thick
+    const x0 = xs(r * step)
+    const x1 = xs(r * step + len)
+    const hot = r === o.hot
+    const t = hot ? thick * 1.5 : thick
+    g.fillStyle = g.strokeStyle = hot ? o.colors.cross : o.colors.line
+    if (x1 - x0 < t) {
+      // shorter than it is thick: a dot (a zero-length line draws nothing)
       g.beginPath()
-      g.moveTo(x0 + thick / 2, y)
-      g.lineTo(Math.max(x0 + thick / 2, x1 - thick / 2), y)
+      g.arc(x0, y, t / 2, 0, Math.PI * 2)
+      g.fill()
+    } else {
+      g.lineWidth = t
+      g.beginPath()
+      g.moveTo(x0, y)
+      g.lineTo(x1, y)
       g.stroke()
     }
   }
@@ -107,7 +115,9 @@ export function lfoValue(shape: Lfo['shape'], phase: number): number {
 export const lfoOffset = (lfo: Lfo, amount: number, bpm: number, t: number) => lfoValue(lfo.shape, t * lfoHz(lfo, bpm)) * amount * 0.5 * lfo.amount
 
 export function drawLfo(g: G, w: number, h: number, o: { lfo: Lfo; amount: number; bpm: number; now: number; colors: Colors; dpr: number }) {
-  const n = 180
+  // dots apart, never touching: a row of the pad's height each, the newest the biggest
+  const big = 4.2 * o.dpr
+  const n = Math.max(8, Math.floor((h - 14 * o.dpr) / (2 * big + 2.5 * o.dpr)))
   // about a cycle and a half in view, so the trail reads as a curve however fast it runs
   const history = Math.min(4, Math.max(0.5, 1.6 / Math.max(0.01, lfoHz(o.lfo, o.bpm))))
   const xs = (off: number) => (0.5 + off) * w
@@ -127,9 +137,9 @@ export function drawLfo(g: G, w: number, h: number, o: { lfo: Lfo; amount: numbe
     const x = xs(lfoOffset(o.lfo, o.amount, o.bpm, o.now - age))
     const y = h - 8 * o.dpr - (age / history) * (h - 14 * o.dpr)
     const k = 1 - i / n
-    g.fillStyle = alpha(o.colors.line, 0.12 + 0.88 * k * k)
+    g.fillStyle = alpha(o.colors.line, 0.15 + 0.85 * k * k)
     g.beginPath()
-    g.arc(x, y, (1.2 + 4 * k) * o.dpr, 0, Math.PI * 2)
+    g.arc(x, y, 1.4 * o.dpr + (big - 1.4 * o.dpr) * k, 0, Math.PI * 2)
     g.fill()
   }
 }
@@ -139,18 +149,17 @@ export function drawFx(g: G, w: number, h: number, o: { s: Pick<SoundSettings, '
   const n = 96
   const plateau = 0.46
   const bottom = 0.86
+  // the response once (each copy is the same curve, narrower and higher)
+  const ys = new Float32Array(n + 1)
+  for (let i = 0; i <= n; i++) {
+    const t = i / n
+    // the trapezoid's own shoulders at the very ends (the audible band's edges)
+    const r = fxResponse(o.s, 20 * Math.pow(1000, t)) * Math.min(1, t / 0.035, (1 - t) / 0.035)
+    ys[i] = bottom - (bottom - plateau) * Math.min(1.35, r)
+  }
   const path = (scale: number, lift: number) => {
     const pts: [number, number][] = []
-    for (let i = 0; i <= n; i++) {
-      const t = i / n
-      const hz = 20 * Math.pow(1000, t)
-      let r = fxResponse(o.s, hz)
-      // the trapezoid's own shoulders at the very ends (the audible band's edges)
-      r *= Math.min(1, t / 0.035, (1 - t) / 0.035)
-      const y = bottom - (bottom - plateau) * Math.min(1.35, r)
-      const x = 0.5 + (t - 0.5) * scale
-      pts.push([x * w, (y - lift) * h])
-    }
+    for (let i = 0; i <= n; i++) pts.push([(0.5 + (i / n - 0.5) * scale) * w, (ys[i] - lift) * h])
     return pts
   }
   const copies = Math.round(3 + o.s.reverbMix * 22)
@@ -163,21 +172,42 @@ export function drawFx(g: G, w: number, h: number, o: { s: Pick<SoundSettings, '
     pts.forEach(([x, y], j) => (j ? g.lineTo(x, y) : g.moveTo(x, y)))
     g.stroke()
   }
+  // the line, with a glow: wide faint strokes under it (a shadow blur costs a blur of the canvas every repaint)
+  const main = path(1, 0)
+  g.beginPath()
+  main.forEach(([x, y], j) => (j ? g.lineTo(x, y) : g.moveTo(x, y)))
+  g.lineJoin = 'round'
+  g.strokeStyle = alpha(o.colors.line, 0.12)
+  g.lineWidth = 9 * o.dpr
+  g.stroke()
+  g.strokeStyle = alpha(o.colors.line, 0.25)
+  g.lineWidth = 4.5 * o.dpr
+  g.stroke()
   g.strokeStyle = o.colors.line
   g.lineWidth = Math.max(1.5, 2 * o.dpr)
-  g.shadowColor = o.colors.line
-  g.shadowBlur = 6 * o.dpr
-  g.beginPath()
-  path(1, 0).forEach(([x, y], j) => (j ? g.lineTo(x, y) : g.moveTo(x, y)))
   g.stroke()
-  g.shadowBlur = 0
 }
 
 // ── PITCH · RING: lines of equal pitch, drawn in dots ──
 const FIXED = contours([1, 0, -1], 72)
-export function drawPitch(g: G, w: number, h: number, o: { at: Point; ring: number; colors: Colors; dpr: number }) {
-  const current = contours([pitchMultiplier(o.at)], 72)[0]
-  const dots = (segs: [Point, Point][], color: string, r: number, spacing: number, jitter: number) => {
+let currentCache: { m: number; segments: [Point, Point][] } | null = null
+const fixedLayers = new Map<string, HTMLCanvasElement>()
+/** a seeded scatter (the ring's), so a repaint without a new tick draws the same picture */
+function scatter(seed: number) {
+  let x = (seed * 2654435761) >>> 0 || 1
+  return () => {
+    x ^= x << 13
+    x ^= x >>> 17
+    x ^= x << 5
+    return (x >>> 0) / 4294967296
+  }
+}
+export function drawPitch(g: G, w: number, h: number, o: { at: Point; ring: number; tick: number; colors: Colors; dpr: number }) {
+  const m = Math.round(pitchMultiplier(o.at) * 2000) / 2000
+  if (currentCache?.m !== m) currentCache = { m, segments: contours([m], 72)[0].segments }
+  const current = currentCache.segments
+  const rand = scatter(o.tick + 1)
+  const dots = (g: G, segs: [Point, Point][], color: string, r: number, spacing: number, jitter: number) => {
     g.fillStyle = color
     for (const [a, b] of segs) {
       const len = Math.hypot((b.x - a.x) * w, (b.y - a.y) * h)
@@ -188,8 +218,8 @@ export function drawPitch(g: G, w: number, h: number, o: { at: Point; ring: numb
         const py = a.y + (b.y - a.y) * t
         // the ring modulator scatters the dots on the right, more toward the edge
         const j = jitter * Math.max(0, px - 0.6) * 2.5
-        const nx = px * w + (Math.random() - 0.5) * j * w
-        const ny = (1 - py) * h + (Math.random() - 0.5) * j * h
+        const nx = px * w + (j ? (rand() - 0.5) * j * w : 0)
+        const ny = (1 - py) * h + (j ? (rand() - 0.5) * j * h : 0)
         g.beginPath()
         g.arc(nx, ny, r, 0, Math.PI * 2)
         g.fill()
@@ -197,10 +227,27 @@ export function drawPitch(g: G, w: number, h: number, o: { at: Point; ring: numb
     }
   }
   const jitter = 0.08 * o.ring
-  dots(FIXED[0].segments, o.colors.line, 2 * o.dpr, 3 * o.dpr, jitter) // nominal pitch: thick
-  dots(FIXED[1].segments, o.colors.cross, 1.3 * o.dpr, 4 * o.dpr, jitter) // stopped
-  dots(FIXED[2].segments, alpha(o.colors.line, 0.75), 1.3 * o.dpr, 4 * o.dpr, jitter) // nominal, backwards
-  dots(current.segments, alpha(o.colors.line, 0.9), 1 * o.dpr, 2.5 * o.dpr, jitter) // where the crosshair is
+  const fixed = (g: G, jitter: number) => {
+    dots(g, FIXED[0].segments, o.colors.line, 2 * o.dpr, 3 * o.dpr, jitter) // nominal pitch: thick
+    dots(g, FIXED[1].segments, o.colors.cross, 1.3 * o.dpr, 4 * o.dpr, jitter) // stopped
+    dots(g, FIXED[2].segments, alpha(o.colors.line, 0.75), 1.3 * o.dpr, 4 * o.dpr, jitter) // nominal, backwards
+  }
+  if (jitter) fixed(g, jitter)
+  else {
+    // without the ring they never move: drawn once for the pad's size and colours
+    const key = `${w}x${h}|${o.colors.line}|${o.colors.cross}|${o.dpr}`
+    let layer = fixedLayers.get(key)
+    if (!layer) {
+      layer = document.createElement('canvas')
+      layer.width = w
+      layer.height = h
+      fixed(layer.getContext('2d')!, 0)
+      if (fixedLayers.size > 12) fixedLayers.clear()
+      fixedLayers.set(key, layer)
+    }
+    g.drawImage(layer, 0, 0)
+  }
+  dots(g, current, alpha(o.colors.line, 0.9), 1 * o.dpr, 2.5 * o.dpr, jitter) // where the crosshair is
 }
 
 // ── PERFORM: the clip, the grains in it, where they fire ──
@@ -249,28 +296,4 @@ export function drawPerformOverlay(
     g.fillRect(d.x * w - size / 2, (1 - d.y) * h - size / 2, size, size)
   }
   crosshair(g, w, h, o.at, o.colors, o.dpr)
-}
-
-/** the whole sample, small, with the clip boxed */
-export function drawOverview(g: G, w: number, h: number, o: { peaks: Float32Array | null; clipIn: number; clipOut: number; colors: Colors; dpr: number }) {
-  if (o.peaks) {
-    const n = o.peaks.length / 2
-    const mid = h / 2
-    for (let i = 0; i < n; i++) {
-      const t = i / n
-      const inside = t >= o.clipIn && t <= o.clipOut
-      g.fillStyle = inside ? o.colors.line : alpha(o.colors.line, 0.45)
-      const lo = o.peaks[i * 2]
-      const hi = o.peaks[i * 2 + 1]
-      g.fillRect(t * w, mid - hi * mid * 0.85, Math.max(1, w / n), Math.max(1, (hi - lo) * mid * 0.85))
-    }
-  }
-  const a = o.clipIn * w
-  const b = o.clipOut * w
-  g.strokeStyle = o.colors.cross
-  g.lineWidth = Math.max(1.5, 1.5 * o.dpr)
-  const r = 4 * o.dpr
-  g.beginPath()
-  g.roundRect(a + 1, 1.5 * o.dpr, Math.max(4, b - a - 2), h - 3 * o.dpr, r)
-  g.stroke()
 }

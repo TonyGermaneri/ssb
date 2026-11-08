@@ -27,8 +27,14 @@ export const performWrite = (p: Point) => ({ grainPos: clamp01(p.x), volume: Mat
 
 // ── GRAIN ──
 export const LENGTH_MIN = 0.02
-/** the grain rates the pad spans: from one grain per clip (or 0.5 Hz) to GRAIN's top */
-export const grainRange = (clipSeconds: number) => ({ lo: Math.max(0.5, clipSeconds > 0 ? 1 / clipSeconds : 0.5), hi: GRAIN_FREQ_MAX })
+/**
+ * The grain rates the pad spans: from one grain per clip (or 0.5 Hz) to GRAIN's top, and always four octaves at
+ * least (a single-cycle wave's clip is a few ms: one grain per clip would be faster than the top).
+ */
+export const grainRange = (clipSeconds: number) => ({
+  lo: Math.min(GRAIN_FREQ_MAX / 16, Math.max(0.5, clipSeconds > 0 ? 1 / clipSeconds : 0.5)),
+  hi: GRAIN_FREQ_MAX,
+})
 export function grainPoint(s: SoundSettings & { grainLength?: number }, clipSeconds: number): Point {
   const { lo, hi } = grainRange(clipSeconds)
   return { x: logTo(s.grainLength ?? 1, LENGTH_MIN, 1), y: logTo(s.grainFreq, lo, hi) }
