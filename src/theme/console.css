@@ -108,3 +108,21 @@ body {
   background: var(--panel-hi);
   border-radius: 4px;
 }
+
+/* Text isn't something to select in this UI: dragging knobs, pads, faders and grids would paint selections across it.
+   What's typed into keeps it, and so does the AI patch maker's conversation (to copy an answer out). */
+html,
+body {
+  -webkit-user-select: none;
+  user-select: none;
+}
+input,
+textarea,
+select,
+[contenteditable]:not([contenteditable='false']),
+[contenteditable]:not([contenteditable='false']) *,
+.selectable,
+.selectable * {
+  -webkit-user-select: text;
+  user-select: text;
+}

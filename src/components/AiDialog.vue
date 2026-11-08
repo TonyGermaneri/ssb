@@ -277,7 +277,7 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
 
         <!-- the conversation -->
         <section v-else class="chat">
-          <div ref="listEl" class="messages">
+          <div ref="listEl" class="messages selectable">
             <div v-if="!items.length" class="welcome">
               <p>Describe a sound, or ask about a patch. The agent can find waves, read, make, change and delete patches, and render notes to look at their waveform and spectrogram.</p>
               <button v-for="s in STARTERS" :key="s" class="starter" :disabled="!ai.configured" @click="send(s)">{{ s }}</button>
