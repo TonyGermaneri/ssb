@@ -113,6 +113,8 @@ export const useBoard = defineStore('board', () => {
   /** MIDI notes currently held in keyboard-play mode (for the display). */
   const heldNotes = ref<number[]>([])
   /** live performance controllers (not saved) */
+  /** the performance values the host last sent (MIDI in the plugin): the engine has those already, not to be echoed */
+  const fromHost: { mod?: number; sustain?: boolean; timbre?: number; pressure?: number; bend?: number } = {}
   const perform = reactive({ mod: 0, bend: 0, pressure: 0, timbre: 0, sustain: false })
   /** MIDI clock follower state (runtime only) */
   /** host: the DAW's transport (plugin only) -- its tempo wins over the knob and MIDI clock */
@@ -836,19 +838,26 @@ export const useBoard = defineStore('board', () => {
     pushGlobalFx()
   }, { immediate: true })
   watch(() => perform.sustain, (on) => !on && releaseSustained())
-  // in the plugin the header's performance controls reach the engine as MIDI (host MIDI already
-  // did, so these echo the same values back; harmless)
+  // In the plugin the header's performance controls reach the engine as MIDI -- when they were moved here. What the
+  // host sent went to the engine directly; echoing it back arrived late (after the page had seen it, behind any
+  // pending sync) and could undo a newer value: a sustain-on landing after the pedal's off held every note released
+  // after it (in MONO the last note rang on, stuck).
   if (engine.external) {
     const midi7 = (v: number) => Math.max(0, Math.min(127, Math.round(v * 127)))
     const send = (bytes: number[]) => toEngine({ type: 'midi', bytes })
-    watch(() => perform.mod, (v) => send([0xb0, 1, midi7(v)]))
-    watch(() => perform.sustain, (on) => send([0xb0, 64, on ? 127 : 0]))
-    watch(() => perform.timbre, (v) => send([0xb0, 74, midi7(v)]))
-    watch(() => perform.pressure, (v) => send([0xd0, midi7(v), 0]))
-    watch(() => perform.bend, (v) => {
-      const raw = Math.max(0, Math.min(16383, Math.round(8192 + v * (v >= 0 ? 8191 : 8192))))
-      send([0xe0, raw & 0x7f, raw >> 7])
-    })
+    const echo = <K extends keyof typeof fromHost>(k: K, v: (typeof perform)[K], bytes: () => number[]) => {
+      if (fromHost[k] !== v) send(bytes())
+    }
+    watch(() => perform.mod, (v) => echo('mod', v, () => [0xb0, 1, midi7(v)]))
+    watch(() => perform.sustain, (on) => echo('sustain', on, () => [0xb0, 64, on ? 127 : 0]))
+    watch(() => perform.timbre, (v) => echo('timbre', v, () => [0xb0, 74, midi7(v)]))
+    watch(() => perform.pressure, (v) => echo('pressure', v, () => [0xd0, midi7(v), 0]))
+    watch(() => perform.bend, (v) =>
+      echo('bend', v, () => {
+        const raw = Math.max(0, Math.min(16383, Math.round(8192 + v * (v >= 0 ? 8191 : 8192))))
+        return [0xe0, raw & 0x7f, raw >> 7]
+      }),
+    )
   }
   watch(() => perform.mod, (v) => {
     engine.setModWheel(v)
@@ -2237,6 +2246,7 @@ export const useBoard = defineStore('board', () => {
           mpeState(e.channel).pressure = e.value
           return engine.setNotePressure(e.channel, e.value)
         }
+        fromHost.pressure = e.value
         perform.pressure = e.value
         return
       case 'pitchBend':
@@ -2244,6 +2254,7 @@ export const useBoard = defineStore('board', () => {
           mpeState(e.channel).bend = e.value
           return engine.setNoteBend(e.channel, e.value)
         }
+        fromHost.bend = e.value
         perform.bend = e.value
         return
       case 'cc': {
@@ -2251,14 +2262,14 @@ export const useBoard = defineStore('board', () => {
         const range = mpeZones.cc(e.channel, e.cc, Math.round(e.value * 127))
         if (range !== null && master.mpe) master.mpeBendRange = range
         engine.setCC(e.cc, e.value)
-        if (e.cc === 1) perform.mod = e.value
-        else if (e.cc === 64) perform.sustain = e.value >= 0.5
+        if (e.cc === 1) perform.mod = fromHost.mod = e.value
+        else if (e.cc === 64) perform.sustain = fromHost.sustain = e.value >= 0.5
         else if (e.cc === 74) {
           if (isMember(e.channel)) {
             mpeState(e.channel).timbre = e.value
             return engine.setNoteTimbre(e.channel, e.value)
           }
-          perform.timbre = e.value
+          perform.timbre = fromHost.timbre = e.value
         }
         return
       }

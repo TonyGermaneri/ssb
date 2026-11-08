@@ -49,8 +49,21 @@ watch(
 )
 const fileInput = ref<HTMLInputElement>()
 const folderInput = ref<HTMLInputElement>()
-/** computer key → MIDI note it started, so octave changes mid-hold still release the right note */
+/**
+ * Physical key (KeyboardEvent.code) → the MIDI note it started, or the pad it pressed: the key-up releases what the
+ * key-down played, whatever changed between (the octave, ⇧ turning ";" into ":").
+ */
 const pianoHeld = new Map<string, number>()
+const padHeld = new Map<string, string>()
+const keyOf = (e: KeyboardEvent) => e.code || e.key.toLowerCase()
+/** the window lost the keys (another app, a host's window, a hidden tab): their key-ups will never come */
+function releaseKeys() {
+  for (const note of pianoHeld.values()) board.noteOff(note)
+  pianoHeld.clear()
+  for (const id of padHeld.values()) if (board.pressed.has(id)) board.release(id)
+  padHeld.clear()
+}
+const onVisibility = () => document.visibilityState === 'hidden' && releaseKeys()
 
 const isTyping = (e: KeyboardEvent) => {
   const t = e.target as HTMLElement | null
@@ -87,7 +100,10 @@ function onKeyDown(e: KeyboardEvent) {
     const note = keyToMidi(key, board.master.octave)
     if (note !== null) {
       e.preventDefault()
-      pianoHeld.set(key, note)
+      // a key-down whose key-up went missing: end that note before this one
+      const before = pianoHeld.get(keyOf(e))
+      if (before !== undefined) board.noteOff(before)
+      pianoHeld.set(keyOf(e), note)
       board.noteOn(note, 0.9)
     }
     return
@@ -95,18 +111,20 @@ function onKeyDown(e: KeyboardEvent) {
   const id = board.soundForKey.get(key)
   if (id) {
     e.preventDefault()
+    padHeld.set(keyOf(e), id)
     board.press(id)
   }
 }
 function onKeyUp(e: KeyboardEvent) {
-  const key = e.key.toLowerCase()
-  const note = pianoHeld.get(key)
+  const code = keyOf(e)
+  const note = pianoHeld.get(code)
   if (note !== undefined) {
-    pianoHeld.delete(key)
+    pianoHeld.delete(code)
     board.noteOff(note)
     return
   }
-  const id = board.soundForKey.get(key)
+  const id = padHeld.get(code) ?? board.soundForKey.get(e.key.toLowerCase())
+  padHeld.delete(code)
   if (id && board.pressed.has(id)) board.release(id)
 }
 /** the rack | list divider: dragging sets the list's share of the window */
@@ -153,10 +171,14 @@ onMounted(() => {
   }
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('keyup', onKeyUp)
+  window.addEventListener('blur', releaseKeys)
+  document.addEventListener('visibilitychange', onVisibility)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown)
   window.removeEventListener('keyup', onKeyUp)
+  window.removeEventListener('blur', releaseKeys)
+  document.removeEventListener('visibilitychange', onVisibility)
 })
 </script>
 
