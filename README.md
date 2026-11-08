@@ -472,6 +472,12 @@ rows on narrow windows.
 
 See [PLAN.md](PLAN.md) for the design and audio graph.
 
+**+ → EXPORT…** lists every patch and sound in one grid (TYPE, NAME, TAG, what each is MADE OF): tick what goes into
+the .zip (click a row; ⇧-click a run; filter by PATCHES / SOUNDS / MY SAMPLES or by text; ALL / NONE act on what's
+shown), or take EVERYTHING. A ticked patch brings the sounds its VCOs use, and every sample they need travels with them
+(from the board's store, the plugin's sample cache, or the decoded audio); if one can't be found the dialog names it
+rather than leaving it out. AKWF waves and generators travel by name. **IMPORT BOARD…** reads the .zip back.
+
 ## License
 
 [MIT](LICENSE). The desktop app and plugins are built with [JUCE](https://juce.com), which has its own license

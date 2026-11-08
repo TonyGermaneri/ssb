@@ -2075,17 +2075,63 @@ export const useBoard = defineStore('board', () => {
   }
 
   // ── import / export ────────────────────────────────────────────────────
-  async function exportBoard() {
+  /**
+   * What exporting these takes: the sounds asked for and every sound the patches' slots use, the patches, and the
+   * samples that travel (AKWF waves and generators are part of every SSB: not those).
+   */
+  function exportPlan(soundIds: Iterable<string>, patchIds: Iterable<string>) {
+    const wantPatches = new Set(patchIds)
+    const chosen = patches.value.filter((p) => wantPatches.has(p.id))
+    const asked = new Set(soundIds)
+    const needed = new Set(asked)
+    for (const p of chosen) for (const l of patchLayers(p)) needed.add(l.soundId)
+    const list = sounds.value.filter((s) => needed.has(s.id))
+    const audio = [...new Set(list.flatMap(soundAudioIds))].filter((id) => !isSynthAudioId(id) && !isWaveAudioId(id))
+    return { sounds: list, patches: chosen, extra: list.filter((s) => !asked.has(s.id)).length, audio }
+  }
+  /** A sample to export: as stored, else from the plugin's cache, else its decoded audio written as a WAV. */
+  async function exportAudio(audioId: string): Promise<Blob | null> {
+    const stored = await get<Blob>(audioKey(audioId)).catch(() => undefined)
+    if (stored) return stored
+    const cached = await audioFromPlugin(audioId).catch(() => null)
+    if (cached) return cached
+    const buf = engine.getBuffer(audioId)
+    if (!buf) return null
+    return encodeWav(Array.from({ length: buf.numberOfChannels }, (_, i) => buf.getChannelData(i)), buf.sampleRate)
+  }
+  /**
+   * Export these sounds and patches (and every sound the patches use) as a board .zip, which IMPORT BOARD reads.
+   * Returns the sounds whose samples couldn't be found anywhere (an import would drop them), by name.
+   */
+  async function exportSelection(soundIds: Iterable<string>, patchIds: Iterable<string>, everything = false): Promise<{ missing: string[] }> {
+    const plan = exportPlan(soundIds, patchIds)
     const { default: JSZip } = await import('jszip')
     const zip = new JSZip()
-    zip.file('board.json', JSON.stringify(savedBoard()))
-    // generators and AKWF waves are part of every SSB: only real samples travel
-    for (const audioId of new Set(sounds.value.flatMap(soundAudioIds).filter((id) => !isSynthAudioId(id) && !isWaveAudioId(id)))) {
-      const blob = await get<Blob>(audioKey(audioId))
-      if (blob) zip.file(`audio/${audioId}`, blob)
+    const out: SavedBoard = {
+      version: 1,
+      sounds: plan.sounds.map((s) => JSON.parse(soundText(s))),
+      master: clone(master),
+      presets: clone(presets.value),
+      patches: plan.patches.map((p) => JSON.parse(patchText(p))),
     }
-    const out = await zip.generateAsync({ type: 'blob' })
-    await saveFile(`ssb-board-${new Date().toISOString().slice(0, 10)}.zip`, out)
+    zip.file('board.json', JSON.stringify(out))
+    const lost = new Set<string>()
+    for (const audioId of plan.audio) {
+      const blob = await exportAudio(audioId)
+      if (blob) zip.file(`audio/${audioId}`, blob)
+      else lost.add(audioId)
+    }
+    const day = new Date().toISOString().slice(0, 10)
+    await saveFile(everything ? `ssb-board-${day}.zip` : `ssb-export-${day}.zip`, await zip.generateAsync({ type: 'blob' }))
+    return { missing: plan.sounds.filter((s) => soundAudioIds(s).some((id) => lost.has(id))).map((s) => s.settings.name) }
+  }
+  /** Everything on the board, as a .zip. */
+  function exportBoard() {
+    return exportSelection(
+      sounds.value.map((s) => s.id),
+      patches.value.map((p) => p.id),
+      true,
+    )
   }
 
   /** Merge an exported board into this one (new ids, so importing twice duplicates). */
@@ -2310,6 +2356,6 @@ export const useBoard = defineStore('board', () => {
     tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
     addFiles, addCapture, load, press, release, panic, noteOn, noteOff,
     select, selectStep, togglePanel, cycleMode, cycleFilter, toggleGrain, addWaves, resetSettings, duplicate, remove, removeSounds, move,
-    exportBoard, importBoard, enableMidi, learnMidi,
+    exportBoard, exportPlan, exportSelection, importBoard, enableMidi, learnMidi,
   }
 })

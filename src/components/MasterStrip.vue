@@ -9,12 +9,15 @@ import VuMeter from './VuMeter.vue'
 import ThemePicker from './ThemePicker.vue'
 import StripSection from './StripSection.vue'
 import VcoScopes from './VcoScopes.vue'
+import ExportDialog from './ExportDialog.vue'
 import { callNative, nativeEngine } from '../native/bridge'
 import { mcpStatus } from '../lib/ai/mcpStatus'
 
 const board = useBoard()
 const emit = defineEmits<{ add: []; addFolder: []; library: []; waves: []; ai: [] }>()
 const importInput = ref<HTMLInputElement>()
+/** EXPORT…: the dialog that picks what goes in */
+const exportOpen = ref(false)
 const themeMenu = ref(false)
 
 const fx = computed(() => board.master.fx)
@@ -375,11 +378,14 @@ function onImport(e: Event) {
           <button @click="emit('library')"><v-icon size="16" icon="mdi-music-box-multiple" /> BROWSE LIBRARY… <small>SFZ · GM · drums · URL</small></button>
           <button @click="board.installFactory()"><v-icon size="16" icon="mdi-factory" /> RESTORE BUILT-INS <small>any AKWF wave or factory patch deleted</small></button>
           <hr />
-          <button @click="board.exportBoard()"><v-icon size="16" icon="mdi-download" /> EXPORT BOARD <small>everything, as a .zip</small></button>
+          <button @click="exportOpen = true"><v-icon size="16" icon="mdi-download" /> EXPORT… <small>pick sounds and patches, as a .zip</small></button>
           <button @click="importInput?.click()"><v-icon size="16" icon="mdi-upload" /> IMPORT BOARD… <small>a board's .zip</small></button>
         </div>
       </v-menu>
       <input ref="importInput" type="file" accept=".zip" hidden @change="onImport" />
+      <v-dialog v-model="exportOpen" max-width="980">
+        <ExportDialog v-if="exportOpen" @close="exportOpen = false" />
+      </v-dialog>
     </StripSection>
   </header>
 </template>
