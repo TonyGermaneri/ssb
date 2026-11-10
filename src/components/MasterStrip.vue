@@ -390,9 +390,9 @@ function onImport(e: Event) {
         <div class="add-menu">
           <button @click="emit('add')"><v-icon size="16" icon="mdi-file-music" /> ADD FILES… <small>audio · .sfz · .zip</small></button>
           <button @click="emit('addFolder')"><v-icon size="16" icon="mdi-folder-music" /> ADD FOLDER… <small>SFZ instrument + samples</small></button>
-          <button @click="emit('waves')"><v-icon size="16" icon="mdi-sine-wave" /> BROWSE WAVES… <small>AKWF · 4,358 single cycles</small></button>
+          <button @click="emit('waves')"><v-icon size="16" icon="mdi-sine-wave" /> BROWSE WAVETABLES… <small>AKWF · 65 tables, 4,358 waves</small></button>
           <button @click="emit('library')"><v-icon size="16" icon="mdi-music-box-multiple" /> BROWSE LIBRARY… <small>SFZ · GM · drums · URL</small></button>
-          <button @click="board.installFactory()"><v-icon size="16" icon="mdi-factory" /> RESTORE BUILT-INS <small>any AKWF wave or factory patch deleted</small></button>
+          <button @click="board.installFactory()"><v-icon size="16" icon="mdi-factory" /> RESTORE BUILT-INS <small>any AKWF wavetable or factory patch deleted</small></button>
           <hr />
           <button @click="exportOpen = true"><v-icon size="16" icon="mdi-download" /> EXPORT… <small>pick sounds and patches, as a .zip</small></button>
           <button @click="importInput?.click()"><v-icon size="16" icon="mdi-upload" /> IMPORT BOARD… <small>a board's .zip</small></button>

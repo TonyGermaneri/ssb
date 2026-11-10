@@ -139,6 +139,8 @@ struct Engine::Voice
     float kRate { 1 }, speed { 1 };
     float glideFrom { 0 }, glideTo { 0 }, glideDur { 0 }, glideStart { 0 };
     bool monoSource { false };
+    // a wavetable (audio/wavetable.ts): `pos` is the phase within one cycle of tableSize frames (0: a sample voice)
+    int tableSize { 0 }, tableCycles { 0 };
 
     // zone, resolved for this note
     float zoneGain { 1 }, zonePan { 0 };
@@ -174,6 +176,7 @@ struct Engine::Voice
 
     // control-rate values (refreshed every `controlEvery` samples)
     float cPitch { 0 }, cCut { 0 }, cRes { 0 }, cTrem { 1 }, cPan { 0 }, cDelay { 0 }, cReverb { 0 };
+    float cWtPos { 0 };   // WT POS routes: a share of the table
     float cCutR { 0 };   // the cutoff routes for Granulator III's filter's right side (an LFO's STEREO)
     // Granulator III's filter: [side][stage] state and coefficients, and the knob's cutoff (log2 Hz) followed
     std::array<std::array<dsp::SvfStage, 2>, 2> svf {};
@@ -652,6 +655,17 @@ struct Engine::Impl
             v.zoneFilter = false;
         }
         v.pos = v.clipIn;
+        // a wavetable plays as one unless it's played as grains or stretched (voice.ts 'table'): its clip is one
+        // cycle (REPEAT counts cycles), its playhead the phase in it
+        v.tableSize = v.tableCycles = 0;
+        if (! zone && ! s.grain && ! s.stretch && s.wtSize >= 2 && sample->frames() >= s.wtSize)
+        {
+            v.tableSize = s.wtSize;
+            v.tableCycles = (int) (sample->frames() / s.wtSize);
+            v.pos = v.clipIn = v.loopStart = 0;
+            v.clipOut = v.loopEnd = v.tableSize;
+            v.loops = true;
+        }
 
         v.kRate = dsp::semisToRate (s.pitch + s.fine / 100.0);
         v.speed = s.speed;
@@ -1635,7 +1649,7 @@ struct Engine::Impl
         const auto& s = v.s();
         v.tuneCents += (v.tuneTarget - v.tuneCents) * (1.0f - std::exp (-(float) (controlEvery / engine.rate) / tuneSmoothing));
         float pitch = s.bendRange * 100.0f * v.bend + noteBendRange * 100.0f * v.noteBend + v.ccPitch + v.tuneCents;
-        float cut = v.ccCut, cutR = v.ccCut, res = 0, trem = v.tremBase, panMod = 0, dly = 0, rev = 0;
+        float cut = v.ccCut, cutR = v.ccCut, res = 0, trem = v.tremBase, panMod = 0, dly = 0, rev = 0, wtp = 0;
         std::array<float, 2> gPos {}, gSize {}, gSkew {}, gVar {}, gDetune {}, gScan {}, lRate {}, lAmt {};
         for (int i = 0; i < v.routeCount; ++i)
         {
@@ -1668,9 +1682,11 @@ struct Engine::Impl
                 case ModDest::lfo1Amt:   lAmt[0] += x; break;
                 case ModDest::lfo2Rate:  lRate[1] += x; break;
                 case ModDest::lfo2Amt:   lAmt[1] += x; break;
+                case ModDest::wtPos:     wtp += x; break;
                 default: break;
             }
         }
+        v.cWtPos = wtp;
         // SFZ region LFOs (Voice.startZoneLfos): oscillators straight into their destinations
         if (const Zone* z = v.z())
             for (const auto& l : z->lfos)
@@ -2211,6 +2227,44 @@ struct Engine::Impl
                             ++gi;
                     }
                 }
+            }
+            else if (! ended && v.tableCycles > 0)
+            {
+                // a wavetable: this cycle and the next at one phase, blended (wavetable.ts tableRead)
+                const int size = v.tableSize, count = v.tableCycles;
+                double tp = 0;
+                if (count > 1)
+                {
+                    tp = std::fmod ((double) s.wt + (double) s.wtBlend + (double) v.cWtPos * count, (double) count);
+                    if (tp < 0) tp += count;
+                    if (tp >= count) tp = 0;
+                }
+                const int ia = std::min (count - 1, (int) tp);
+                const auto f = (float) (tp - ia);
+                const int ib = ia + 1 >= count ? 0 : ia + 1;
+                const auto i0 = (size_t) v.pos;
+                const size_t i1 = (int) i0 + 1 >= size ? 0 : i0 + 1;
+                const auto fr = (float) (v.pos - (double) i0);
+                const auto read = [&] (const float* ch, int cycle)
+                {
+                    const float* c = ch + (size_t) cycle * (size_t) size;
+                    return c[i0] + (c[i1] - c[i0]) * fr;
+                };
+                xl = read (chL, ia);
+                xr = read (chR, ia);
+                if (f > 0)
+                {
+                    xl += (read (chL, ib) - xl) * f;
+                    xr += (read (chR, ib) - xr) * f;
+                }
+                if (--v.quantumLeft <= 0)
+                {
+                    v.quantumPitch = vPitch;
+                    v.quantumLeft = 128;
+                }
+                const float semis = v.semisAt (v.t) + (v.cPitch + v.quantumPitch) / 100.0f;
+                v.pos += v.kRate * dsp::semisToRate (semis) * v.speed * srRatio;
+                if (v.pos >= size) v.pos = std::fmod (v.pos, (double) size);
             }
             else if (! ended)
             {

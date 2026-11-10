@@ -232,6 +232,95 @@ TEST ("engine: a one-cycle loop wraps seamlessly: past its last frame it reads i
     CHECK_NEAR (rig.hz (0.1, 0.4), 39244.0 / 600.0, 0.5);
 }
 
+namespace
+{
+/** A wavetable like an AKWF category's: `cycles` of 600 frames at the rate that makes each C2, cycle k a sine of k + 1
+ *  harmonics' worth of level: cycle k is sin × (k + 1) / cycles, so the level says which cycle plays. */
+ssb::SamplePtr table (int cycles)
+{
+    auto s = std::make_shared<ssb::Sample>();
+    s->rate = 39244;
+    s->channels.assign (1, std::vector<float> ((size_t) cycles * 600));
+    for (int k = 0; k < cycles; ++k)
+        for (size_t i = 0; i < 600; ++i)
+            s->channels[0][(size_t) k * 600 + i] = (float) ((k + 1.0) / cycles * std::sin (2 * ssb::dsp::pi * (double) i / 600.0));
+    return s;
+}
+
+double tableRms (std::function<void (ssb::Settings&)> tweak, double seconds = 0.4)
+{
+    Rig rig;
+    rig.add ("t", table (4), [&] (auto& s) { s.wtSize = 600; tweak (s); });
+    rig.commit();
+    rig.press ("t");
+    rig.render (seconds);
+    return rig.rms (0.1, seconds);
+}
+} // namespace
+
+TEST ("engine: a wavetable plays one cycle as a single-cycle wave would, at the same pitch")
+{
+    Rig rig;
+    rig.add ("t", table (4), [] (auto& s) { s.wtSize = 600; s.wt = 2; });
+    rig.commit();
+    rig.press ("t");
+    rig.render (0.5);
+    CHECK_NEAR (rig.hz (0.1, 0.4), 39244.0 / 600.0, 0.5);
+    // cycle 2 of 4: a sine at 3/4 of full scale
+    const double full = tableRms ([] (auto& s) { s.wt = 3; });
+    CHECK_NEAR (rig.rms (0.1, 0.4), 0.75 * full, 0.01);
+    // and without wtSize the same audio is a sample: all four cycles in turn
+    Rig plain;
+    plain.add ("t", table (4));
+    plain.commit();
+    plain.press ("t");
+    plain.render (0.5);
+    CHECK_NEAR (plain.hz (0.1, 0.4), 39244.0 / 600.0, 0.5);   // (each cycle is still a sine at that rate)
+    CHECK_NEAR (plain.rms (0.1, 0.4), std::sqrt ((1 + 4 + 9 + 16) / 64.0) * full, 0.01);
+}
+
+TEST ("engine: BLEND fades a wavetable's cycle into the next, and the last cycle's next is the first")
+{
+    // levels as shares of the last cycle's (full scale), whatever the master level
+    const double r2 = tableRms ([] (auto& s) { s.wt = 3; });
+    CHECK_NEAR (tableRms ([] (auto& s) { s.wt = 1; s.wtBlend = 0; }), 0.50 * r2, 0.01);
+    CHECK_NEAR (tableRms ([] (auto& s) { s.wt = 1; s.wtBlend = 0.5f; }), 0.625 * r2, 0.01);
+    CHECK_NEAR (tableRms ([] (auto& s) { s.wt = 1; s.wtBlend = 0.98f; }), (0.02 * 0.5 + 0.98 * 0.75) * r2, 0.01);
+    CHECK_NEAR (tableRms ([] (auto& s) { s.wt = 1; s.wtBlend = 1; }), 0.75 * r2, 0.01);
+    // the last cycle (full scale) blending into the first (a quarter)
+    CHECK_NEAR (tableRms ([] (auto& s) { s.wt = 3; s.wtBlend = 0.5f; }), 0.625 * r2, 0.01);
+    // WT past the end wraps round
+    CHECK_NEAR (tableRms ([] (auto& s) { s.wt = 5; }), 0.50 * r2, 0.01);
+}
+
+TEST ("engine: WT POS in the matrix moves through the table, a share of it per unit")
+{
+    // +0.25 of a 4-cycle table is one cycle on: cycle 0 plays as cycle 1
+    const double r2 = tableRms ([] (auto& s) { s.wt = 3; });
+    CHECK_NEAR (tableRms ([] (auto& s) { s.wt = 0; s.mod.routes.push_back ({ ssb::ModSource::velocity, ssb::ModDest::wtPos, 0.25f }); }), 0.50 * r2, 0.01);
+}
+
+TEST ("engine: played as grains, a wavetable is the wave WT and BLEND pick, repeated as a single-cycle wave's buffer")
+{
+    auto t = table (4);
+    auto json = juce::JSON::parse (R"({"id": "g", "audioId": "t.wav", "s": {"wtSize": 600, "wt": 2, "wtBlend": 0.5, "grain": true}})");
+    auto sound = ssb::soundFromJson (json, [&] (const std::string&) { return t; });
+    const auto& smp = *sound->sample;
+    // a quarter second of it (16 cycles at 39,244 Hz), each cycle half of cycle 2 and half of cycle 3
+    CHECK_NEAR ((double) smp.frames(), 16 * 600.0, 0.5);
+    double worst = 0;
+    for (size_t i = 0; i < smp.frames(); ++i)
+    {
+        const auto k = i % 600;
+        const double want = 0.5 * t->channels[0][2 * 600 + k] + 0.5 * t->channels[0][3 * 600 + k];
+        worst = std::max (worst, std::abs (smp.channels[0][i] - want));
+    }
+    CHECK (worst < 1e-6);
+    // played as a table, the sound keeps the whole table
+    auto plain = ssb::soundFromJson (juce::JSON::parse (R"({"id": "p", "audioId": "t.wav", "s": {"wtSize": 600, "wt": 2}})"), [&] (const std::string&) { return t; });
+    CHECK (plain->sample == t);
+}
+
 TEST ("engine: attack ramps linearly, release fades to silence")
 {
     Rig rig;

@@ -29,7 +29,7 @@ const aiOpen = ref(false)
 const aiUsed = ref(false)
 const openAi = () => ((aiUsed.value = true), (aiOpen.value = true))
 const libraryOpen = ref(false)
-/** the library's tab when it opens: the AKWF waves, or the online sources */
+/** the library's tab when it opens: the AKWF wavetables, or the online sources */
 const libraryTab = ref<'akwf' | 'sfz'>('akwf')
 const openLibrary = (tab: 'akwf' | 'sfz') => {
   libraryTab.value = tab

@@ -1,5 +1,6 @@
 import workletUrl from './grains.worklet.ts?worker&url'
 import type { FromGrains, GrainConfig, GrainEvent, ToGrains } from './grainMath'
+import type { ToTable } from './grains.worklet'
 
 /**
  * Grain voices play through an AudioWorklet (grains.worklet.ts). Its module loads with the AudioContext; a
@@ -78,4 +79,46 @@ export function grainNode(
     configure: (c) => send({ type: 'config', config: c }),
     stop: () => send({ type: 'stop' }),
   }
+}
+
+export interface TableNode {
+  node: AudioWorkletNode
+  /** WT + BLEND, as the knobs set them */
+  setPos(pos: number): void
+  /** stop at a context time (the release's end), or now */
+  stop(at?: number): void
+}
+
+/**
+ * A voice's wavetable oscillator (audio/wavetable.ts), playing `buffer` as cycles of `size` frames from `t0`. Its
+ * `rate` / `detune` parameters are a buffer source's playbackRate / detune.
+ */
+export function tableNode(
+  ctx: BaseAudioContext,
+  audioId: string,
+  buffer: AudioBuffer,
+  o: { size: number; pos: number; t0: number },
+  onDone: () => void,
+): TableNode {
+  const sent = scopes.get(ctx)?.sent ?? new Map<string, number>()
+  const version = versions.get(audioId) ?? 0
+  const first = sent.get(audioId) !== version
+  const payload = first ? samplePayload(audioId, buffer) : undefined
+  sent.set(audioId, version)
+  const node = new AudioWorkletNode(ctx, 'ssb-table', {
+    numberOfInputs: 0,
+    numberOfOutputs: 1,
+    outputChannelCount: [Math.min(2, buffer.numberOfChannels)],
+    processorOptions: { id: audioId, ...o, sample: payload && { ch: payload.channels, rate: payload.rate } },
+  })
+  const send = (m: ToTable, transfer: Transferable[] = []) => node.port.postMessage(m, transfer)
+  node.port.onmessage = (e: MessageEvent<FromGrains>) => {
+    const m = e.data
+    if (m.type === 'done') onDone()
+    else if (m.type === 'need') {
+      const p = samplePayload(audioId, buffer)
+      send({ type: 'sample', ...p }, p.channels.map((c) => c.buffer))
+    }
+  }
+  return { node, setPos: (pos) => send({ type: 'pos', pos }), stop: (at) => send({ type: 'stop', at }) }
 }

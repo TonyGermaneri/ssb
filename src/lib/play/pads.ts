@@ -3,7 +3,7 @@
  * crosshair position writes back. Positions are 0..1 with y = 1 at the top. Pure, so the mappings are tested.
  *
  * - PERFORM (the big waveform): x = where grains fire (POS, in the clip), y = the layer's volume.
- * - GRAIN: y = the grains' size (GRAIN, log: small and fast at the top, long and slow at the bottom), x = how much of
+ * - GRAIN: y = the grains' size (GRAIN, log: small and fast at the top, as long as the whole sample at the bottom), x = how much of
  *   each grain's turn it sounds (LENGTH, 1 % at the far left -- mostly silence -- to all of it at the right).
  * - LFO: the layer's LFO 2 sweeping POS forward of where it's set (a unipolar route): x = how far, y = how fast.
  * - FILTER · REVERB: y = reverb; x = the filter: centre bypassed, left a low-pass closing, right a high-pass opening.
@@ -11,7 +11,7 @@
  *   ×2 backwards) at the edges; the right edge brings in the ring modulator, its carrier rising with y.
  */
 import { DIVISIONS, type ModRoute, type SoundSettings } from '../../types'
-import { GRAIN_FREQ_MAX } from '../../audio/grainMath'
+import { GRAIN_FREQ_MAX, grainFreqMin } from '../../audio/grainMath'
 
 export interface Point {
   x: number
@@ -29,19 +29,20 @@ export const performWrite = (p: Point) => ({ grainPos: clamp01(p.x), volume: Mat
 // ── GRAIN ──
 export const LENGTH_MIN = 0.01
 /**
- * The grain rates the pad spans: from one grain per clip (or 0.5 Hz) to GRAIN's top, and always four octaves at
- * least (a single-cycle wave's clip is a few ms: one grain per clip would be faster than the top).
+ * The grain rates the pad spans: from one grain as long as the whole sample (the bottom, as the GRAIN knob's own
+ * floor) to GRAIN's top, and always four octaves at least (a single-cycle wave is a few ms long: one grain per
+ * sample would be faster than the top).
  */
-export const grainRange = (clipSeconds: number) => ({
-  lo: Math.min(GRAIN_FREQ_MAX / 16, Math.max(0.5, clipSeconds > 0 ? 1 / clipSeconds : 0.5)),
+export const grainRange = (sampleSeconds: number) => ({
+  lo: Math.min(GRAIN_FREQ_MAX / 16, grainFreqMin(sampleSeconds)),
   hi: GRAIN_FREQ_MAX,
 })
-export function grainPoint(s: SoundSettings & { grainLength?: number }, clipSeconds: number): Point {
-  const { lo, hi } = grainRange(clipSeconds)
+export function grainPoint(s: SoundSettings & { grainLength?: number }, sampleSeconds: number): Point {
+  const { lo, hi } = grainRange(sampleSeconds)
   return { x: clamp01(((s.grainLength ?? 1) - LENGTH_MIN) / (1 - LENGTH_MIN)), y: logTo(s.grainFreq, lo, hi) }
 }
-export function grainWrite(p: Point, clipSeconds: number) {
-  const { lo, hi } = grainRange(clipSeconds)
+export function grainWrite(p: Point, sampleSeconds: number) {
+  const { lo, hi } = grainRange(sampleSeconds)
   return { grainFreq: round4(logFrom(p.y, lo, hi)), grainLength: round4(LENGTH_MIN + clamp01(p.x) * (1 - LENGTH_MIN)) }
 }
 

@@ -78,6 +78,7 @@ std::optional<ModDest> modDest (const juce::String& s)
         { "grainDetune", ModDest::grainDetune }, { "grainScan", ModDest::grainScan },
         { "lfo1Rate", ModDest::lfo1Rate }, { "lfo1Amt", ModDest::lfo1Amt }, { "lfo2Rate", ModDest::lfo2Rate },
         { "lfo2Amt", ModDest::lfo2Amt }, { "delayMix", ModDest::delayMix }, { "reverbMix", ModDest::reverbMix },
+        { "wtPos", ModDest::wtPos },
     };
     for (const auto& [name, v] : table)
         if (s == name) return v;
@@ -318,6 +319,9 @@ Settings settingsFromJson (const juce::var& o)
     s.eqLow = num (o, "eqLow", 0);
     s.eqMid = num (o, "eqMid", 0);
     s.eqHigh = num (o, "eqHigh", 0);
+    s.wtSize = std::max (0, (int) num (o, "wtSize", 0));
+    s.wt = std::max (0.0f, std::round (num (o, "wt", 0)));
+    s.wtBlend = std::clamp (num (o, "wtBlend", 0), 0.0f, 1.0f);
     s.ringMix = std::clamp (num (o, "ringMix", 0), 0.0f, 1.0f);
     s.ringFreq = std::clamp (num (o, "ringFreq", 440), 20.0f, 5000.0f);
     s.rootNote = num (o, "rootNote", 60);
@@ -327,6 +331,38 @@ Settings settingsFromJson (const juce::var& o)
     return s;
 }
 
+/**
+ * A wavetable played as grains or STRETCH is the wave WT and BLEND pick: that cycle blended into the next, repeated to a
+ * quarter second as a single-cycle wave's buffer is (wavetable.ts tableCycleBuffer, engine.ts cycleBuffer).
+ */
+static SamplePtr tableCycleSample (const SamplePtr& table, const Settings& s)
+{
+    const auto size = (size_t) s.wtSize;
+    const int count = (int) (table->frames() / size);
+    if (count < 1) return table;
+    double p = std::fmod ((double) s.wt + (double) s.wtBlend, (double) count);
+    if (p < 0) p += count;
+    if (p >= count) p = 0;
+    const int ia = std::min (count - 1, (int) p);
+    const auto f = (float) (p - ia);
+    const int ib = ia + 1 >= count ? 0 : ia + 1;
+    const auto times = (size_t) std::max (1L, std::lround (table->rate * 0.25 / (double) size));
+    auto out = std::make_shared<Sample>();
+    out->rate = table->rate;
+    out->channels.assign (table->channels.size(), std::vector<float> (size * times));
+    for (size_t c = 0; c < table->channels.size(); ++c)
+    {
+        const auto& src = table->channels[c];
+        for (size_t i = 0; i < size; ++i)
+        {
+            const float a = src[(size_t) ia * size + i], b = src[(size_t) ib * size + i];
+            const float v = a + (b - a) * f;
+            for (size_t k = 0; k < times; ++k) out->channels[c][k * size + i] = v;
+        }
+    }
+    return out;
+}
+
 std::shared_ptr<Sound> soundFromJson (const juce::var& o, const SampleLookup& samples)
 {
     auto sound = std::make_shared<Sound>();
@@ -334,6 +370,9 @@ std::shared_ptr<Sound> soundFromJson (const juce::var& o, const SampleLookup& sa
     sound->audioId = str (o, "audioId").toStdString();
     sound->sample = samples ? samples (sound->audioId) : nullptr;
     sound->s = settingsFromJson (o.getProperty ("s", {}));
+    if (sound->sample && sound->s.wtSize >= 2 && (sound->s.grain || sound->s.stretch) && sound->sample->frames() >= (size_t) sound->s.wtSize
+        && ! o.getProperty ("zones", {}).getArray())
+        sound->sample = tableCycleSample (sound->sample, sound->s);
     if (auto* zones = o.getProperty ("zones", {}).getArray())
     {
         sound->zones.reserve ((size_t) zones->size());

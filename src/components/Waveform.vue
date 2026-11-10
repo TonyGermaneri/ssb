@@ -4,9 +4,10 @@ import { activeVoices, clock, getBuffer, type VoiceInfo } from '../audio/engine'
 import { clipBounds, knobRate } from '../audio/timing'
 import { GRAIN_FREQ_MAX, grainFreqMin, type GrainEvent } from '../audio/grainMath'
 import { computePeaks } from '../audio/peaks'
+import { tableCount, tablePos } from '../audio/wavetable'
 import { useBoard } from '../stores/board'
 import { midiNoteName } from '../lib/format'
-import type { Sound } from '../types'
+import { ISO_PITCH, ISO_VIEW, type Sound } from '../types'
 import LiveView from './LiveView.vue'
 import WaveViewPicker from './WaveViewPicker.vue'
 
@@ -37,29 +38,77 @@ const Wr = ref(props.width ?? 386)
 const H = props.height ?? 52
 /** ISO: the waveform as a wall standing on a floor, the stereo field in depth (left at the back) */
 const iso = computed(() => board.master.waveView === 'iso')
+/**
+ * A wavetable played as one (audio/wavetable.ts): in the sample views (2D, ISO) it is always drawn in ISO, its waves
+ * stacked back (the first) to front, the one WT and BLEND make lit among them.
+ */
+const table = computed(() => {
+  const s = props.sound.settings
+  if (!(s.wtSize > 0) || props.sound.zones?.length) return null
+  const buf = getBuffer(props.sound.audioId)
+  const count = buf ? tableCount(buf.length, s.wtSize) : 0
+  return buf && count >= 1 ? { buf, size: s.wtSize, count } : null
+})
 /** SCOPE, BARS, SPECTRO: what the voices play, drawn live (LiveView) instead of the sample */
 const live = computed(() => !['2d', 'iso'].includes(board.master.waveView))
 
 const peaks = computed(() => board.peaksOf(props.sound.audioId))
 const voices = computed(() => activeVoices.value.filter((v) => v.soundId === props.sound.id))
 
+/** what an ISO picture is made of, in floor units: time `lu` long, `lv` deep, a full-scale wave `ah` tall */
+interface IsoBox {
+  lu: number
+  lv: number
+  ah: number
+}
+/** a sample: a long wall on a narrow floor, short as walls are seen from above */
+const SAMPLE_BOX: IsoBox = { lu: 1, lv: 0.34, ah: 0.11 }
+/** a wavetable: its waves side by side over a deeper floor, each low enough that the ones behind show */
+const TABLE_BOX: IsoBox = { lu: 1, lv: 0.8, ah: 0.07 }
+
 /**
- * The isometric view's axes: time runs to the right (rising a little), depth (back to front) down to the right at
- * 30°, level up -- sized to the canvas, however wide.
+ * The ISO camera (board.master.isoView): the floor turned `yaw` about the vertical and seen `pitch` down from level,
+ * drawn without perspective (an action RPG's isometric: at 45° / 30° its grid runs 2:1 across the screen both ways),
+ * fitted to the canvas whatever the angle. Points are (time 0..1, depth 0..1, level -1..1).
  */
-function isoAxes(W: number, Hh: number) {
-  const Dy = Hh * 0.21
-  const Dx = Dy * 1.73
-  const Ty = -Hh * 0.11
-  const Ah = Hh * 0.3
-  const x0 = Math.max(2, W * 0.02)
-  const y0 = Hh * 0.41 + 1.5
-  const Tx = W - 2 * x0 - Dx
+function isoCamera(W: number, Hh: number, box: IsoBox, pad = 3) {
+  const { yaw, pitch } = board.master.isoView
+  const ry = (yaw * Math.PI) / 180
+  const rp = (Math.min(ISO_PITCH[1], Math.max(ISO_PITCH[0], pitch)) * Math.PI) / 180
+  const cy = Math.cos(ry)
+  const sy = Math.sin(ry)
+  const sp = Math.sin(rp)
+  const cp = Math.cos(rp)
+  const raw = (u: number, v: number, a: number): Pt => {
+    const X = (u - 0.5) * box.lu
+    const Z = (v - 0.5) * box.lv
+    return [X * cy - Z * sy, (X * sy + Z * cy) * sp - a * box.ah * cp]
+  }
+  let x0 = Infinity
+  let x1 = -Infinity
+  let y0 = Infinity
+  let y1 = -Infinity
+  for (const u of [0, 1])
+    for (const v of [0, 1])
+      for (const a of [-1.1, 1.1]) {
+        const [x, y] = raw(u, v, a)
+        x0 = Math.min(x0, x)
+        x1 = Math.max(x1, x)
+        y0 = Math.min(y0, y)
+        y1 = Math.max(y1, y)
+      }
+  const k = Math.min((W - 2 * pad) / Math.max(1e-6, x1 - x0), (Hh - 2 * pad) / Math.max(1e-6, y1 - y0))
+  const ox = (W - k * (x1 - x0)) / 2 - k * x0
+  const oy = (Hh - k * (y1 - y0)) / 2 - k * y0
   return {
-    Tx,
-    at: (t: number, d: number, a: number): Pt => [x0 + t * Tx + d * Dx, y0 + t * Ty + d * Dy - a * Ah],
-    /** the time under a pointer (taken at mid depth) */
-    time: (x: number) => (x - x0 - 0.5 * Dx) / Tx,
+    at: (u: number, v: number, a: number): Pt => {
+      const [x, y] = raw(u, v, a)
+      return [ox + k * x, oy + k * y]
+    },
+    /** pixels the whole time axis spans */
+    Tx: k * box.lu * Math.hypot(cy, sy * sp),
+    /** how near a floor point is to the eye: what's drawn first is the farthest */
+    near: (u: number, v: number) => (u - 0.5) * box.lu * sy + (v - 0.5) * box.lv * cy,
   }
 }
 
@@ -123,8 +172,115 @@ function draw() {
   const g = c.getContext('2d')!
   g.setTransform(dpr, 0, 0, dpr, 0, 0)
   g.clearRect(0, 0, W, H)
-  if (iso.value) drawIso(g, W, p)
+  const t = table.value
+  if (t) drawTable(g, W, t)
+  else if (iso.value) drawIso(g, W, p)
   else draw2d(g, W, p)
+}
+
+// ── a wavetable ──────────────────────────────────────────────────────────────────
+
+/**
+ * The table's waves side by side on the floor, the first at the back and the last at the front (depth 1 is the first
+ * again, as after the last comes the first), drawn far to near, each hiding what's behind it below its line (filled with
+ * the screen's own glow), as many as there's room for; WT's wave and the next brighter, and the wave WT + BLEND make lit
+ * where it sits between them.
+ */
+function drawTable(g: CanvasRenderingContext2D, W: number, t: { buf: AudioBuffer; size: number; count: number }) {
+  const s = props.sound.settings
+  const { at, Tx, near } = isoCamera(W, H, TABLE_BOX)
+  const ch = t.buf.getChannelData(0)
+  const cols = Math.max(16, Math.min(t.size, Math.floor(Tx / 1.5)))
+  // the screen's glow, painted, so a wave's fill hides what's behind it without a seam
+  const glow = g.createRadialGradient(W * 0.6, H * 0.7, 0, W * 0.6, H * 0.7, Math.max(W, H) * 0.75)
+  glow.addColorStop(0, '#0f2214')
+  glow.addColorStop(1, '#050806')
+  g.fillStyle = glow
+  g.fillRect(0, 0, W, H)
+  const wave = (read: (i: number) => number, d: number) => {
+    const pts: Pt[] = []
+    for (let j = 0; j <= cols; j++) {
+      const x = (j / cols) * t.size
+      const i0 = Math.min(t.size - 1, Math.floor(x))
+      const i1 = i0 + 1 >= t.size ? 0 : i0 + 1
+      const v = read(i0) + (read(i1) - read(i0)) * (x - i0)
+      pts.push(at(j / cols, d, Math.max(-1.2, Math.min(1.2, v))))
+    }
+    return pts
+  }
+  const cycle = (k: number) => (i: number) => ch[k * t.size + i]
+  const draw = (pts: Pt[], stroke: string, width: number, hide = true) => {
+    if (hide) {
+      g.beginPath()
+      g.moveTo(pts[0][0], pts[0][1])
+      for (const p of pts) g.lineTo(p[0], p[1])
+      g.lineTo(pts[pts.length - 1][0], H + 2)
+      g.lineTo(pts[0][0], H + 2)
+      g.closePath()
+      g.fillStyle = glow
+      g.fill()
+    }
+    g.beginPath()
+    g.moveTo(pts[0][0], pts[0][1])
+    for (const p of pts) g.lineTo(p[0], p[1])
+    g.strokeStyle = stroke
+    g.lineWidth = width
+    g.stroke()
+  }
+  const p = tablePos(Math.round(s.wt), Math.min(1, Math.max(0, s.wtBlend)), 0, t.count)
+  const ia = Math.min(t.count - 1, Math.floor(p))
+  const f = p - ia
+  const ib = ia + 1 >= t.count ? 0 : ia + 1
+  const depth = (k: number) => k / t.count
+  // as many waves as there's room for (a line every ~2.5 px across the depth), WT's and the next always among them
+  const [dx, dy] = [at(0.5, 1, 0)[0] - at(0.5, 0, 0)[0], at(0.5, 1, 0)[1] - at(0.5, 0, 0)[1]]
+  const room = Math.max(4, Math.floor(Math.hypot(dx, dy) / 3.5))
+  const every = Math.max(1, Math.ceil(t.count / room))
+  const shown = new Set<number>()
+  for (let k = 0; k < t.count; k += every) shown.add(k)
+  shown.add(ia)
+  shown.add(ib)
+  const lit = hsl(props.hue, 100, 72)
+  // the floor under it
+  g.strokeStyle = board.theme.success + '26'
+  g.lineWidth = 1
+  g.beginPath()
+  g.moveTo(...at(0, 0, -1.05))
+  for (const [u, v] of [[1, 0], [1, 1], [0, 1], [0, 0]]) g.lineTo(...at(u, v, -1.05))
+  g.stroke()
+  const blended = (i: number) => ch[ia * t.size + i] + (ch[ib * t.size + i] - ch[ia * t.size + i]) * f
+  const litDepth = (ia + f) / t.count
+  // far to near: the depth axis may point away, turned round
+  const toward = near(0.5, 1) >= near(0.5, 0) ? 1 : -1
+  const items: { d: number; paint: () => void }[] = [...shown].map((k) => ({
+    d: depth(k),
+    paint: () => {
+      const close = k === ia || k === ib
+      // bright enough to read on the dark screen, the far ones a little dimmer (depth), WT's and the next brighter still
+      const toEye = toward > 0 ? k / t.count : 1 - k / t.count
+      draw(wave(cycle(k), depth(k)), close ? hsl(props.hue, 100, 64) : hsl(props.hue, 85, 40 + 16 * toEye), close ? 1.6 : 1.25)
+    },
+  }))
+  items.push({ d: litDepth + 1e-9 * toward, paint: () => draw(wave(blended, litDepth), lit, 2.4) })
+  for (const it of items.sort((a, b) => (a.d - b.d) * toward)) it.paint()
+  // and seen through what's in front of it, faintly: where it is in the table always shows
+  g.save()
+  g.globalAlpha = 0.5
+  g.shadowColor = lit
+  g.shadowBlur = 4
+  draw(wave(blended, litDepth), lit, 1.4, false)
+  g.restore()
+  // which wave, when there's room to say: on a plate, over the back of the table
+  if (H >= 44) {
+    const text = `WT ${ia + 1}${f > 0 ? `→${ib + 1} ${Math.round(f * 100)}%` : ''} / ${t.count}`
+    g.font = '11px VT323, monospace'
+    g.fillStyle = 'rgba(0,0,0,0.6)'
+    g.fillRect(2, 2, g.measureText(text).width + 6, 11)
+    g.fillStyle = board.theme.text[0]
+    g.globalAlpha = 0.85
+    g.fillText(text, 5, 11)
+    g.globalAlpha = 1
+  }
 }
 
 // ── flat ─────────────────────────────────────────────────────────────────────────
@@ -291,7 +447,7 @@ function label(g: CanvasRenderingContext2D, W: number, info: VoiceInfo, i: numbe
 
 function drawIso(g: CanvasRenderingContext2D, W: number, p: Float32Array | undefined) {
   const th = board.theme
-  const { at, Tx } = isoAxes(W, H)
+  const { at, Tx, near } = isoCamera(W, H, SAMPLE_BOX)
   const poly = (pts: Pt[]) => {
     g.beginPath()
     g.moveTo(pts[0][0], pts[0][1])
@@ -338,17 +494,20 @@ function drawIso(g: CanvasRenderingContext2D, W: number, p: Float32Array | undef
     }
   }
 
-  // the wave: a wall standing on the floor (a stereo sample's left at the back, its right at the front), back face
-  // dark, top lit, front bright; each drawn far (late) to near
+  // the wave: a wall standing on the floor (a stereo sample's left at the back, its right at the front), the face away
+  // dark, top lit, the face toward the eye bright; each drawn far to near (which end is far follows the camera)
   const sides = channelPeaks(p)
   const n = p.length / 2
   const cols = Math.max(1, Math.min(n, Math.floor(Tx / 2)))
   const per = n / cols
-  sides.forEach((sp, k) => {
-    const dc = sides.length > 1 ? (k ? 0.74 : 0.26) : 0.5
-    const dB = dc - 0.08
-    const dF = dc + 0.08
-    for (let j = cols - 1; j >= 0; j--) {
+  const lateNear = near(1, 0.5) >= near(0, 0.5)
+  const backAway = near(0.5, 1) >= near(0.5, 0)
+  const sideOrder = sides.map((sp, k) => ({ sp, dc: sides.length > 1 ? (k ? 0.74 : 0.26) : 0.5 })).sort((a, b) => (backAway ? a.dc - b.dc : b.dc - a.dc))
+  sideOrder.forEach(({ sp, dc }) => {
+    const dB = backAway ? dc - 0.08 : dc + 0.08
+    const dF = backAway ? dc + 0.08 : dc - 0.08
+    for (let jj = 0; jj < cols; jj++) {
+      const j = lateNear ? jj : cols - 1 - jj
       let lo = Infinity
       let hi = -Infinity
       const i1 = Math.max(Math.floor(j * per) + 1, Math.floor((j + 1) * per))
@@ -483,8 +642,10 @@ function local(e: PointerEvent) {
   return { x: ((e.clientX - r.left) * Wr.value) / r.width, y: ((e.clientY - r.top) * H) / r.height }
 }
 /** pixels per whole sample along the time axis */
-const pxPerSample = () => (iso.value ? isoAxes(Wr.value, H).Tx : Wr.value)
-const timeAt = (x: number) => clamp01(iso.value ? isoAxes(Wr.value, H).time(x) : x / Wr.value)
+const pxPerSample = () => Wr.value
+const timeAt = (x: number) => clamp01(x / Wr.value)
+/** ISO (and every wavetable): a drag turns the camera -- across its yaw, up and down its pitch; a double-click resets it */
+const turning = computed(() => iso.value || !!table.value)
 
 function hit(e: PointerEvent): Drag {
   const { x, y } = local(e)
@@ -503,10 +664,28 @@ function hit(e: PointerEvent): Drag {
   return { kind: 'grain', part: 'move', grab: (gs.a + gs.b) / 2, a0: gs.a, b0: gs.b }
 }
 
+let turn: { x: number; y: number; yaw: number; pitch: number } | null = null
+function turnTo(e: PointerEvent) {
+  if (!turn) return
+  const v = board.master.isoView
+  v.yaw = Math.round((((turn.yaw + (e.clientX - turn.x) * 0.6 + 180) % 360) + 360) % 360) - 180
+  v.pitch = Math.round(Math.min(ISO_PITCH[1], Math.max(ISO_PITCH[0], turn.pitch + (e.clientY - turn.y) * 0.4)))
+}
+function resetTurn() {
+  if (props.readonly || !turning.value) return
+  board.master.isoView = { ...ISO_VIEW }
+}
+
 function onDown(e: PointerEvent) {
   if (props.readonly) return
   e.stopPropagation()
   canvas.value!.setPointerCapture(e.pointerId)
+  if (turning.value) {
+    const v = board.master.isoView
+    turn = { x: e.clientX, y: e.clientY, yaw: v.yaw, pitch: v.pitch }
+    cursor.value = 'grabbing'
+    return
+  }
   drag = hit(e)
   cursor.value = drag.kind === 'grain' && drag.part === 'move' ? 'grabbing' : 'ew-resize'
   onMove(e)
@@ -514,6 +693,11 @@ function onDown(e: PointerEvent) {
 
 function onMove(e: PointerEvent) {
   if (props.readonly) return
+  if (turning.value) {
+    if (turn) turnTo(e)
+    else cursor.value = 'grab'
+    return
+  }
   if (!drag) {
     const h = hit(e)
     cursor.value = h.kind === 'grain' && h.part === 'move' ? 'grab' : 'ew-resize'
@@ -545,6 +729,8 @@ function onMove(e: PointerEvent) {
 }
 
 function onUp() {
+  if (turn) cursor.value = 'grab'
+  turn = null
   if (drag?.kind === 'grain' && drag.part === 'move') cursor.value = 'grab'
   drag = null
 }
@@ -552,7 +738,11 @@ function onUp() {
 const tip = computed(() =>
   props.readonly
     ? undefined
-    : props.sound.settings.grain
+    : table.value
+      ? 'The wavetable, its first wave at the back and the one WT and WT BLEND make lit · drag to turn the view (across: around, up and down: how far it looks down) · double-click: back to the start'
+      : iso.value
+        ? 'Drag to turn the view (across: around, up and down: how far it looks down) · double-click: back to the start · the 2D view drags the clip and the grain'
+      : props.sound.settings.grain
       ? 'Drag the grain: its middle moves POS, its sides set its length (GRAIN) · shift-drag: clip in / out'
       : 'Drag to set clip in / out',
 )
@@ -564,13 +754,14 @@ const tip = computed(() =>
     <canvas
       ref="canvas"
       class="waveform"
-      :class="{ readonly, iso }"
+      :class="{ readonly, iso: iso || !!table }"
       :style="{ width: `${Wr}px`, height: `${H}px`, cursor: readonly ? undefined : cursor }"
       :title="tip"
       @pointerdown="onDown"
       @pointermove="onMove"
       @pointerup="onUp"
       @pointercancel="onUp"
+      @dblclick="resetTurn"
     />
     <WaveViewPicker v-if="!readonly" class="view" />
   </div>

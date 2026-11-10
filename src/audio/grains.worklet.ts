@@ -27,6 +27,7 @@ import {
 } from './grainMath'
 import { glideSemis, semisToRate } from './timing'
 import { LfoState, type LfoOptions, type ToLfo } from './lfoMath'
+import { tableCount, tablePos, tableRead } from './wavetable'
 import { SVF_EVERY, SVF_SMOOTH, SVF_TABLE, svfG, svfQ2, svfTick, type SvfState, type SvfType } from './svfMath'
 
 declare const sampleRate: number
@@ -564,6 +565,88 @@ class GrainProcessor extends AudioWorkletProcessor {
 }
 
 registerProcessor('ssb-grains', GrainProcessor)
+
+/** What the page tells a wavetable processor (grains.ts tableNode). */
+export type ToTable =
+  | { type: 'pos'; pos: number }
+  | { type: 'sample'; id: string; channels: Float32Array[]; rate: number }
+  /** stop at a context time (the release's end), or now */
+  | { type: 'stop'; at?: number }
+
+/**
+ * A wavetable oscillator (audio/wavetable.ts): one cycle of the table read at the note's rate, blended into the next
+ * at the same phase. `rate` and `detune` are a buffer source's playbackRate and detune (k-rate, scheduled the same
+ * way: glides ramp `rate`), so a table voice is tuned like a sample voice; `posMod` is the matrix's WT POS, a share
+ * of the table, read every sample.
+ */
+class TableProcessor extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    return [
+      { name: 'rate', defaultValue: 1, automationRate: 'k-rate' },
+      { name: 'detune', defaultValue: 0, automationRate: 'k-rate' },
+      { name: 'posMod', defaultValue: 0, automationRate: 'a-rate' },
+    ]
+  }
+
+  private id: string
+  private size: number
+  private pos: number
+  private phase = 0
+  private t0: number
+  private stopAt = Infinity
+  private asked = false
+  private done = false
+
+  constructor(options: { processorOptions: { id: string; size: number; pos: number; t0: number; sample?: Sample } }) {
+    super()
+    const o = options.processorOptions
+    this.id = o.id
+    this.size = o.size
+    this.pos = o.pos
+    this.t0 = o.t0
+    if (o.sample) samples.set(o.id, o.sample)
+    this.port.onmessage = (e: MessageEvent<ToTable>) => {
+      const m = e.data
+      if (m.type === 'pos') this.pos = m.pos
+      else if (m.type === 'sample') samples.set(m.id, { ch: m.channels, rate: m.rate })
+      else if (m.type === 'stop') this.stopAt = Math.min(this.stopAt, m.at ?? currentTime)
+    }
+  }
+
+  process(_in: Float32Array[][], outputs: Float32Array[][], params: Record<string, Float32Array>): boolean {
+    if (this.done) return false
+    const out = outputs[0]
+    const n = out[0].length
+    const smp = samples.get(this.id)
+    if (!smp) {
+      if (!this.asked) {
+        this.asked = true
+        this.port.postMessage({ type: 'need', id: this.id } satisfies FromGrains)
+      }
+      return true
+    }
+    const size = this.size
+    const count = tableCount(smp.ch[0].length, size)
+    const step = params.rate[0] * Math.pow(2, params.detune[0] / 1200) * (smp.rate / sampleRate)
+    const mod = params.posMod
+    const dt = 1 / sampleRate
+    let t = currentTime
+    for (let i = 0; i < n; i++, t += dt) {
+      if (t < this.t0) continue
+      if (t >= this.stopAt) {
+        this.done = true
+        this.port.postMessage({ type: 'done' } satisfies FromGrains)
+        return false
+      }
+      const p = tablePos(this.pos, 0, mod.length > 1 ? mod[i] : mod[0], count)
+      for (let c = 0; c < out.length; c++) out[c][i] = tableRead(smp.ch[Math.min(c, smp.ch.length - 1)], size, count, this.phase, p)
+      this.phase += step
+      if (this.phase >= size) this.phase %= size
+    }
+    return true
+  }
+}
+registerProcessor('ssb-table', TableProcessor)
 
 /**
  * A matrix LFO (lfoMath.ts): output 0 is its left side, output 1 its right, each × its depth. `hz` is its

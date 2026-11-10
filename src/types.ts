@@ -14,6 +14,16 @@ export const WAVE_VIEWS: { id: WaveView; label: string; title: string }[] = [
   { id: '2d', label: '2D', title: 'The sample, flat: drag the clip, or the grain' },
   { id: 'iso', label: 'ISO', title: 'The sample, isometric: its stereo field in depth' },
 ]
+/**
+ * The ISO view's camera, degrees: an action RPG's (Hades'), the floor turned 45° and seen from 30° up, so its grid runs
+ * 2:1 across the screen both ways. Dragging the view turns it (yaw) and tips it (pitch).
+ */
+export interface IsoView {
+  yaw: number
+  pitch: number
+}
+export const ISO_VIEW: IsoView = { yaw: 45, pitch: 30 }
+export const ISO_PITCH = [8, 85] as const
 /** the vintage scope's knobs, 0..1 (the TV's front panel) */
 export interface ScopeKnobs {
   bloom: number
@@ -49,7 +59,7 @@ export type ModSource =
   | 'vco1' | 'vco2' | 'vco3'
 export type ModDest =
   | 'pitch' | 'cutoff' | 'resonance' | 'volume' | 'pan' | 'grainPos' | 'grainSize' | 'grainSkew' | 'grainVar'
-  | 'grainDetune' | 'grainScan' | 'lfo1Rate' | 'lfo1Amt' | 'lfo2Rate' | 'lfo2Amt' | 'delayMix' | 'reverbMix'
+  | 'grainDetune' | 'grainScan' | 'lfo1Rate' | 'lfo1Amt' | 'lfo2Rate' | 'lfo2Amt' | 'delayMix' | 'reverbMix' | 'wtPos'
 export type LfoShape = 'sine' | 'triangle' | 'square' | 'sawtooth' | 'rampDown' | 'random' | 'smooth' | 'wander'
 /** sources that swing both ways (-1..1); the rest are 0..1. A route's UNIPOLAR only changes these. */
 export const BIPOLAR_SOURCES: ModSource[] = ['lfo1', 'lfo2', 'bend', 'random', 'vco1', 'vco2', 'vco3']
@@ -132,6 +142,8 @@ export const MOD_DESTS: Record<ModDest, { label: string; scale: number; unit: st
   lfo2Amt: { label: 'LFO 2 AMOUNT', scale: 1, unit: '', audio: true, pad: true },
   delayMix: { label: 'DELAY MIX', scale: 1, unit: '', audio: true },
   reverbMix: { label: 'REVERB MIX', scale: 1, unit: '', audio: true },
+  // a wavetable's position (WT + BLEND), as a share of the table: ±1 sweeps all of it, wrapping round (audio/wavetable.ts)
+  wtPos: { label: 'WT POS', scale: 1, unit: '', audio: true },
 }
 export const MOD_DEST_IDS = Object.keys(MOD_DESTS) as ModDest[]
 export const LFO_SHAPES: LfoShape[] = ['sine', 'triangle', 'square', 'sawtooth', 'rampDown', 'random', 'smooth', 'wander']
@@ -313,6 +325,11 @@ export interface SoundSettings {
   // SpaceCraft's grain controls (the VCO Play view)
   grainLength: number // 0.01..1: a grain sounds for this share of its full length (its window squeezed in), then silence
   grainBackwards: boolean // every grain reads the sample backwards from where it starts (LOOP: every segment reversed)
+  // wavetable (audio/wavetable.ts): a sample of equal single cycles, played as an oscillator from one cycle blended
+  // into the next. wtSize says the sample is one (the AKWF tables, a wavetable WAV); the VCO shows WT and BLEND for it
+  wtSize: number // frames a cycle (0: not a wavetable, it plays as a sample)
+  wt: number // the cycle it plays, 0.. (wrapping round past the last)
+  wtBlend: number // 0..1: how much of the next cycle (1: all of it); the last cycle's next is the first
   // ring modulator, after the filter and EQ: x × ((1 − mix) + mix × sin(2π · freq · t)), its phase 0 at the note
   ringMix: number // 0..1 (0: off)
   ringFreq: number // Hz 20..5000
@@ -498,6 +515,9 @@ export function defaultSettings(name = 'SOUND'): SoundSettings {
     fRelease: 0.2,
     fEnvKey: 0,
     ...GRAIN_DEFAULTS,
+    wtSize: 0,
+    wt: 0,
+    wtBlend: 0,
     ringMix: 0,
     ringFreq: 440,
     delayTime: 0.25,
@@ -597,6 +617,8 @@ export interface MasterState {
   waveView: WaveView
   /** the vintage scope's knobs */
   scope: ScopeKnobs
+  /** the ISO view's camera, degrees: turned about the floor (yaw) and looking down (pitch); dragged in the view */
+  isoView: IsoView
   /** which rack slots (VCO 1-3) show the Play view instead of their panel */
   vcoPlay: boolean[]
   /** seconds to slide between notes */
@@ -635,7 +657,7 @@ export interface MasterState {
   /** factory sounds + patches have been installed once */
   factory: boolean
   /** which factory content the board has: 0/1 = the generated SAW WAVE … NOISE, 2 = AKWF waves, 3 = every AKWF wave and
-   *  the built-in patches, 4 = those patches with headroom for chords (FACTORY_VERSION) */
+   *  the built-in patches, 4 = those patches with headroom for chords, 5 = dry, 6 = AKWF wavetables (FACTORY_VERSION) */
   factoryVersion: number
   /** show the selected patch (+ its VCOs) panels under the header */
   rack: boolean
@@ -658,6 +680,7 @@ export const defaultMaster = (): MasterState => ({
   hold: false,
   waveView: 'scope',
   scope: defaultScopeKnobs(),
+  isoView: { ...ISO_VIEW },
   vcoPlay: [false, false, false],
   glide: 0,
   octave: 0,
@@ -692,6 +715,7 @@ export function migrateMaster(raw?: Partial<MasterState>): MasterState {
   // a board from before the live views opens on the vintage scope, their new default
   if (raw && !raw.scope) m.waveView = 'scope'
   m.scope = { ...defaultScopeKnobs(), ...raw?.scope }
+  m.isoView = { ...ISO_VIEW, ...raw?.isoView }
   m.vcoPlay = [0, 1, 2].map((i) => !!raw?.vcoPlay?.[i])
   return m
 }

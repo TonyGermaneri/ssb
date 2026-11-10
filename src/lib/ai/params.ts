@@ -91,6 +91,13 @@ export const SOUND_SECTIONS: { title: string; params: Param[] }[] = [
     params: [n('eqLow', -12, 12, 'dB', 'bass shelf'), n('eqMid', -12, 12, 'dB', 'mid peak'), n('eqHigh', -12, 12, 'dB', 'treble shelf')],
   },
   {
+    title: 'WAVETABLE (sounds that are wavetables: every AKWF category, tagged "wavetable")',
+    params: [
+      i('wt', 0, 999, '', 'which wave of the table plays (0 = the first); past the last it wraps to the first'),
+      n('wtBlend', 0, 1, '', 'how much of the next wave is blended in at the same phase: 0 just wave wt, 0.5 half and half, 1 the next wave (the last wave\'s next is the first). Route lfo / fenv / timbre → wtPos to sweep the table'),
+    ],
+  },
+  {
     title: 'GRAIN (Granulator II engine with Granulator III modes)',
     params: [
       b('grain', 'play the sound as a cloud of grains'),

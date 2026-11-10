@@ -5,9 +5,9 @@ import * as engine from '../audio/engine'
 import { computePeaks } from '../audio/peaks'
 import { connectMidi, parseMidi, type MidiEvent } from '../audio/midi'
 import { callNative, inNative, nativeBoardKey, nativeInfo, onNative, onNativeMidi, saveFile } from '../native/bridge'
-import { encodeWav, planarFromBase64, readCycleWav } from '../lib/wav'
+import { encodeTableWav, encodeWav, planarFromBase64, readCycleWav, readTableWav } from '../lib/wav'
 import { History } from '../lib/history'
-import { compactSound, expandSound, isWaveSound } from '../lib/storedSound'
+import { compactSound, expandSound, isAkwfSound, isWaveSound } from '../lib/storedSound'
 import { isTracked, track, untrack } from '../lib/tracked'
 import { ClockTracker } from '../lib/midiClock'
 import { THEMES, themeById } from '../theme/themes'
@@ -25,8 +25,9 @@ import { FACTORY_PATCHES, LAYER_VOLUME, LEGACY_FACTORY_NAMES, type FactoryPatch 
 import { fillFactoryMpe } from '../lib/factoryMpe'
 import { FACTORY_LEVELS, FACTORY_LEVELS_V3 } from '../lib/factoryLevels'
 import {
-  akwfReady, boardOrder, CYCLE_ROOT, isWaveAudioId, loadAkwf, waveAudioId, waveChannels, waveFolder, waveNameOf,
-  waveSoundSettings, type AkwfWave,
+  akwfReady, allWaves, boardOrder, categoryLabel, categoryTag, CYCLE_ROOT, cycleRate, isAkwfAudioId, isTableAudioId, isWaveAudioId, loadAkwf,
+  tableAudioId, tableCycle, tableFolderOf, tableLength, tableSoundSettings, waveAudioId, waveChannels, waveFolder,
+  waveAt, waveLabel, waveNameOf, waveSettings, waveSoundSettings, waveSpot,
 } from '../lib/akwf'
 import { QUIET_MS, SemanticIndex } from '../lib/semantic'
 import { makeCandidate, type CandidateInfo } from '../lib/semantic/candidate'
@@ -58,7 +59,7 @@ const INSTANCE_FIELDS = [
  */
 const VIEW_FIELDS = [
   'tab', 'view', 'patchView', 'gridPanel', 'list', 'listWidth', 'folded', 'headerFolded', 'rack', 'waveView', 'scope',
-  'favSounds', 'favPatches', 'scale', 'vcoPlay',
+  'isoView', 'favSounds', 'favPatches', 'scale', 'vcoPlay',
 ] as const
 /** tells the other tabs / instances the library was saved, so they reload it */
 const libraryChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('ssb-library') : null
@@ -98,8 +99,11 @@ interface SavedBoard {
 
 const uid = () => crypto.randomUUID()
 /** 2: the factory patches are made of AKWF waves; 3: every AKWF wave is a sound, and the built-in patches; 4: those
- *  patches with headroom for chords; 5: the built-ins dry (their chorus, delay and reverb mixes at 0; see upgradeFactory) */
-const FACTORY_VERSION = 5
+ *  patches with headroom for chords; 5: the built-ins dry (their chorus, delay and reverb mixes at 0; see upgradeFactory);
+ *  6: AKWF's categories are wavetables, the board's waves and patches moved onto them (wavesToTables) */
+const FACTORY_VERSION = 6
+/** AKWF's cycles are all this long: a table's WT SIZE */
+const AKWF_FRAMES = 600
 /** the global FX mixes at 0: how the built-in patches start */
 const DRY = { chorusMix: 0, delayMix: 0, reverbMix: 0 } as const
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(toRaw(v)))
@@ -188,6 +192,11 @@ export const useBoard = defineStore('board', () => {
       if (isWaveAudioId(id)) {
         const ch = waveChannels(waveNameOf(id))
         return ch ? { cycle: ch[0] } : null
+      }
+      // a wavetable sounds like the cycle it's at
+      if (isTableAudioId(id) && !s.zones?.length) {
+        const c = tableCycle(tableFolderOf(id), Math.round(s.settings.wt) + s.settings.wtBlend)
+        return c ? { cycle: c } : null
       }
       const b = engine.buffers.get(id)
       if (!b) return null
@@ -331,19 +340,29 @@ export const useBoard = defineStore('board', () => {
     const rate = sniffSampleRate(bytes) ?? 44100
     // a single cycle (an AKWF wave) plays at its own rate: resampled, its loop would no longer be exact
     const cycle = readCycleWav(bytes)
-    const buf = cycle ? engine.cycleBuffer(cycle.channels, cycle.rate) : await engine.decode(bytes) // detaches `bytes`
+    // a wavetable likewise, each cycle at the rate that makes it C2 (as AKWF's): a cycle has no pitch of its own
+    const tbl = cycle ? null : readTableWav(bytes)
+    let buf: AudioBuffer
+    if (tbl) {
+      buf = new AudioBuffer({ numberOfChannels: tbl.channels.length, length: tbl.channels[0].length, sampleRate: cycleRate(tbl.size) })
+      tbl.channels.forEach((c, i) => buf.getChannelData(i).set(c))
+      tableSizes.set(audioId, tbl.size)
+    } else buf = cycle ? engine.cycleBuffer(cycle.channels, cycle.rate) : await engine.decode(bytes) // detaches `bytes`
     engine.buffers.set(audioId, buf)
     peaks.set(audioId, computePeaks(buf))
     semantic.audioChanged()
     return rate
   }
 
+  /** the cycle length of each wavetable WAV loaded (readTableWav), by audio id: a dropped one plays as a table */
+  const tableSizes = new Map<string, number>()
+
   /** AKWF waves' peaks, made when first drawn (kept out of `peaks`: thousands of waves needn't all have them) */
   const wavePeaks = new Map<string, Float32Array>()
   /** Peaks for the waveform: decoded audio's, or an AKWF wave's (once the waves are in memory). */
   function peaksOf(audioId: string): Float32Array | undefined {
     const p = peaks.get(audioId)
-    if (p || !isWaveAudioId(audioId) || !akwfReady.value) return p
+    if (p || !isAkwfAudioId(audioId) || !akwfReady.value) return p
     let w = wavePeaks.get(audioId)
     if (!w) {
       const buf = engine.getBuffer(audioId)
@@ -430,6 +449,9 @@ export const useBoard = defineStore('board', () => {
         await set(audioKey(audioId), file)
         const settings = defaultSettings(stripExt(name))
         settings.tag = addTags('', tagsFor(path, 'sample'))
+        // a wavetable WAV: a VCO plays it a cycle at a time (WT, BLEND), held, from C2
+        const size = tableSizes.get(audioId)
+        if (size) Object.assign(settings, waveSettings(), { wtSize: size, rootNote: CYCLE_ROOT, tag: addTags(settings.tag, ['wavetable']) })
         addSound({ id: uid(), audioId, fileName: name, settings })
       } catch (e) {
         console.error(e)
@@ -562,7 +584,7 @@ export const useBoard = defineStore('board', () => {
         for (const s of ok) applyCcDefaults(s)
         applyCcDefaults(selected.value)
       }
-      // first run: every AKWF wave, then the built-in patches made of them; older boards get what they lack
+      // first run: every AKWF wavetable, then the built-in patches made of them; older boards get what they lack
       if (!master.factory) await installFactory()
       else if (master.factoryVersion < FACTORY_VERSION) await upgradeFactory()
       // built-in patches installed before they had MPE bindings get them, whatever the board's factory version (a patch
@@ -585,7 +607,7 @@ export const useBoard = defineStore('board', () => {
    * waves need nothing stored: their audio is made from the waves that ship with SSB.
    */
   async function readSounds(list: Sound[]): Promise<Sound[]> {
-    if (list.some(isWaveSound) && !akwfReady.value) {
+    if (list.some(isAkwfSound) && !akwfReady.value) {
       await loadAkwf().catch((e) => {
         console.error(e)
         toast.value = 'Couldn\'t load the AKWF waves'
@@ -803,7 +825,7 @@ export const useBoard = defineStore('board', () => {
     for (const k of all) {
       if (typeof k !== 'string' || !k.startsWith('ssb:audio:')) continue
       // AKWF waves' audio is made from the waves that ship with SSB (0.5 stored a copy)
-      if (!used.has(k) || isWaveAudioId(k.slice('ssb:audio:'.length))) await del(k)
+      if (!used.has(k) || isAkwfAudioId(k.slice('ssb:audio:'.length))) await del(k)
     }
   }
 
@@ -1601,7 +1623,13 @@ export const useBoard = defineStore('board', () => {
     const p = typeof d?.id === 'string' && typeof d.body === 'string' ? patches.value.find((x) => x.id === d.id) : undefined
     if (!p) return
     try {
-      setBody(p, JSON.parse(d!.body as string))
+      const body = JSON.parse(d!.body as string)
+      // a draft from before the wavetables: its layers' waves are on the tables now
+      for (const x of (body?.[0] ?? []) as (PatchSlot | null)[]) {
+        const m = x && movedWaves.get(x.layer.soundId)
+        if (x && m) Object.assign(x.layer, { soundId: m.table, settings: { ...x.layer.settings, wtSize: AKWF_FRAMES, wt: m.wt, wtBlend: 0 } })
+      }
+      setBody(p, body)
       if (p.id === master.patchId) loadHeader(p)
     } catch {
       // a draft that doesn't read is no draft
@@ -1787,7 +1815,7 @@ export const useBoard = defineStore('board', () => {
     if (!sound) throw new Error(patch ? `patch ${patch.name} has no sound in its slots` : `no sound ${req.soundId ?? ''}`)
     const layers = patch ? patchLayers(patch).map((l) => byId(l.soundId)).filter((x): x is Sound => !!x) : [sound]
     // AKWF waves are made from the waves in memory: have them before the voices look for their buffers
-    if (layers.some(isWaveSound) && !akwfReady.value) await loadAkwf()
+    if (layers.some(isAkwfSound) && !akwfReady.value) await loadAkwf()
     const h = patch?.header
     const surfaces = req.mpe ? { pressure: clamp01(req.mpe.press ?? 0), timbre: clamp01(req.mpe.slide ?? 0) } : {}
     const r = await engine.renderOffline(() => startNote(sound, note, velocity, { midiNote: note, glideTime: 0, at: 0, ...surfaces }), {
@@ -1803,7 +1831,7 @@ export const useBoard = defineStore('board', () => {
   }
 
   // ── factory content ──
-  /** The board's sound for each AKWF wave, by audio id (the first, if it has two). */
+  /** The board's sound for each AKWF wave, by audio id (the first, if it has two): boards from before the tables. */
   function waveSounds(): Map<string, Sound> {
     const m = new Map<string, Sound>()
     for (const x of sounds.value) if (isWaveSound(x) && !m.has(x.audioId)) m.set(x.audioId, x)
@@ -1813,52 +1841,141 @@ export const useBoard = defineStore('board', () => {
     tracked({ id: uid(), audioId: waveAudioId(name), fileName: `${name}.wav`, settings: waveSoundSettings(name, folder) })
 
   /**
-   * AKWF waves as sounds, tagged "akwf" + their category, looping while held. A wave already on the board is
-   * reused rather than added twice (its sound is returned) unless `copy`.
+   * The board's wavetable for each AKWF category, by folder: the one still named after it if there are several (a
+   * wave of yours moved onto the tables is a sound on one too).
    */
-  async function addWaves(waves: AkwfWave[], opts: { copy?: boolean } = {}): Promise<Sound[]> {
-    const have = opts.copy ? new Map<string, Sound>() : waveSounds()
-    const out: Sound[] = []
-    for (const w of waves) {
-      let snd = have.get(waveAudioId(w.name))
-      if (!snd) {
-        addSound((snd = newWaveSound(w.name, w.folder)))
-        have.set(snd.audioId, snd)
-      }
-      out.push(snd)
+  function tableSounds(): Map<string, Sound> {
+    const m = new Map<string, Sound>()
+    for (const x of sounds.value) {
+      if (!isTableAudioId(x.audioId) || x.zones?.length) continue
+      const folder = tableFolderOf(x.audioId)
+      const had = m.get(folder)
+      if (!had || (had.settings.name !== categoryLabel(folder) && x.settings.name === categoryLabel(folder))) m.set(folder, x)
     }
-    return out
+    return m
+  }
+  const newTableSound = (folder: string): Sound =>
+    tracked({ id: uid(), audioId: tableAudioId(folder), fileName: `${folder}.wav`, settings: tableSoundSettings(folder, AKWF_FRAMES) })
+  /** a category's table on the board (added after the others if it hasn't got it) */
+  function tableFor(folder: string, have = tableSounds()): Sound {
+    let t = have.get(folder)
+    if (!t) {
+      addSound((t = newTableSound(folder)))
+      have.set(folder, t)
+    }
+    return t
   }
 
-  /** Every AKWF wave the board hasn't got, as sounds after what's there (in boardOrder). Returns how many. */
-  async function importWaves(): Promise<number> {
+  /**
+   * A category's table as a sound of the board (the library's ADD): the board's own, unless `copy`, then a sound of its
+   * own (as a wave of the table: named after it, at it).
+   */
+  async function addTable(folder: string, opts: { copy?: boolean; wave?: number } = {}): Promise<Sound> {
+    await loadAkwf()
+    if (!opts.copy) return tableFor(folder)
+    const snd = newTableSound(folder)
+    if (opts.wave !== undefined) {
+      snd.settings.wt = opts.wave
+      const name = waveAt(folder, opts.wave)
+      if (name) snd.settings.name = waveLabel(name)
+    }
+    addSound(snd)
+    return snd
+  }
+
+  /** Every AKWF table the board hasn't got, as sounds after what's there (in boardOrder). Returns how many. */
+  async function importTables(): Promise<number> {
     const { index } = await loadAkwf()
-    const have = waveSounds()
-    const add: Sound[] = []
-    for (const c of boardOrder(index)) for (const name of c.waves) if (!have.has(waveAudioId(name))) add.push(newWaveSound(name, c.folder))
+    const have = tableSounds()
+    const add = boardOrder(index).filter((c) => !have.has(c.folder)).map((c) => newTableSound(c.folder))
     if (add.length) sounds.value = [...toRaw(sounds.value), ...add]
     if (!selected.value) master.selectedId = sounds.value[0]?.id ?? null
     return add.length
   }
 
-  /** A built-in patch, its layers made from the board's sounds of its waves (added if the board lacks one). */
-  async function buildPatch(fp: FactoryPatch, have: Map<string, Sound>): Promise<Patch> {
-    const { waves } = await loadAkwf()
-    const soundFor = (name: string) => {
-      const id = waveAudioId(name)
-      let snd = have.get(id)
-      const folder = waves.get(name)?.folder
-      if (!snd && folder) {
-        addSound((snd = newWaveSound(name, folder)))
-        have.set(id, snd)
+  /** a sound you made of a wave: anything about it not as the wave came (or starred) */
+  function changedWave(x: Sound, folder: string): boolean {
+    if (x.fav) return true
+    const base = waveSoundSettings(waveNameOf(x.audioId), folder) as unknown as Record<string, unknown>
+    return Object.entries(x.settings).some(([k, v]) => JSON.stringify(v) !== JSON.stringify(base[k]))
+  }
+  /** a table sound's settings as its category's table comes (WT and BLEND aside: a patch's layers carry their own) */
+  function sameTable(settings: SoundSettings, folder: string): boolean {
+    const base = tableSoundSettings(folder, AKWF_FRAMES) as unknown as Record<string, unknown>
+    return Object.entries(settings).every(([k, v]) => k === 'wt' || k === 'wtBlend' || JSON.stringify(v) === JSON.stringify(base[k]))
+  }
+  /** the waves wavesToTables moved, by their old sound ids: a draft saved before it still finds its layers' sounds */
+  const movedWaves = new Map<string, { table: string; wt: number }>()
+
+  /**
+   * 0.14: AKWF's categories are wavetables (lib/akwf.ts). Every patch layer on an AKWF wave plays its category's table
+   * at that wave instead (WT, BLEND 0: the same cycle, so the same sound); the board's waves go, but for any you renamed,
+   * retagged, changed or starred, which stays as a sound of yours on the table at its wave; the tables take the waves'
+   * place in the board's order. Returns how many waves went.
+   */
+  async function wavesToTables(): Promise<number> {
+    const waves = sounds.value.filter((x) => isWaveSound(x))
+    if (!waves.length) return 0
+    const { index } = await loadAkwf()
+    const spots = new Map(waves.map((x) => [x.id, waveSpot(waveNameOf(x.audioId))]))
+    const have = tableSounds()
+    const added = boardOrder(index).filter((c) => !have.has(c.folder)).map((c) => newTableSound(c.folder))
+    for (const t of added) have.set(tableFolderOf(t.audioId), t)
+    const onTable = (sp: { folder: string; index: number }) => ({ wtSize: AKWF_FRAMES, wt: sp.index, wtBlend: 0 })
+    // the layers, onto the tables
+    for (const p of candidate.value ? [...patches.value, candidate.value] : patches.value)
+      for (const x of p.slots) {
+        const sp = x ? spots.get(x.layer.soundId) : undefined
+        if (!x || !sp) continue
+        x.layer.soundId = have.get(sp.folder)!.id
+        Object.assign(x.layer.settings, onTable(sp))
       }
-      return snd
+    // the waves: gone, or yours, on their table
+    const gone = new Set<string>()
+    for (const x of waves) {
+      const sp = spots.get(x.id)
+      if (!sp) continue
+      if (changedWave(x, sp.folder)) {
+        x.audioId = tableAudioId(sp.folder)
+        x.fileName = `${sp.folder}.wav`
+        Object.assign(x.settings, onTable(sp))
+        x.settings.tag = addTags(x.settings.tag, ['wavetable'])
+      } else {
+        gone.add(x.id)
+        movedWaves.set(x.id, { table: have.get(sp.folder)!.id, wt: sp.index })
+      }
     }
+    const all = toRaw(sounds.value)
+    const at = all.findIndex((x) => gone.has(x.id) || added.length === 0)
+    const keep = (x: Sound) => !gone.has(x.id)
+    sounds.value = at < 0 ? [...all.filter(keep), ...added] : [...all.slice(0, at).filter(keep), ...added, ...all.slice(at).filter(keep)]
+    if (!selected.value) master.selectedId = sounds.value[0]?.id ?? null
+    return gone.size
+  }
+
+  /** the AI's view of every AKWF wave as a sound: its table at it (made once the waves are in; not on the board) */
+  let waveList: Sound[] | null = null
+  function akwfWaves(): Sound[] {
+    if (waveList || !akwfReady.value) return waveList ?? []
+    return (waveList = allWaves().map(({ name, folder, index }) => ({
+      id: `wave:${name}`,
+      audioId: tableAudioId(folder),
+      fileName: `${name}.wav`,
+      settings: { ...tableSoundSettings(folder, AKWF_FRAMES), name: waveLabel(name), tag: addTags('', ['akwf', categoryTag(folder)]), wt: index },
+    })))
+  }
+
+  /**
+   * A built-in patch, each layer its wave's table at that wave (the table added if the board lacks it); `have`: the
+   * board's tables by folder.
+   */
+  async function buildPatch(fp: FactoryPatch, have: Map<string, Sound>): Promise<Patch> {
+    await loadAkwf()
     const slots: (PatchSlot | null)[] = fp.slots.map((x) => {
-      const src = x && soundFor(x.wave)
-      if (!x || !src) return null
-      const layer = makeLayer(src)
-      Object.assign(layer.settings, clone(x.settings ?? {}))
+      const sp = x && waveSpot(x.wave)
+      if (!x || !sp) return null
+      const layer = makeLayer(tableFor(sp.folder, have))
+      Object.assign(layer.settings, { wt: sp.index, wtBlend: 0 }, clone(x.settings ?? {}))
       const m = layer.settings.mod
       Object.assign(m.lfo1, x.lfo1)
       Object.assign(m.lfo2, x.lfo2)
@@ -1884,7 +2001,7 @@ export const useBoard = defineStore('board', () => {
   /** The built-in patches the board hasn't got (by their factory id), after the others. Returns how many. */
   async function addFactoryPatches(): Promise<number> {
     const had = new Set(patches.value.map((x) => x.factoryId).filter(Boolean))
-    const have = waveSounds()
+    const have = tableSounds()
     const add: Patch[] = []
     for (const fp of FACTORY_PATCHES) if (!had.has(fp.id)) add.push(await buildPatch(fp, have))
     if (add.length) patches.value = [...toRaw(patches.value), ...add.map(tracked)]
@@ -1893,34 +2010,41 @@ export const useBoard = defineStore('board', () => {
 
   /** One built-in patch, added to the catalog again (and selected): for auditioning a definition. */
   async function addFactoryPatch(fp: FactoryPatch): Promise<Patch> {
-    patches.value.push(tracked(await buildPatch(fp, waveSounds())))
+    patches.value.push(tracked(await buildPatch(fp, tableSounds())))
     const p = patches.value[patches.value.length - 1]
     selectPatch(p.id)
     return p
   }
 
   // ── the AI agent's patch access (lib/ai/tools.ts, lib/ai/patchSpec.ts) ──
-  /** a sound as a patch spec names it: an AKWF wave by its name, anything else by its id */
+  /**
+   * A sound as a patch spec names it: an AKWF table by its category's folder (AKWF_epiano: the layer's WT says which
+   * wave), an AKWF wave by its name, anything else by its id.
+   */
   function soundRef(id: string): SoundRef | null {
     const x = byId(id)
     if (!x) return null
-    return { id: x.id, ref: isWaveSound(x) ? waveNameOf(x.audioId) : x.id, name: x.settings.name, settings: x.settings }
+    const ref = isWaveSound(x) ? waveNameOf(x.audioId) : isTableAudioId(x.audioId) && !x.zones?.length && tableSounds().get(tableFolderOf(x.audioId)) === x ? tableFolderOf(x.audioId) : x.id
+    return { id: x.id, ref, name: x.settings.name, settings: x.settings }
   }
   /**
-   * The sound a spec names: a sound's id, an AKWF wave's name (with or without "AKWF_"; added to the board if it
-   * isn't there), or a sound's exact name.
+   * The sound a spec names: a sound's id, an AKWF wave's name (with or without "AKWF_": its category's table at it,
+   * the table added to the board if it isn't there), a category's folder (its table), or a sound's exact name.
    */
   async function resolveSoundRef(ref: string): Promise<SoundRef | null> {
     const r = ref.trim()
     if (byId(r)) return soundRef(r)
-    const { waves } = await loadAkwf()
-    const name = [...waves.keys()].find((w) => w.toLowerCase() === r.toLowerCase() || w.toLowerCase() === `akwf_${r.toLowerCase()}`)
-    if (name) {
-      let snd = waveSounds().get(waveAudioId(name))
-      if (!snd) addSound((snd = newWaveSound(name, waves.get(name)!.folder)))
-      return soundRef(snd.id)
+    const { waves, index } = await loadAkwf()
+    const lower = r.toLowerCase()
+    const name = [...waves.keys()].find((w) => w.toLowerCase() === lower || w.toLowerCase() === `akwf_${lower}`)
+    const sp = name ? waveSpot(name) : null
+    if (sp) {
+      const t = tableFor(sp.folder)
+      return { ...soundRef(t.id)!, ref: name!, settings: { ...t.settings, wt: sp.index, wtBlend: 0 } }
     }
-    const named = sounds.value.find((x) => x.settings.name.toLowerCase() === r.toLowerCase())
+    const cat = index.categories.find((c) => c.folder.toLowerCase() === lower || c.folder.toLowerCase() === `akwf_${lower}`)
+    if (cat) return soundRef(tableFor(cat.folder).id)
+    const named = sounds.value.find((x) => x.settings.name.toLowerCase() === lower)
     return named ? soundRef(named.id) : null
   }
   /** a patch the agent made, into the catalog after the others, and selected (so the keys play it) */
@@ -1942,17 +2066,17 @@ export const useBoard = defineStore('board', () => {
   }
 
   /**
-   * First run: every AKWF wave becomes a sound of the board (4,358, in AKWF's categories), then the built-in patches
-   * made of them. Also the menu's RESTORE: puts back whatever of either has been deleted.
+   * First run: every AKWF category becomes a wavetable sound of the board (65), then the built-in patches made of them.
+   * Also the menu's RESTORE: puts back whatever of either has been deleted.
    */
-  async function installFactory(nothingAdded = 'Every AKWF wave and built-in patch is here') {
+  async function installFactory(nothingAdded = 'Every AKWF wavetable and built-in patch is here') {
     try {
-      const waves = await importWaves()
+      const tables = await importTables()
       const added = await addFactoryPatches()
       if (!master.patchId && patches.value.length) selectPatch(patches.value[0].id)
       Object.assign(master, { factory: true, factoryVersion: FACTORY_VERSION })
       const n = (k: number, one: string, many: string) => `${k.toLocaleString()} ${k === 1 ? one : many}`
-      toast.value = waves || added ? `Added ${n(waves, 'AKWF wave', 'AKWF waves')} and ${n(added, 'patch', 'patches')}` : nothingAdded
+      toast.value = tables || added ? `Added ${n(tables, 'AKWF wavetable', 'AKWF wavetables')} and ${n(added, 'patch', 'patches')}` : nothingAdded
     } catch (e) {
       console.error(e) // try again next launch
       toast.value = 'Couldn\'t load the AKWF waves'
@@ -1963,8 +2087,8 @@ export const useBoard = defineStore('board', () => {
    * Boards from earlier versions. Before 0.5 (factoryVersion < 2) the factory sounds were generated (SAW WAVE …
    * NOISE): patches made of them move to the AKWF waves that replace them, keeping their settings (the root note
    * follows the new wave, C2 for C4), the factory WIND (all NOISE) goes, and only a NOISE that a patch of your own
-   * still plays stays. 0.5's factory patches take their new names (their settings are kept); then every AKWF wave
-   * and built-in patch the board hasn't got is added.
+   * still plays stays. 0.5's factory patches take their new names (their settings are kept); 0.14's waves become
+   * wavetables (wavesToTables); then every AKWF wavetable and built-in patch the board hasn't got is added.
    */
   async function upgradeFactory() {
     try {
@@ -2036,7 +2160,12 @@ export const useBoard = defineStore('board', () => {
       if (sel?.factoryId) loadHeader(sel)
       master.headerFolded = [...new Set([...master.headerFolded, 'chorus', 'delay', 'reverb'])]
     }
-    await installFactory(relevelled ? `Built-in patches turned down for headroom (${relevelled})` : undefined)
+    // 0.14: the waves into wavetables, the patches onto them
+    const moved = master.factoryVersion < 6 ? await wavesToTables() : 0
+    await installFactory(
+      relevelled ? `Built-in patches turned down for headroom (${relevelled})`
+        : moved ? `AKWF's waves are wavetables now: ${moved.toLocaleString()} waves folded into their categories' tables` : undefined,
+    )
   }
 
   /**
@@ -2306,7 +2435,7 @@ export const useBoard = defineStore('board', () => {
     const needed = new Set(asked)
     for (const p of chosen) for (const l of patchLayers(p)) needed.add(l.soundId)
     const list = sounds.value.filter((s) => needed.has(s.id))
-    const audio = [...new Set(list.flatMap(soundAudioIds))].filter((id) => !isSynthAudioId(id) && !isWaveAudioId(id))
+    const audio = [...new Set(list.flatMap(soundAudioIds))].filter((id) => !isSynthAudioId(id) && !isAkwfAudioId(id))
     return { sounds: list, patches: chosen, extra: list.filter((s) => !asked.has(s.id)).length, audio }
   }
   /** A sample to export: as stored, else from the plugin's cache, else its decoded audio written as a WAV. */
@@ -2317,7 +2446,9 @@ export const useBoard = defineStore('board', () => {
     if (cached) return cached
     const buf = engine.getBuffer(audioId)
     if (!buf) return null
-    return encodeWav(Array.from({ length: buf.numberOfChannels }, (_, i) => buf.getChannelData(i)), buf.sampleRate)
+    const channels = Array.from({ length: buf.numberOfChannels }, (_, i) => buf.getChannelData(i))
+    const size = tableSizes.get(audioId)
+    return size ? encodeTableWav(channels, buf.sampleRate, size) : encodeWav(channels, buf.sampleRate)
   }
   /**
    * Export these sounds and patches (and every sound the patches use) as a board .zip, which IMPORT BOARD reads.
@@ -2370,7 +2501,7 @@ export const useBoard = defineStore('board', () => {
           peaks.set(old, computePeaks(engine.getBuffer(old)!))
           return old
         }
-        if (isWaveAudioId(old)) return old
+        if (isAkwfAudioId(old)) return old
         if (idMap.has(old)) return idMap.get(old)!
         const entry = zip.file(`audio/${old}`)
         if (!entry) return null
@@ -2382,14 +2513,21 @@ export const useBoard = defineStore('board', () => {
         return audioId
       }
       const soundIds = new Map<string, string>()
-      // an untouched AKWF wave is the one this board already has (only its name and tag were stored)
-      if (board.sounds.some(isWaveSound)) await loadAkwf().catch(() => {})
-      const waves = waveSounds()
+      // an untouched AKWF wave (as earlier versions stored them: only its name and tag) is a wave of this board's tables
+      if (board.sounds.some(isAkwfSound)) await loadAkwf().catch(() => {})
+      const tables = tableSounds()
+      const onTables = new Map<string, { table: string; wt: number }>()
       for (const s of board.sounds) {
         const pristine = isWaveSound(s) && Object.keys(s.settings).every((k) => k === 'name' || k === 'tag')
-        const mine = pristine ? waves.get(s.audioId) : undefined
-        if (mine) {
-          soundIds.set(s.id, mine.id)
+        const sp = pristine ? waveSpot(waveNameOf(s.audioId)) : null
+        if (sp) {
+          onTables.set(s.id, { table: tableFor(sp.folder, tables).id, wt: sp.index })
+          continue
+        }
+        // an AKWF table as it comes is this board's (its layers carry their own settings)
+        const folder = isTableAudioId(s.audioId) && !s.zones?.length ? tableFolderOf(s.audioId) : ''
+        if (folder && tableLength(folder) && sameTable(expandSound(s).settings, folder)) {
+          soundIds.set(s.id, tableFor(folder, tables).id)
           continue
         }
         const audioId = await remap(s.audioId)
@@ -2414,11 +2552,15 @@ export const useBoard = defineStore('board', () => {
         const p = migratePatch(clone(raw))
         p.id = uid()
         p.tag = addTags(p.tag, ['imported', stripExt(file.name)])
-        p.slots = p.slots.map((x) =>
-          x && soundIds.has(x.layer.soundId) ? { ...x, layer: { ...x.layer, id: uid(), soundId: soundIds.get(x.layer.soundId)! } } : null,
-        )
+        p.slots = p.slots.map((x) => {
+          const w = x && onTables.get(x.layer.soundId)
+          if (x && w) return { ...x, layer: { ...x.layer, id: uid(), soundId: w.table, settings: { ...x.layer.settings, wtSize: AKWF_FRAMES, wt: w.wt, wtBlend: 0 } } }
+          return x && soundIds.has(x.layer.soundId) ? { ...x, layer: { ...x.layer, id: uid(), soundId: soundIds.get(x.layer.soundId)! } } : null
+        })
         if (p.slots.some(Boolean)) patches.value.push(p)
       }
+      // waves of earlier versions that were changed: onto the tables too, as this board's own did
+      await wavesToTables()
       const known = new Set(presets.value.map((p) => p.id))
       presets.value.push(...(board.presets ?? []).filter((p) => !known.has(p.id)))
       if (!selected.value) master.selectedId = sounds.value[0]?.id ?? null
@@ -2576,7 +2718,7 @@ export const useBoard = defineStore('board', () => {
     pressPatch, releasePatch, patchIdOfLayer, soundRef, resolveSoundRef, addAgentPatch, replacePatch, renderOffline,
     tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
     addFiles, addCapture, load, press, release, panic, noteOn, noteOff,
-    select, selectStep, togglePanel, cycleMode, cycleFilter, toggleGrain, addWaves, resetSettings, duplicate, remove, removeSounds, move,
+    select, selectStep, togglePanel, cycleMode, cycleFilter, toggleGrain, addTable, akwfWaves, resetSettings, duplicate, remove, removeSounds, move,
     mpeRoutesFor,
     exportBoard, exportPlan, exportSelection, importBoard, enableMidi, learnMidi,
   }

@@ -53,6 +53,7 @@ const DEST_SHORT: Record<ModDest, string> = {
   lfo2Amt: 'L2 AMT',
   delayMix: 'DELAY',
   reverbMix: 'REVERB',
+  wtPos: 'WT POS',
 }
 
 const open = computed({

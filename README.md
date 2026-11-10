@@ -52,22 +52,37 @@ The header **◀ ▶** step through patches (in the Patches tab's filtered order
 patch. **♥** marks favourites on sound cards, patch cards, the rack and in the grids (♥ column); **♥ FAV** in the tag
 strip shows only those.
 
-**AKWF waves**: all 4,358 of [Adventure Kid's single-cycle waveforms](https://github.com/KristofferKarlAxelEkstrand/AKWF-FREE)
-(Kristoffer Ekstrand, CC0) ship with SSB, and on the first load every one becomes a **sound of the board**, in AKWF's own
-65 categories: the perfect waves first, then AKWF's other basic shapes, its named sets (AKWF_epiano, AKWF_fmsynth,
-AKWF_hvoice, …) and the numbered mixed folders. Each is tagged **akwf** and its category (`akwf_epiano`), so the tag
-strip filters by category; it loops while held, with its root note at C2 (each 600-frame cycle plays at the rate that
-makes it exactly C2, so the loop is sample-exact), centred on zero (some AKWF cycles sit well off it, which as an
-oscillator is only a thump). The waves take no storage of their own: their audio is made from the files that ship with
-SSB when a wave is first played or drawn, and the board stores only the settings you've changed. **+ → BROWSE WAVES**
-shows each category's waves as outlines: click one to hear it, **+** selects its pad (and puts it back if you deleted
-it), **1 / 2 / 3** put it straight into that VCO slot of the patch; ← → step through the waves, ↑ ↓ through the
-categories, **PUT BACK** restores the deleted ones of what's shown. `scripts/akwf.mjs` rebuilds `public/akwf` from an
-AKWF-FREE checkout.
+**AKWF wavetables**: all 4,358 of [Adventure Kid's single-cycle waveforms](https://github.com/KristofferKarlAxelEkstrand/AKWF-FREE)
+(Kristoffer Ekstrand, CC0) ship with SSB as **65 wavetables**, one for each of AKWF's own categories: on the first load
+each becomes a **sound of the board** — the perfect waves first, then AKWF's other basic shapes, its named sets
+(ELECTRIC PIANO, FM SYNTH, HUMAN VOICE, …) and the numbered mixed folders — tagged **akwf**, **wavetable** and its
+category (`akwf_epiano`). A table is its category's waves end to end, each 600-frame cycle at the rate that makes it
+exactly C2 and centred on zero (some AKWF cycles sit well off it, which as an oscillator is only a thump); it loops
+while held. The tables take no storage of their own: their audio is made from the files that ship with SSB when one is
+first played or drawn. **+ → BROWSE WAVETABLES** shows each category's waves as outlines: click one to hear it, **+**
+selects its table on the board at that wave (and puts the table back if you deleted it), **1 / 2 / 3** put the table,
+at that wave, straight into that VCO slot of the patch; ← → step through the waves, ↑ ↓ through the categories, **PUT
+BACK** restores deleted tables. `scripts/akwf.mjs` rebuilds `public/akwf` from an AKWF-FREE checkout.
 
-**Built-in patches**: 127 of them, made of AKWF waves, installed right after the waves and tagged **factory** plus what
-they are (bass, lead, pad, keys, pluck, bell, mallet, strings, brass, winds, choir, organ, chip, fx, drone, texture) and
-how (vco, fm, ring, grain, sync, cloud, loop, lfo, wheel, velocity, aftertouch, mono, glide, …). There are the classic
+**Wavetables** play as an oscillator (`src/audio/wavetable.ts`, and the native engine): a VCO on a table plays one of
+its waves, chosen by **WT**, blended at the same phase into the next by **WT BLEND** — 0 % that wave, 50 % half and
+half, 98 % nearly all the next; after the last wave comes the first. A route to **WT POS** in the matrix sweeps the
+table (±1 = all of it, wrapping round), so an LFO, the filter envelope or an MPE slide moves through it. In the sample
+views (2D and ISO) a table is drawn in ISO: its waves stacked from the first at the back to the last at the front, the
+one WT and BLEND make lit (and seen through what's in front of it); drag it to turn the view, as any ISO view. With GRAIN on (or STRETCH) the table is the wave WT and BLEND pick, played as a single cycle, so the
+grains read that wave. A wavetable WAV of your own (Serum's format and the tools that follow it: equal cycles end to
+end, a `clm` chunk giving their length) is recognised when dropped and plays the same way, its cycles at C2. Why an
+oscillator rather than the granulator at audio rate: grains are windowed and overlap two to a period, which at the pitch
+rate is amplitude modulation with sidebands of its own and a comb, and blending by moving POS between cycles splices
+them out of phase; reading two cycles at one phase and crossfading is exact and keeps the pitch the playback rate's.
+Boards from before 0.14 move onto the tables once: every patch layer on an AKWF wave plays its category's table at that
+wave (the same cycle, so the same sound), the waves leave the board except any you'd renamed, changed or starred, which
+stay as sounds of yours on their table at their wave, and the tables take the waves' place.
+
+**Built-in patches**: 127 of them, made of AKWF waves (each layer its wave's table, at that wave), installed right
+after the tables and tagged **factory** plus what they are (bass, lead, pad, keys, pluck, bell, mallet, strings,
+brass, winds, choir, organ, chip, fx, drone, texture) and how (vco, fm, ring, grain, sync, cloud, loop, lfo, wheel,
+velocity, aftertouch, mono, glide, …). There are the classic
 VCO workflows — detuned unison, octave and fifth stacks, sub oscillators, PWM by crossfading two pulse widths, FM and
 ring modulation between slots, an LFO at audio rate in RATIO mode — and Granulator III on single cycles:
 - **grain sync**: GRAIN at half of C2, following the keys, puts two grains in every period of the note, so it plays in
@@ -82,10 +97,10 @@ played — a poly patch as a four-note chord, a mono one a note at a time, at fu
 page (K-weighted loudness, BS.1770) and level-matched to about −16 LUFS with peaks under −7 dBFS
 (`src/lib/factoryLevels.ts`), so at the default levels a chord stays well clear of clipping (the plugin's engine
 measures the same within a dB). Boards that installed them louder are brought down once, keeping any layer you changed
-in proportion. AKWF waves start at volume 0.4 for the same reason. They start dry: the header's chorus, delay and
+in proportion. AKWF tables start at volume 0.4 for the same reason. They start dry: the header's chorus, delay and
 reverb mixes at 0 (each patch's effects are voiced, so turning a mix up gives that patch's room or echo). Edit, rename
 or delete them; SAVE keeps edits as a patch of your own (see Saving patches, above). **+ → RESTORE
-BUILT-INS** puts back any AKWF wave or built-in patch you've deleted. A board from 0.5 keeps its nine factory patches as
+BUILT-INS** puts back any AKWF wavetable or built-in patch you've deleted. A board from 0.5 keeps its nine factory patches as
 they are, under their new names (POLY SAW is SUPERSAW SUNRISE, FM PIANO is TINE MACHINE EP, …), and gains the rest;
 boards from before the AKWF waves first lose the old generated SAW WAVE … NOISE sounds, their patches moving to the
 AKWF waves.
@@ -104,18 +119,20 @@ The **rack** under the header shows the selected patch's three slots side by sid
   VCO to each chord you hold: pure fifths and thirds, while the keyboard stays close to equal temperament. See below.
 - **PLAY** (beside the tuning chip) turns a VCO's panel into a performance page, after SpaceCraft's: the clip big, and
   four XY pads, in the theme's colours (each VCO its own). Drag a crosshair anywhere; double-click a pad to reset it; ⚙ has its options.
-  - **The big view** is played like a pad: left / right is where in the clip the grains fire (POS), up / down how loud.
+  - **The big view** is played like a pad: left / right is where in the clip the grains fire (POS), up / down how loud
+    (on a wavetable, left / right moves through its waves instead: WT, and WT BLEND between them).
     The squares are the grains as they play (where each is reading), the dotted line where the LFO has moved the firing
     point. Its corner chip picks the view (2D, or a live SCOPE / BARS / SPECTRO under the crosshair, the TV stretched
     to the view's shape); **GRAIN ON / OFF** in the other corner switches grains.
-  - **GRAIN**: up / down the grains' size (small and fast at the top, long and slow at the bottom); left / right how
+  - **GRAIN**: up / down the grains' size (small and fast at the top; at the bottom one grain as long as the whole
+    sample, or a wavetable's wave); left / right how
     much of each grain's turn it sounds — 1 % at the far left (mostly silence between grains), all of it at the right
     (LENGTH). Time runs along the rows like lines of text: a dash is a grain sounding, a gap silence, the one just
     fired lit. Top left: fast, far apart; top right: fast, nearly continuous; bottom right: long slow grains; bottom
     left: short grains with long silences.
   - **LFO**: sweeps where the grains fire forward of the position, never behind it — left / right how far (far left:
     off), up / down how fast (tempo divisions). It is the layer's LFO 2, routed one-sided to POS. The dots are the
-    firing point over the last cycle and a half, from the position (the left edge) to as far as the sweep goes.
+    firing point over the last cycle and a half, the sweep centred in the pad.
   - **FILTER · REVERB**: up / down the reverb; left / right the filter, bypassed in the middle, a low-pass closing to
     the left, a high-pass opening to the right. The bright line is the filter's response, the copies behind it the reverb.
   - **PITCH · RING**: fine pitch (±2 semitones) in the middle; coarse toward the edges (×2 at the top corners,
@@ -250,7 +267,7 @@ they came from: `dropped, <folder>`, `sfzinstruments, <repo>`, `gm, <set>, <fami
 The card view is virtualised (Vuetify `v-virtual-scroll` over rows sized to the window and pad scale), so only the
 rows on screen exist in the DOM; grid mode (canvas-datagrid) handles very large lists natively.
 
-With every AKWF wave on it a board has some 4,400 sounds, so nothing walks all of them on an edit. Each sound and patch
+A board can have thousands of sounds (sample packs, SFZ libraries), so nothing walks all of them on an edit. Each sound and patch
 sits under a small proxy of its own (`src/lib/tracked.ts`) that reports writes anywhere inside it: a knob turn marks
 that one sound changed, and saving and undo re-serialise only what changed (undo's snapshots share every unchanged
 sound's JSON). In the AU / VST3 the native engine holds only the sounds it may be asked to play — what the keyboard
@@ -259,7 +276,8 @@ session, stay small; clicking a sound the engine hasn't got waits for it to arri
 
 ### Per-pad panel
 
-PLAY (vol, pan, level by key, repeat, choke) · TUNE (pitch, fine, speed + TAPE/STRETCH) · KEYS (root note, velocity
+PLAY (vol, pan, level by key, repeat, choke) · TUNE (pitch, fine, speed + TAPE/STRETCH) · WAVETABLE (WT, WT BLEND;
+on a wavetable) · KEYS (root note, velocity
 amount, bend range) · CLIP · ADSR (+ key scaling) · FILTER (LP/HP/BP, and Granulator III's nine types with
 WIDTH; key tracking) · FILTER ADSR (+ key scaling) · EQ · GRAIN (Granulator II: grain rate and key tracking, pos, spray, scan, window, spread, random pitch / rate, flux / void, FM;
 Granulator III: CLASSIC / LOOP / CLOUD modes, skew, density, reverse, variation, detune, per-note random pitch) · DELAY · REVERB ·
@@ -285,7 +303,7 @@ FILTER ENV (the pad's filter ADSR, 0–1, whatever its AMOUNT: a second envelope
 Destinations: pitch, cutoff, resonance, volume, pan, grain pos, grain size, skew / xfade, variation, detune, scan speed
 (× 1 + the route: up to three times as fast, and backwards below −100 %), the pad's LFO 1 / 2 RATE (±36 semitones) and
 AMOUNT (added to its AMOUNT knob; a pad matrix only — an LFO doesn't drive itself, and two LFOs only one way),
-delay mix, reverb mix.
+delay mix, reverb mix, WT POS (a wavetable's position, ±1 = the whole table).
 The **GLOBAL** matrix (header MATRIX button) applies to every sound and its LFOs run freely; each pad's matrix
 (panel MATRIX button) applies to that pad and its LFOs restart per note. Pitch bend always bends pitch by the
 pad's BEND range. Negative volume modulation from an LFO is a tremolo that never boosts.
@@ -406,12 +424,15 @@ plugin the engine sends it ~30 times a second):
 - **BARS**: a 90s spectrum analyser — LED segments that jump and fall, with peak caps that hang.
 - **SPECTRO**: a spectrogram, RX-style: time scrolling left, log frequency up, loudness as heat.
 
-**2D** and **ISO** show the sample, where the clip and the grain are dragged. **ISO** is isometric: the wave stands as a wall
-on a floor — a stereo sample's left at the back and its right at the front — the clip and the grain lie on the floor,
-grains stand where they play at their side's depth, and the playhead is a lit curtain across it. In either view, with
-GRAIN on, dragging edits the grain: the highlight is the stretch one grain plays from POS; drag its middle to move
-POS, its sides to set its length (GRAIN), or anywhere else to put it there. Shift-drag moves the clip (in 2D the clip
-markers' flags along the top still grab them too).
+**2D** and **ISO** show the sample (a wavetable shows its waves in ISO, see Wavetables). **ISO** is isometric, an
+action RPG's camera: the floor turned 45° and seen from 30° up, so its grid runs 2:1 across the screen both ways, and
+the display grows taller to hold it. **Drag** it to turn the camera (across: around the floor; up and down: how
+steeply it looks down) and **double-click** to put it back; every ISO view shares the angle. The wave stands as a wall
+on the floor — a stereo sample's left at the back and its right at the front — the clip and the grain lie on the
+floor, grains stand where they play at their side's depth, and the playhead is a lit curtain across it. In **2D**,
+with GRAIN on, dragging edits the grain: the highlight is the stretch one grain plays from POS; drag its middle to
+move POS, its sides to set its length (GRAIN), or anywhere else to put it there. Shift-drag moves the clip (in 2D the
+clip markers' flags along the top still grab them too).
 
 ### Grid mode
 
@@ -488,7 +509,7 @@ start folded. The rest always show. Wraps into rows on narrow windows.
 the .zip (click a row; ⇧-click a run; filter by PATCHES / SOUNDS / MY SAMPLES or by text; ALL / NONE act on what's
 shown), or take EVERYTHING. A ticked patch brings the sounds its VCOs use, and every sample they need travels with them
 (from the board's store, the plugin's sample cache, or the decoded audio); if one can't be found the dialog names it
-rather than leaving it out. AKWF waves and generators travel by name. **IMPORT BOARD…** reads the .zip back.
+rather than leaving it out. AKWF wavetables and generators travel by name. **IMPORT BOARD…** reads the .zip back.
 
 - **Select a patch** by clicking its card in the Patches tab, or with ◀ ▶ in the header.
 - **PLAY** turns MIDI and the computer keyboard into a piano for the selected patch (C4 = original pitch).

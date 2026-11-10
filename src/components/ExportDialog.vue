@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import canvasDatagrid, { type CanvasDatagrid, type GridEvent } from 'canvas-datagrid'
 import { useBoard } from '../stores/board'
 import { gridStyle, rgba } from '../theme/gridStyle'
-import { isWaveAudioId } from '../lib/akwf'
+import { isAkwfAudioId, isTableAudioId, isWaveAudioId } from '../lib/akwf'
 import { isSynthAudioId } from '../audio/synthWaves'
 import { patchLayers, type Sound } from '../types'
 
@@ -28,7 +28,7 @@ interface Row {
   mine: boolean
 }
 const sourceOf = (s: Sound) =>
-  s.zones?.length ? `SFZ · ${s.zones.length} zones` : isWaveAudioId(s.audioId) ? 'AKWF wave' : isSynthAudioId(s.audioId) ? 'generator' : `sample · ${s.fileName ?? ''}`
+  s.zones?.length ? `SFZ · ${s.zones.length} zones` : isWaveAudioId(s.audioId) ? 'AKWF wave' : isTableAudioId(s.audioId) ? 'AKWF wavetable' : isSynthAudioId(s.audioId) ? 'generator' : `sample · ${s.fileName ?? ''}`
 const rows: Row[] = (() => {
   const byId = new Map(board.sounds.map((s) => [s.id, s]))
   const out: Row[] = board.patches.map((p) => ({
@@ -52,7 +52,7 @@ const rows: Row[] = (() => {
       tag: s.settings.tag ?? '',
       about: sourceOf(s),
       sel: '',
-      mine: !isWaveAudioId(s.audioId) || !!s.zones?.length,
+      mine: !isAkwfAudioId(s.audioId) || !!s.zones?.length,
     })
   return out
 })()
@@ -63,7 +63,7 @@ const KINDS = [
   { id: 'all', label: 'ALL' },
   { id: 'patches', label: 'PATCHES' },
   { id: 'sounds', label: 'SOUNDS' },
-  { id: 'mine', label: 'MY SAMPLES', title: 'Sounds that are samples or SFZ instruments (not the built-in AKWF waves)' },
+  { id: 'mine', label: 'MY SAMPLES', title: 'Sounds that are samples or SFZ instruments (not the built-in AKWF wavetables)' },
 ] as const
 const kind = ref<(typeof KINDS)[number]['id']>('all')
 const filter = ref('')
@@ -243,7 +243,7 @@ const nothing = computed(() => !counts.value.sounds && !counts.value.patches)
       <div class="plan">
         <b>{{ summary }}</b>
         <span v-if="plan.extra" class="extra">+{{ plural(plan.extra, 'sound') }} the patches use</span>
-        <span class="dim">· {{ plural(plan.audio.length, 'sample') }} to pack (AKWF waves and generators travel by name)</span>
+        <span class="dim">· {{ plural(plan.audio.length, 'sample') }} to pack (AKWF wavetables and generators travel by name)</span>
         <div v-if="missing.length" class="missing">
           <v-icon icon="mdi-alert" size="14" /> Exported, but no audio could be found for {{ plural(missing.length, 'sound') }} — an import
           drops them: {{ missing.slice(0, 6).join(', ') }}{{ missing.length > 6 ? `, and ${missing.length - 6} more` : '' }}

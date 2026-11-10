@@ -1,7 +1,8 @@
 /**
- * Built-in patches, made of AKWF waves (lib/akwf.ts). Every wave is a sound of the board from the first load;
- * these patches are installed after them, as ordinary patches of the catalog (tagged "factory"), and know which
- * built-in they came from by `factoryId`, so a board gets each one once whatever it has renamed it to.
+ * Built-in patches, made of AKWF waves (lib/akwf.ts), each layer its wave's category's wavetable at that wave (the
+ * tables are the board's sounds from the first load); these patches are installed after them, as ordinary patches of
+ * the catalog (tagged "factory"), and know which built-in they came from by `factoryId`, so a board gets each one once
+ * whatever it has renamed it to.
  */
 import type { GlobalFx, Lfo, ModRoute, MpeBinding, PatchSlot, SoundSettings } from '../types'
 import { FACTORY_PATCHES_MORE } from './factoryPatches'

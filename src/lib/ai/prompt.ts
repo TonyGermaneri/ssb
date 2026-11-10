@@ -23,14 +23,14 @@ const reference = [
 
 /** how the instrument works and how to work on it: for the in-app agent and for agents connecting over MCP */
 const GUIDE = `# The instrument
-- Sounds: the board's audio. Most are AKWF single-cycle waveforms (4,358 of them, in categories such as saw, epiano, hvoice, fmsynth, blended, sinharm, oscchip, vgame — wave names like AKWF_saw, AKWF_epiano_0025, AKWF_hvoice_0039; root note C2 = MIDI 36, looping while held). Others are the user's own samples and SFZ instruments.
+- Sounds: the board's audio. Most are the AKWF wavetables: 4,358 single-cycle waveforms in 65 categories (saw, epiano, hvoice, fmsynth, blended, sinharm, oscchip, vgame…), each category one wavetable sound (AKWF_epiano, AKWF_bw_saw…; root note C2 = MIDI 36, looping while held). A layer on a table plays one of its waves (settings.wt, 0 = the first) blended into the next (settings.wtBlend); a route to wtPos sweeps through the table (±1 = all of it). Name a single wave (AKWF_saw, AKWF_epiano_0025, AKWF_hvoice_0039) as a slot's sound and you get its table at that wave. Others are the user's own samples and SFZ instruments.
 - Patches: what the keyboard plays. Up to 3 slots (VCOs). Slot 1 is the main voice, always heard, following the keyboard; slots 2 and 3 layer on top (audible) or only modulate (audible: false), and are VCO 2 / VCO 3 as audio-rate sources in slot 1's routes (FM: route vco2 → pitch on slot 1 with slot 2 silent).
 - Each slot holds a layer: the patch's own copy of a sound's settings (amp and filter envelopes, filter, EQ, a grain engine, per-layer delay and reverb, two LFOs and mod routes). Editing a patch never changes the sound it came from.
 - The header: the patch's volume, mono/glide, tempo, master chorus / delay / reverb and the global mod matrix.
 - MPE surfaces: with an MPE controller (Roli, Linnstrument, Osmose, Continuum…) every note has its own STRIKE (how hard the key is hit), PRESS (pressure into it while held), SLIDE (moving up and down it: CC74) and GLIDE (sideways: the note's own pitch bend, which SSB applies by itself). A patch's "mpe" list says what STRIKE / PRESS / SLIDE do to it. They act only while the player has MPE on (their setting, not the patch's); off, the patch plays exactly as written. LIFT (release velocity) isn't read by SSB.
 
 # How a patch is written (the spec)
-read_patch returns one, create_patch takes one, update_patch takes a partial one. A slot names its sound ("sound": an AKWF wave name like "AKWF_saw", or a sound id from list_sounds) and lists only the knobs that differ from that sound's own settings. Example:
+read_patch returns one, create_patch takes one, update_patch takes a partial one. A slot names its sound ("sound": an AKWF wave name like "AKWF_saw" — its table at that wave — an AKWF table like "AKWF_epiano" with settings.wt choosing the wave, or a sound id from list_sounds) and lists only the knobs that differ from that sound's own settings. Example:
 {"name": "GLASS RAIN PAD", "tags": "pad, glassy, slow", "slots": [
   {"sound": "AKWF_sinharm_0012", "settings": {"attack": 1.4, "release": 3, "cutoff": 6000, "volume": 0.7}, "lfo1": {"shape": "sine", "rate": 0.15}, "routes": [{"source": "lfo1", "dest": "cutoff", "amount": 0.1}, {"source": "vco2", "dest": "pitch", "amount": 0.08}]},
   {"sound": "AKWF_sin", "slot": {"audible": false, "transpose": 19, "level": 0.6}},

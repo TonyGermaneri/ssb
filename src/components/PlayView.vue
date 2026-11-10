@@ -9,6 +9,7 @@ import Knob from './Knob.vue'
 import LiveView from './LiveView.vue'
 import PlayPad from './PlayPad.vue'
 import WaveViewPicker from './WaveViewPicker.vue'
+import { cycleFillSeconds, tableCount } from '../audio/wavetable'
 
 /**
  * A VCO slot's Play view (SpaceCraft's performance page): the clip big, played by dragging where the grains fire
@@ -46,9 +47,28 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 
 // ── the clip ──
 const durationNow = () => getBuffer(props.sound.audioId)?.duration ?? audioDuration(props.sound.audioId)
-const clipSeconds = () => {
+/**
+ * A wavetable (audio/wavetable.ts): its cycles and their length. The big view's left / right is then where in the table
+ * it plays (WT + BLEND), the table drawn whole; its grains (and the GRAIN pad) are the chosen wave's.
+ */
+const tableOf = () => {
   const r = raw()
-  return Math.max(1e-3, durationNow() * Math.abs(r.clipOut - r.clipIn))
+  if (!(r.wtSize > 0) || props.sound.zones?.length) return null
+  const buf = getBuffer(props.sound.audioId)
+  const count = buf ? tableCount(buf.length, r.wtSize) : 0
+  return buf && count >= 1 ? { count, size: r.wtSize, rate: buf.sampleRate } : null
+}
+/** the whole sample's length: the GRAIN pad's bottom is one grain that long (a table's: the wave its grains play) */
+const sampleSeconds = () => {
+  const t = tableOf()
+  return t ? cycleFillSeconds(t.size, t.rate) : durationNow() || 0
+}
+/** a wavetable's position as the big view's x: its first wave at the left, its last at the right */
+const tableX = (r: Settings, count: number) => (count > 1 ? clamp01((Math.round(r.wt) + r.wtBlend) / (count - 1)) : 0)
+function tableWrite(p: Point, count: number) {
+  const at = clamp01(p.x) * Math.max(0, count - 1)
+  const wt = Math.min(count - 1, Math.floor(at))
+  return { wt, wtBlend: Math.round((at - wt) * 1000) / 1000, volume: performWrite(p).volume }
 }
 /** min / max per column of the clip, for the big view (cached by what it depends on) */
 let clipCache: { key: string; peaks: Float32Array } | null = null
@@ -56,8 +76,10 @@ function clipPeaks(columns: number): Float32Array | null {
   const buf = getBuffer(props.sound.audioId)
   if (!buf) return null
   const r = raw()
-  const a = Math.min(r.clipIn, r.clipOut)
-  const b = Math.max(r.clipIn, r.clipOut)
+  // (a wavetable is drawn whole: its x is the position in it)
+  const whole = !!tableOf()
+  const a = whole ? 0 : Math.min(r.clipIn, r.clipOut)
+  const b = whole ? 1 : Math.max(r.clipIn, r.clipOut)
   const key = `${props.sound.audioId}|${a}|${b}|${columns}`
   if (clipCache?.key === key) return clipCache.peaks
   const data = buf.getChannelData(0)
@@ -130,8 +152,11 @@ function put<T extends object>(target: T, patch: Partial<T>) {
   for (const [k, v] of Object.entries(patch)) if (!Object.is(r[k], v)) (target as Record<string, unknown>)[k] = v
 }
 const writers: Record<PadId, (p: Point) => void> = {
-  perform: (p) => put(s.value, performWrite(p)),
-  grain: (p) => put(s.value, grainWrite(p, clipSeconds())),
+  perform: (p) => {
+    const t = tableOf()
+    put(s.value, t ? tableWrite(p, t.count) : performWrite(p))
+  },
+  grain: (p) => put(s.value, grainWrite(p, sampleSeconds())),
   lfo: (p) => {
     const w = lfoWrite(raw(), p)
     put(s.value.mod.lfo2, w.lfo2)
@@ -146,8 +171,11 @@ const writers: Record<PadId, (p: Point) => void> = {
 function pointOf(id: PadId, r: Settings): Point {
   const h = held[id]
   if (h) return h
-  if (id === 'perform') return performPoint(r)
-  if (id === 'grain') return grainPoint(r, clipSeconds())
+  if (id === 'perform') {
+    const t = tableOf()
+    return t ? { x: tableX(r, t.count), y: performPoint(r).y } : performPoint(r)
+  }
+  if (id === 'grain') return grainPoint(r, sampleSeconds())
   if (id === 'lfo') return lfoPoint(r)
   if (id === 'fx') return fxPoint(r)
   return pitchPoint(r, pitchX)
@@ -243,7 +271,7 @@ function performLooks(r: Settings): string {
   if (sounding.value) return `${clock.value}`
   const at = pointOf('perform', r)
   const lfo = lfoRouteOf(r)
-  return `${at.x},${at.y}|${live.value}|${props.sound.audioId}|${r.clipIn}|${r.clipOut}|${lfo.amount}|${lfo.unipolar}|${r.grainPos}|${performSize.value.w}x${performSize.value.h}|${colors.value.line}`
+  return `${at.x},${at.y}|${live.value}|${props.sound.audioId}|${r.clipIn}|${r.clipOut}|${r.wt}|${r.wtBlend}|${lfo.amount}|${lfo.unipolar}|${r.grainPos}|${performSize.value.w}x${performSize.value.h}|${colors.value.line}`
 }
 function paintPerform() {
   const c = performCanvas.value
@@ -260,10 +288,12 @@ function paintPerform() {
   const r = raw()
   if (!live.value) drawClip(g, w, h, clipPeaks(Math.min(1200, Math.round(performSize.value.w))), colors.value)
   const lfo = lfoRouteOf(r)
+  // (a table's grains play its wave, not where they'd sit in the whole table: no grains or firing point drawn)
+  const table = !!tableOf()
   drawPerformOverlay(g, w, h, {
     at: pointOf('perform', r),
-    fireX: lfo.amount > 0 ? clamp01(r.grainPos + lfoOffset(r.mod.lfo2, lfo.amount, board.bpm, frozen, lfo.unipolar)) : null,
-    grains: grainDots(clock.value),
+    fireX: lfo.amount > 0 && !table ? clamp01(r.grainPos + lfoOffset(r.mod.lfo2, lfo.amount, board.bpm, frozen, lfo.unipolar)) : null,
+    grains: table ? [] : grainDots(clock.value),
     colors: colors.value,
     dpr,
   })
@@ -359,7 +389,7 @@ const fmtQ = (v: number) => v.toFixed(1)
       <div
         ref="perform"
         class="perform"
-        title="Drag: left / right is where in the clip the grains fire (POS), up / down how loud (VOL). The squares are the grains as they play"
+        :title="s.wtSize > 0 ? 'A wavetable — drag: left / right moves through its waves (WT, and WT BLEND between them), up / down how loud (VOL). Its grains, when on, play the wave chosen' : 'Drag: left / right is where in the clip the grains fire (POS), up / down how loud (VOL). The squares are the grains as they play'"
         @pointerdown="performDown"
         @pointermove="performMove"
         @pointerup="performUp"

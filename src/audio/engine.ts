@@ -5,8 +5,10 @@ import { isSynthAudioId, makeSynthBuffer, type SynthWave } from './synthWaves'
 import { MasterFx } from './masterFx'
 import { Voice, type GrainMark, type ModHub, type VoiceOptions } from './voice'
 import { forgetGrainSample, loadGrains } from './grains'
+// seconds a single cycle is repeated to fill (as long as a built-in generator's buffer; a table's wave, for grains, too)
+import { CYCLE_FILL } from './wavetable'
 import { callNative, nativeEngine } from '../native/bridge'
-import { cycleRate, isWaveAudioId, waveChannels, waveNameOf } from '../lib/akwf'
+import { cycleRate, isAkwfAudioId, isTableAudioId, isWaveAudioId, tableChannels, tableFolderOf, tableLength, waveChannels, waveNameOf } from '../lib/akwf'
 
 /**
  * In the AU / VST3 the native engine makes the sound (native/engine) and this one stays silent:
@@ -213,8 +215,6 @@ export function decode(data: ArrayBuffer): Promise<AudioBuffer> {
   return getCtx().decodeAudioData(data)
 }
 
-/** seconds a single cycle is repeated to fill (as long as a built-in generator's buffer) */
-const CYCLE_FILL = 0.25
 /**
  * A single cycle (an AKWF wave, or any one-cycle WAV with a whole-file loop) at its own rate, repeated to fill
  * a quarter second: never resampled, so the loop stays exact, and grains / STRETCH have room to move.
@@ -285,11 +285,22 @@ export function getBuffer(audioId: string): AudioBuffer | undefined {
     const ch = waveChannels(waveNameOf(audioId))
     if (ch) buffers.set(audioId, (b = cycleBuffer(ch, cycleRate(ch[0].length))))
   }
+  // an AKWF category's wavetable: its cycles end to end, at the rate that makes each one C2 (not repeated: a table
+  // voice loops one cycle, and grains have the whole table to move in)
+  if (!b && isTableAudioId(audioId)) {
+    const ch = tableChannels(tableFolderOf(audioId))
+    if (ch) {
+      const rate = cycleRate(WAVE_FRAMES)
+      b = new AudioBuffer({ numberOfChannels: ch.length, length: ch[0].length, sampleRate: rate })
+      ch.forEach((c, i) => b!.getChannelData(i).set(c))
+      buffers.set(audioId, b)
+    }
+  }
   return b
 }
 
 /** Whether an id's audio is here, or is made on demand (generators, AKWF waves). */
-export const hasAudio = (audioId: string) => buffers.has(audioId) || isSynthAudioId(audioId) || isWaveAudioId(audioId)
+export const hasAudio = (audioId: string) => buffers.has(audioId) || isSynthAudioId(audioId) || isAkwfAudioId(audioId)
 
 /** AKWF's cycles are all this long */
 const WAVE_FRAMES = 600
@@ -297,6 +308,7 @@ const WAVE_FRAMES = 600
 export function audioDuration(audioId: string): number {
   const b = buffers.get(audioId)
   if (b) return b.duration
+  if (isTableAudioId(audioId)) return (tableLength(tableFolderOf(audioId)) * WAVE_FRAMES) / cycleRate(WAVE_FRAMES)
   if (!isWaveAudioId(audioId)) return 0
   const rate = cycleRate(WAVE_FRAMES)
   return (cycleTimes(WAVE_FRAMES, rate) * WAVE_FRAMES) / rate

@@ -1,7 +1,10 @@
 import { readFileSync, statSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
-import { categoryLabel, categoryTag, CYCLE_ROOT, cycleRate, waveAudioId, waveLabel, type AkwfIndex } from './akwf'
-import { encodeCycleWav, encodeWav, readCycleWav } from './wav'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  allWaves, categoryLabel, categoryTag, CYCLE_ROOT, cycleRate, loadAkwf, tableChannels, tableCycle, tableLength, tableSoundSettings,
+  waveAt, waveAudioId, waveChannels, waveLabel, waveSpot, type AkwfIndex,
+} from './akwf'
+import { encodeCycleWav, encodeTableWav, encodeWav, readCycleWav, readTableWav } from './wav'
 
 const cycle = (n: number, f: (i: number) => number) => Float32Array.from({ length: n }, (_, i) => f(i))
 
@@ -66,5 +69,63 @@ describe('AKWF', () => {
     expect(count).toBe(4358)
     expect(index.count).toBe(4358)
     expect(names.size).toBe(count) // names are unique, so they can be audio ids
+  })
+})
+
+describe('wavetable WAVs', () => {
+  it('round-trip their cycles and cycle length (the clm chunk wavetable synths write)', async () => {
+    const t = cycle(4 * 256, (i) => Math.sin((2 * Math.PI * (i % 256)) / 256) * (1 + Math.floor(i / 256)) / 4)
+    const back = readTableWav(await encodeTableWav([t], 48000, 256).arrayBuffer())
+    expect(back).not.toBeNull()
+    expect(back!.size).toBe(256)
+    expect(back!.rate).toBe(48000)
+    expect(back!.channels[0]).toEqual(t)
+  })
+
+  it('reads a 16-bit table with only its clm chunk to say so, and nothing else', async () => {
+    const bytes = new Uint8Array(await encodeWav([cycle(2048, (i) => (i % 1024) / 2048)], 44100).arrayBuffer())
+    expect(readTableWav(bytes.buffer)).toBeNull()
+    // the same with a clm chunk added at the end
+    const clm = new TextEncoder().encode('<!>1024 10000000 wavetable (test)')
+    const out = new Uint8Array(bytes.length + 8 + clm.length + (clm.length & 1))
+    out.set(bytes)
+    const v = new DataView(out.buffer)
+    out.set(new TextEncoder().encode('clm '), bytes.length)
+    v.setUint32(bytes.length + 4, clm.length, true)
+    out.set(clm, bytes.length + 8)
+    v.setUint32(4, out.length - 8, true)
+    const back = readTableWav(out.buffer)
+    expect(back?.size).toBe(1024)
+    expect(back?.channels[0].length).toBe(2048)
+  })
+})
+
+describe('AKWF wavetables', () => {
+  it('are the categories, each wave a cycle of its table, as it plays alone', async () => {
+    const dir = new URL('../../public/akwf/', import.meta.url)
+    vi.stubGlobal('fetch', async (url: string) => new Response(readFileSync(new URL(url.replace(/^akwf\//, ''), dir))))
+    await loadAkwf()
+    vi.unstubAllGlobals()
+    expect(allWaves()).toHaveLength(4358)
+    const spot = waveSpot('AKWF_epiano_0007')!
+    expect(spot.folder).toBe('AKWF_epiano')
+    expect(waveAt(spot.folder, spot.index)).toBe('AKWF_epiano_0007')
+    const n = tableLength('AKWF_epiano')
+    const t = tableChannels('AKWF_epiano')!
+    expect(t[0].length).toBe(n * 600)
+    expect(t[0].subarray(spot.index * 600, spot.index * 600 + 600)).toEqual(waveChannels('AKWF_epiano_0007')![0])
+    // the stereo category's mono waves play the same both sides
+    const st = tableChannels('AKWF_stereo')!
+    expect(st).toHaveLength(2)
+    // a blend half way between two waves
+    const a = waveChannels(waveAt(spot.folder, spot.index)!)![0]
+    const b = waveChannels(waveAt(spot.folder, spot.index + 1)!)![0]
+    expect(tableCycle('AKWF_epiano', spot.index + 0.5)![100]).toBeCloseTo((a[100] + b[100]) / 2, 6)
+    // the last wave's next is the first
+    expect(waveAt('AKWF_epiano', n)).toBe(waveAt('AKWF_epiano', 0))
+    const s = tableSoundSettings('AKWF_epiano')
+    expect(s.wtSize).toBe(600)
+    expect(s.rootNote).toBe(CYCLE_ROOT)
+    expect(s.tag).toContain('wavetable')
   })
 })

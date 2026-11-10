@@ -3,11 +3,13 @@
  * settings that differ from waveBaseSettings: 4,000 untouched waves are a few hundred kilobytes rather than seven
  * megabytes. Everything else is stored as it is.
  */
-import { isWaveAudioId, waveBaseSettings } from './akwf'
+import { isAkwfAudioId, isWaveAudioId, waveBaseSettings } from './akwf'
 import { migrateSettings, type Sound, type SoundSettings } from '../types'
 
 /** a plain AKWF wave (not an SFZ pad that happens to start on one) */
 export const isWaveSound = (s: Sound) => isWaveAudioId(s.audioId) && !s.zones?.length
+/** an AKWF wave or wavetable: its audio is made from the waves that ship with SSB */
+export const isAkwfSound = (s: Sound) => isAkwfAudioId(s.audioId) && !s.zones?.length
 
 const WAVE_BASE = waveBaseSettings() as unknown as Record<string, unknown>
 const WAVE_BASE_JSON = Object.fromEntries(Object.entries(WAVE_BASE).map(([k, v]) => [k, JSON.stringify(v)]))

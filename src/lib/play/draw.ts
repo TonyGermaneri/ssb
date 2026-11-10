@@ -127,15 +127,17 @@ export function lfoOffset(lfo: Lfo, amount: number, bpm: number, t: number, unip
   return (unipolar ? (v + 1) / 2 : v) * amount * 0.5 * lfo.amount
 }
 
-/** The firing point over the last cycle and a half, as dots (newest at the bottom); one-sided: from the left edge. */
+/** The firing point over the last cycle and a half, as dots (newest at the bottom), the sweep centred in the pad. */
 export function drawLfo(g: G, w: number, h: number, o: { lfo: Lfo; amount: number; unipolar: boolean; bpm: number; now: number; colors: Colors; dpr: number }) {
   // dots apart, never touching: a row of the pad's height each, the newest the biggest
   const big = 4.2 * o.dpr
   const n = Math.max(8, Math.floor((h - 14 * o.dpr) / (2 * big + 2.5 * o.dpr)))
   // about a cycle and a half in view, so the trail reads as a curve however fast it runs
   const history = Math.min(4, Math.max(0.5, 1.6 / Math.max(0.01, lfoHz(o.lfo, o.bpm))))
-  // one-sided, the pad's left edge is the position itself and the crosshair the furthest the sweep goes
-  const xs = (off: number) => (o.unipolar ? off * 2 : 0.5 + off) * w
+  // centred either way: the sweep spans `amount` of the pad's width about its middle (one-sided, its middle is half
+  // way along the sweep; it starts at POS and goes forward)
+  const mid = o.unipolar ? o.amount * o.lfo.amount * 0.25 : 0
+  const xs = (off: number) => (0.5 + (o.unipolar ? 2 * (off - mid) : off)) * w
   const at = (t: number) => lfoOffset(o.lfo, o.amount, o.bpm, t, o.unipolar)
   // the dashed line: where the grains fire now
   const nowX = Math.round(xs(at(o.now))) + 0.5

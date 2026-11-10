@@ -118,3 +118,81 @@ export function readCycleWav(buf: ArrayBuffer): { rate: number; channels: Float3
     }
   return { rate: fmt.rate, channels, rootNote: loop.root }
 }
+
+/**
+ * A wavetable WAV, as Serum and the tools that follow it write one: equal single cycles end to end, a `clm ` chunk
+ * saying how long each is ("<!>2048 …"). Its cycles and their length, at the file's rate (read here, not decoded:
+ * decoding resamples, and a resampled cycle is no longer a whole number of frames). Null for anything else.
+ */
+export function readTableWav(buf: ArrayBuffer): { channels: Float32Array[]; size: number; rate: number } | null {
+  if (buf.byteLength < 44) return null
+  const v = new DataView(buf)
+  const tag = (o: number) => String.fromCharCode(v.getUint8(o), v.getUint8(o + 1), v.getUint8(o + 2), v.getUint8(o + 3))
+  if (tag(0) !== 'RIFF' || tag(8) !== 'WAVE') return null
+  let fmt: { format: number; ch: number; rate: number; bits: number } | null = null
+  let data: [number, number] | null = null
+  let size = 0
+  for (let o = 12; o + 8 <= buf.byteLength; ) {
+    const id = tag(o)
+    const len = v.getUint32(o + 4, true)
+    const body = o + 8
+    if (body + len > buf.byteLength) break
+    if (id === 'fmt ' && len >= 16) {
+      // WAVE_FORMAT_EXTENSIBLE carries the real format in its sub-format GUID's first two bytes
+      const format = v.getUint16(body, true)
+      fmt = { format: format === 0xfffe && len >= 26 ? v.getUint16(body + 24, true) : format, ch: v.getUint16(body + 2, true), rate: v.getUint32(body + 4, true), bits: v.getUint16(body + 14, true) }
+    } else if (id === 'data') data = [body, len]
+    else if (id === 'clm ') {
+      const text = String.fromCharCode(...new Uint8Array(buf, body, Math.min(len, 64)))
+      size = Number(/<!>(\d+)/.exec(text)?.[1] ?? 0)
+    }
+    o = body + len + (len & 1)
+  }
+  if (!fmt || !data || !fmt.ch || size < 2) return null
+  const { format, bits, ch } = fmt
+  const read =
+    format === 1 && bits === 16 ? (at: number) => v.getInt16(at, true) / 32768
+    : format === 1 && bits === 24 ? (at: number) => ((v.getUint8(at) | (v.getUint8(at + 1) << 8) | (v.getInt8(at + 2) << 16)) / 8388608)
+    : format === 1 && bits === 32 ? (at: number) => v.getInt32(at, true) / 2147483648
+    : format === 3 && bits === 32 ? (at: number) => v.getFloat32(at, true)
+    : null
+  if (!read) return null
+  const width = bits / 8
+  const n = Math.floor(Math.floor(data[1] / (width * ch)) / size) * size
+  if (n < size) return null
+  const channels = Array.from({ length: Math.min(2, ch) }, () => new Float32Array(n))
+  for (let i = 0; i < n; i++)
+    for (let c = 0; c < channels.length; c++) channels[c][i] = read(data[0] + (i * ch + c) * width)
+  return { channels, size, rate: fmt.rate }
+}
+
+/** A wavetable as a WAV a wavetable synth reads back: 32-bit float, its cycle length in a `clm ` chunk (readTableWav). */
+export function encodeTableWav(channels: Float32Array[], rate: number, size: number): Blob {
+  const n = channels[0]?.length ?? 0
+  const ch = channels.length
+  const bytes = n * ch * 4
+  const clm = new TextEncoder().encode(`<!>${size} 10000000 wavetable (SSB)`)
+  const clmLen = clm.length + (clm.length & 1)
+  const buf = new ArrayBuffer(12 + 8 + 16 + 8 + clmLen + 8 + bytes)
+  const v = new DataView(buf)
+  const text = (o: number, s: string) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)))
+  text(0, 'RIFF')
+  v.setUint32(4, buf.byteLength - 8, true)
+  text(8, 'WAVE')
+  text(12, 'fmt ')
+  v.setUint32(16, 16, true)
+  v.setUint16(20, 3, true) // IEEE float
+  v.setUint16(22, ch, true)
+  v.setUint32(24, rate, true)
+  v.setUint32(28, rate * ch * 4, true)
+  v.setUint16(32, ch * 4, true)
+  v.setUint16(34, 32, true)
+  text(36, 'clm ')
+  v.setUint32(40, clm.length, true)
+  new Uint8Array(buf, 44, clm.length).set(clm)
+  const d = 44 + clmLen
+  text(d, 'data')
+  v.setUint32(d + 4, bytes, true)
+  for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) v.setFloat32(d + 8 + (i * ch + c) * 4, channels[c][i], true)
+  return new Blob([buf], { type: 'audio/wav' })
+}

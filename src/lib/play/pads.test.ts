@@ -24,6 +24,10 @@ describe('Play pads', () => {
     expect(w.grainLength).toBe(1)
     const low = grainWrite({ x: 0, y: 0 }, 2)
     expect(low.grainFreq).toBeCloseTo(0.5, 3)
+    // the bottom is one grain as long as the whole sample, however long
+    expect(grainWrite({ x: 0, y: 0 }, 12).grainFreq).toBeCloseTo(1 / 12, 3)
+    // a single cycle still spans four octaves
+    expect(grainWrite({ x: 0, y: 0 }, 0.005).grainFreq).toBeCloseTo(150 / 16, 3)
     expect(low.grainLength).toBeCloseTo(0.01, 4)
     // linear across: the middle sounds about half the time
     expect(grainWrite({ x: 0.5, y: 0.5 }, 2).grainLength).toBeCloseTo(0.505, 3)

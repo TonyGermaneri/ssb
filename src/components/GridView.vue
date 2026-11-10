@@ -125,8 +125,8 @@ const vcos = computed(() => {
 })
 
 /**
- * Each sound's row, kept until something it shows changes: with every AKWF wave a board has thousands of rows, and a
- * knob turned on one sound should rebuild that one (DataGrid copies only the rows that are new objects). # is set as
+ * Each sound's row, kept until something it shows changes: a board can have thousands of rows (sample packs), and
+ * a knob turned on one sound should rebuild that one (DataGrid copies only the rows that are new objects). # is set as
  * the rows are listed; ◉ for a playing row is drawn by DataGrid from `playing`, so voices don't touch the rows.
  */
 const scope = effectScope()

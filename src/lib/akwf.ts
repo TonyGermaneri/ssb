@@ -2,8 +2,11 @@
  * AKWF: Adventure Kid's 4,358 single-cycle waveforms (Kristoffer Ekstrand, CC0 —
  * github.com/KristofferKarlAxelEkstrand/AKWF-FREE), shipped in public/akwf by scripts/akwf.mjs. The categories
  * are AKWF's own folders, kept as they are: AKWF_0001 … AKWF_0020 (mixed) and the named sets (AKWF_epiano, …).
- * A wave added to the board is tagged "akwf" + its folder (akwf_epiano) and plays from a one-cycle WAV whose
- * loop and root note travel with it.
+ *
+ * Each category is a wavetable (audio/wavetable.ts): its waves one after another as one sound ("akwt-AKWF_epiano"),
+ * which a VCO plays a wave of (WT) blended into the next (BLEND). The board holds the 65 tables. A single wave
+ * ("akwf-AKWF_epiano_0007", a one-cycle WAV whose loop and root note travel with it) is still made on demand, for
+ * boards and sessions saved before the tables; loading one moves its patches onto the tables (board.ts).
  */
 import { shallowRef } from 'vue'
 import { encodeCycleWav } from './wav'
@@ -186,6 +189,75 @@ export function waveChannels(name: string): Float32Array[] | null {
 
 /** the category a wave is in (once loadAkwf has finished) */
 export const waveFolder = (name: string) => packs?.waves.get(name)?.folder
+
+// ── the categories as wavetables ──
+/** a category's wavetable is a sound of its own: its audio id names the folder */
+export const tableAudioId = (folder: string) => `akwt-${folder}`
+export const isTableAudioId = (audioId: string) => audioId.startsWith('akwt-')
+export const tableFolderOf = (audioId: string) => audioId.slice('akwt-'.length)
+/** an AKWF wave or table: audio made here from the packs, never stored or exported */
+export const isAkwfAudioId = (audioId: string) => isWaveAudioId(audioId) || isTableAudioId(audioId)
+
+/** A wave's place: its category's table and where in it (once loadAkwf has finished). */
+export function waveSpot(name: string): { folder: string; index: number } | null {
+  const folder = packs?.waves.get(name)?.folder
+  if (!packs || !folder) return null
+  const index = packs.index.categories.find((c) => c.folder === folder)!.waves.indexOf(name)
+  return { folder, index }
+}
+/** The wave at a table's position (its cycle WT), by name. */
+export function waveAt(folder: string, index: number): string | undefined {
+  const c = packs?.index.categories.find((x) => x.folder === folder)
+  return c?.waves[((Math.round(index) % c.waves.length) + c.waves.length) % c.waves.length]
+}
+/** Every wave with its table and place in it, in the board's order of categories (empty before loadAkwf). */
+export function allWaves(): { name: string; folder: string; index: number }[] {
+  if (!packs) return []
+  return boardOrder(packs.index).flatMap((c) => c.waves.map((name, index) => ({ name, folder: c.folder, index })))
+}
+/** how many waves a category's table holds (0 before loadAkwf, or for a folder AKWF hasn't got) */
+export const tableLength = (folder: string) => packs?.index.categories.find((c) => c.folder === folder)?.waves.length ?? 0
+
+/**
+ * A category's waves end to end, each centred as waveChannels centres it: the table's audio (null until loadAkwf has
+ * finished). Stereo if any of its waves is (a mono one then plays the same both sides).
+ */
+export function tableChannels(folder: string): Float32Array[] | null {
+  const cat = packs?.index.categories.find((c) => c.folder === folder)
+  if (!packs || !cat) return null
+  const n = packs.index.frames
+  const width = Math.max(1, ...cat.waves.map((_, j) => cat.channels?.[j] ?? 1))
+  const out = Array.from({ length: width }, () => new Float32Array(n * cat.waves.length))
+  cat.waves.forEach((name, j) => {
+    const ch = waveChannels(name)!
+    for (let c = 0; c < width; c++) out[c].set(ch[Math.min(c, ch.length - 1)], j * n)
+  })
+  return out
+}
+
+/** A table's cycle at position p (WT + BLEND: a wave, or a blend of two), its first channel: what the table sounds like there. */
+export function tableCycle(folder: string, p: number): Float32Array | null {
+  const cat = packs?.index.categories.find((c) => c.folder === folder)
+  if (!packs || !cat?.waves.length) return null
+  const count = cat.waves.length
+  const at = (((p % count) + count) % count)
+  const ia = Math.floor(at)
+  const f = at - ia
+  const a = waveChannels(cat.waves[ia])![0]
+  if (f <= 0) return a
+  const b = waveChannels(cat.waves[(ia + 1) % count])![0]
+  return a.map((v, i) => v + (b[i] - v) * f)
+}
+
+/** The settings a category's table starts with: named after it, tagged akwf + wavetable + its category, root C2. */
+export function tableSoundSettings(folder: string, frames = 600): SoundSettings {
+  return {
+    ...waveBaseSettings(),
+    name: categoryLabel(folder),
+    tag: addTags('', ['akwf', 'wavetable', categoryTag(folder)]),
+    wtSize: frames,
+  }
+}
 
 /** Every wave in a category. */
 export async function akwfCategory(folder: string): Promise<AkwfWave[]> {

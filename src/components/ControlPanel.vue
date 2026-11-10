@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useBoard } from '../stores/board'
-import { audioDuration } from '../audio/engine'
+import { audioDuration, getBuffer } from '../audio/engine'
+import { cycleFillSeconds, fmtEntry, tableCount } from '../audio/wavetable'
+import { isTableAudioId, tableFolderOf, tableLength, waveAt, waveLabel } from '../lib/akwf'
 import {
   fmtCents, fmtChoke, fmtDb, fmtFinePct, fmtFix1, fmtFix2, fmtGrainHz, fmtHz, fmtMs, fmtNum, fmtOct, fmtPan, fmtPct, fmtQ,
   fmtSignedPct, fmtWholePct, fmtDbOct,
@@ -46,7 +48,11 @@ function toggleFold(key: string) {
 const fmtBend = (v: number) => `±${Math.round(v)}st`
 /** GRAIN's long end is one grain as long as the sample (the longest zone's, for SFZ); 0.25 Hz until it's decoded */
 const grainMin = () =>
-  grainFreqMin(Math.max(0, ...soundAudioIds(props.sound).map((id) => audioDuration(id))))
+  grainFreqMin(
+    tableWaves.value
+      ? cycleFillSeconds(s.value.wtSize, getBuffer(props.sound.audioId)?.sampleRate ?? 44100) // a table's grains play its wave
+      : Math.max(0, ...soundAudioIds(props.sound).map((id) => audioDuration(id))),
+  )
 /** the value after `v` in `list`, round again at the end (the chips that cycle) */
 const next = <T,>(list: readonly T[], v: T): T => list[(list.indexOf(v) + 1) % list.length]
 /** a count (DENSITY) */
@@ -57,6 +63,28 @@ function savePreset() {
   presetName.value = ''
 }
 const modeInfo = computed(() => TRIGGER_MODE_INFO[s.value.mode])
+
+// a wavetable (audio/wavetable.ts): WT picks its wave, BLEND fades it into the next
+const tableWaves = computed(() => {
+  if (!(s.value.wtSize > 0) || props.sound.zones?.length) return 0
+  const id = props.sound.audioId
+  if (isTableAudioId(id)) return tableLength(tableFolderOf(id))
+  const buf = getBuffer(id)
+  return buf ? tableCount(buf.length, s.value.wtSize) : 0
+})
+const fmtWt = (v: number) => fmtEntry(v, tableWaves.value)
+/** the display's height: taller for ISO (a wavetable's 2D is ISO too), whose floor seen from above needs the room */
+const scopeH = computed(() => {
+  const view = board.master.waveView
+  const iso = view === 'iso' || (view === '2d' && tableWaves.value > 0)
+  return iso ? (props.wide ? 150 : 120) : props.wide ? 72 : 52
+})
+/** the AKWF wave WT is on, by name */
+const wtWave = computed(() => {
+  const id = props.sound.audioId
+  const name = isTableAudioId(id) ? waveAt(tableFolderOf(id), s.value.wt) : undefined
+  return name ? waveLabel(name) : ''
+})
 const learning = computed(() => board.midi.learning === props.sound.id)
 
 // CAPTURE (Granulator III's): the input's last seconds into a new pad with this one's settings (hidden for now)
@@ -88,7 +116,7 @@ function doReset() {
 
     <div class="top">
       <div class="scope">
-        <Waveform :sound="sound" :hue="hue" :height="wide ? 72 : 52" />
+        <Waveform :key="scopeH" :sound="sound" :hue="hue" :height="scopeH" />
         <KeyMap v-if="sound.zones?.length" :sound="sound" />
       </div>
     <div v-if="isPad" class="fields">
@@ -141,6 +169,35 @@ function doReset() {
           <Knob v-model="s.pitch" label="PITCH" :min="-24" :max="24" :step="1" :default="0" bipolar :format="fmtSemis" />
           <Knob v-model="s.fine" label="FINE" :min="-100" :max="100" :step="1" :default="0" bipolar :format="fmtCents" />
           <Knob v-model="s.speed" label="SPEED" :min="0.25" :max="4" curve="log" :default="1" :format="fmtRatio" />
+        </div>
+      </section>
+
+      <section v-if="tableWaves" class="module" :class="{ folded: isFolded('wavetable') }">
+        <h4>
+          WAVETABLE
+          <span class="wt-wave" :title="`The wave WT is on, of ${tableWaves}${s.grain || s.timeMode === 'stretch' ? ' (the grains play it)' : ''}`">{{ wtWave }}</span>
+          <button class="fold" :title="isFolded('wavetable') ? 'Show' : 'Fold'" @click="toggleFold('wavetable')"><i /></button>
+        </h4>
+        <div class="row">
+          <Knob
+            v-model="s.wt"
+            label="WT"
+            :min="0"
+            :max="Math.max(1, tableWaves - 1)"
+            :step="1"
+            :default="0"
+            :format="fmtWt"
+            color="accent"
+            title="Wavetable selector: which wave of the table plays"
+          />
+          <Knob
+            v-model="s.wtBlend"
+            label="WT BLEND"
+            :default="0"
+            :format="fmtPct"
+            color="accent"
+            title="How much of the next wave is blended in, at the same phase: 0 % this wave, 50 % half and half, 100 % the next (after the last comes the first). WT POS in the matrix sweeps the table"
+          />
         </div>
       </section>
 
@@ -623,6 +680,14 @@ function doReset() {
   font-weight: 900;
   letter-spacing: 0.18em;
   color: var(--text-head);
+}
+.wt-wave {
+  font-family: 'VT323', monospace;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: var(--c-accent);
+  white-space: nowrap;
 }
 .chip {
   padding: 0 5px;

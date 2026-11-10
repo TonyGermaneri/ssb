@@ -38,7 +38,7 @@ using SamplePtr = std::shared_ptr<const Sample>;
 enum class LfoShape : uint8_t { sine, triangle, square, sawtooth, rampDown, random, smooth, wander };
 enum class ModSource : uint8_t { lfo1, lfo2, mod, aftertouch, velocity, key, random, bend, timbre, fenv, vco1, vco2, vco3 };
 enum class ModDest : uint8_t { pitch, cutoff, resonance, volume, pan, grainPos, grainSize, grainSkew, grainVar, grainDetune,
-                               grainScan, lfo1Rate, lfo1Amt, lfo2Rate, lfo2Amt, delayMix, reverbMix };
+                               grainScan, lfo1Rate, lfo1Amt, lfo2Rate, lfo2Amt, delayMix, reverbMix, wtPos };
 
 struct LfoDef
 {
@@ -178,6 +178,10 @@ struct Settings
     // SpaceCraft's grain controls (the page's VCO Play view)
     float grainLength { 1 };        // 0.01..1: the share of each grain that sounds, its window squeezed in
     bool grainBackwards { false };  // grains read backwards from where they start (LOOP: every segment reversed)
+    // wavetable (audio/wavetable.ts): cycles of wtSize frames, cycle wt blended into the next by wtBlend
+    int wtSize { 0 };               // frames a cycle (0: not a wavetable)
+    float wt { 0 };                 // the cycle, 0.. (wrapping)
+    float wtBlend { 0 };            // 0..1 of the next cycle
     // ring modulator after the filter and EQ: × ((1 − mix) + mix · sin(2π · freq · t)), phase 0 at the note
     float ringMix { 0 }, ringFreq { 440 };
     float delayTime { 0.25f }, delayFeedback { 0.35f }, delayMix { 0 };

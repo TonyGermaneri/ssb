@@ -3,7 +3,7 @@ import { computed, nextTick, ref, shallowRef, watch } from 'vue'
 import { useBoard } from '../stores/board'
 import * as engine from '../audio/engine'
 import {
-  akwfCategory, akwfIndex, browsing, categoryLabel, categoryTag, CYCLE_ROOT, cycleRate, waveAudioId, waveLabel,
+  akwfCategory, akwfIndex, browsing, categoryLabel, categoryTag, CYCLE_ROOT, cycleRate, tableAudioId, waveLabel,
   type AkwfIndex, type AkwfWave,
 } from '../lib/akwf'
 import type { PathFile } from '../lib/dropFiles'
@@ -132,7 +132,7 @@ const waveMatches = (f: string, name: string) =>
 /** categories with their (matching) wave counts */
 const cats = computed(() =>
   (akwf.value?.categories ?? [])
-    .map((c) => ({ folder: c.folder, label: categoryLabel(c.folder), n: c.waves.filter((w) => waveMatches(c.folder, w)).length }))
+    .map((c) => ({ folder: c.folder, label: categoryLabel(c.folder), total: c.waves.length, n: c.waves.filter((w) => waveMatches(c.folder, w)).length }))
     .filter((c) => c.n > 0),
 )
 // a filter that leaves nothing in this category moves to the first that has some
@@ -151,6 +151,10 @@ const tileLabel = (w: AkwfWave) => waveLabel(w.name).slice(shared.value.length)
 // keep the chosen category in sight (arrow keys, a filter)
 watch(folder, () => nextTick(() => document.querySelector('.cats button.on')?.scrollIntoView({ block: 'nearest' })))
 const onBoard = computed(() => new Set(board.sounds.map((s) => s.audioId)))
+/** a wave's category's table is on the board */
+const tableOnBoard = (f: string) => onBoard.value.has(tableAudioId(f))
+/** where a wave sits in its table (its WT) */
+const indexOf = (w: AkwfWave) => waves.value.indexOf(w)
 
 /** a wave's outline: one polyline per channel, min and max of each column so spikes show */
 const TW = 112
@@ -187,37 +191,34 @@ function audition(w: AkwfWave) {
   engine.preview(engine.cycleBuffer(w.channels, cycleRate(frames)), 2 ** ((48 - CYCLE_ROOT) / 12))
 }
 /**
- * Every wave is a sound of the board from the first load: + on one selects its pad, and puts it back if it was
- * deleted; ADD ALL puts back the deleted ones of what's shown.
+ * Each category is a wavetable on the board: + on a wave selects its table there, at that wave (its WT), and puts the
+ * table back if it was deleted; PUT BACK puts back every deleted table.
  */
-async function addAkwf(list: AkwfWave[]) {
-  const missing = list.filter((w) => !onBoard.value.has(waveAudioId(w.name)))
-  if (list.length === 1 && !missing.length) {
-    const [snd] = await board.addWaves(list)
-    board.select(snd.id)
-    board.toast = `${waveLabel(list[0].name)} is on the board — selected`
-    return
-  }
+async function addAkwf(w: AkwfWave) {
   await guard(async () => {
-    busy.value = { label: 'ADDING', done: 0, total: missing.length }
-    try {
-      for (const [i, w] of missing.entries()) {
-        await board.addWaves([w])
-        busy.value = { label: 'ADDING', done: i + 1, total: missing.length }
-      }
-      board.toast = missing.length === 1 ? `Put back ${waveLabel(missing[0].name)} (${categoryTag(missing[0].folder)})` : `Put back ${missing.length} waves`
-    } finally {
-      busy.value = null
-    }
+    const had = tableOnBoard(w.folder)
+    const snd = await board.addTable(w.folder)
+    snd.settings.wt = indexOf(w)
+    board.select(snd.id)
+    board.toast = `${categoryLabel(w.folder)} ${had ? 'selected' : 'put back'}, at ${waveLabel(w.name)} (WT ${indexOf(w) + 1})`
   })
 }
-const missingShown = computed(() => shownWaves.value.filter((w) => !onBoard.value.has(waveAudioId(w.name))))
-/** put a wave in VCO slot `i` of the selected patch (a new patch if none) */
+const missingTables = computed(() => (akwf.value?.categories ?? []).filter((c) => !tableOnBoard(c.folder)))
+async function putBack() {
+  await guard(async () => {
+    const list = missingTables.value
+    for (const c of list) await board.addTable(c.folder)
+    board.toast = list.length === 1 ? `Put back ${categoryLabel(list[0].folder)}` : `Put back ${list.length} wavetables`
+  })
+}
+/** put a wave in VCO slot `i` of the selected patch (a new patch if none): its table, at it */
 async function toSlot(w: AkwfWave, i: number) {
   await guard(async () => {
-    const [snd] = await board.addWaves([w])
+    const snd = await board.addTable(w.folder)
     board.assignSlot(i, snd.id)
-    board.toast = `VCO ${i + 1}: ${waveLabel(w.name)}`
+    const x = board.selectedPatch?.slots[i]
+    if (x?.layer.soundId === snd.id) x.layer.settings.wt = indexOf(w)
+    board.toast = `VCO ${i + 1}: ${categoryLabel(w.folder)} at ${waveLabel(w.name)}`
   })
 }
 /** ←→ the previous / next wave (heard), ↑↓ the category, Enter adds, 1 2 3 the VCO slot */
@@ -234,14 +235,14 @@ function onWaveKey(e: KeyboardEvent) {
     const i = cats.value.findIndex((c) => c.folder === folder.value)
     const next = cats.value[i + (e.key === 'ArrowDown' ? 1 : -1)]
     if (next) folder.value = next.folder
-  } else if (e.key === 'Enter' && current.value) void addAkwf([current.value])
+  } else if (e.key === 'Enter' && current.value) void addAkwf(current.value)
   else if (['1', '2', '3'].includes(e.key) && current.value) void toSlot(current.value, Number(e.key) - 1)
   else return
   e.preventDefault()
 }
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'akwf', label: 'AKWF WAVES' },
+  { id: 'akwf', label: 'AKWF WAVETABLES' },
   { id: 'sfz', label: 'SFZ INSTRUMENTS' },
   { id: 'gm', label: 'GM SOUNDFONTS' },
   { id: 'drums', label: 'DRUM BANKS' },
@@ -265,8 +266,9 @@ const TABS: { id: Tab; label: string }[] = [
       <p class="hint">
         <template v-if="tab === 'akwf'">
           {{ akwf ? akwf.count.toLocaleString() : '…' }} single-cycle waveforms by <b>Adventure Kid</b> (Kristoffer Ekstrand),
-          public domain, in AKWF's own categories — every one a sound of the board, tagged <b>akwf</b> and its category.
-          Click to hear (C3) · <b>+</b> selects its pad (puts it back if deleted) · <b>1 2 3</b> put it in that VCO slot ·
+          public domain, in AKWF's own categories — each category a wavetable on the board, tagged <b>akwf</b>,
+          <b>wavetable</b> and its category; a VCO plays one of its waves (WT) blended into the next (BLEND).
+          Click to hear (C3) · <b>+</b> selects its table at that wave · <b>1 2 3</b> put it in that VCO slot ·
           ← → step · ↑ ↓ category · ENTER selects.
         </template>
         <template v-else-if="tab === 'sfz'">
@@ -295,8 +297,8 @@ const TABS: { id: Tab; label: string }[] = [
           <button
             v-for="c in cats"
             :key="c.folder"
-            :class="{ on: c.folder === folder }"
-            :title="`${c.folder} — tag: ${categoryTag(c.folder)}`"
+            :class="{ on: c.folder === folder, gone: !tableOnBoard(c.folder) }"
+            :title="`${c.folder} — a wavetable of ${c.total} waves, tag ${categoryTag(c.folder)}${tableOnBoard(c.folder) ? '' : ' (not on the board: + puts it back)'}`"
             @click="folder = c.folder"
           >
             <span>{{ c.label }}</span>
@@ -311,8 +313,8 @@ const TABS: { id: Tab; label: string }[] = [
             :id="`akwf-${w.name}`"
             :key="w.name"
             class="wave"
-            :class="{ on: current === w, have: onBoard.has(waveAudioId(w.name)) }"
-            :title="`${w.name}${w.channels.length > 1 ? ' (stereo)' : ''}${onBoard.has(waveAudioId(w.name)) ? ' — on the board' : ''}`"
+            :class="{ on: current === w, have: tableOnBoard(w.folder) }"
+            :title="`${w.name}${w.channels.length > 1 ? ' (stereo)' : ''} — wave ${indexOf(w) + 1} of ${categoryLabel(w.folder)}`"
             @click="audition(w)"
           >
             <svg :viewBox="`0 0 ${TW} ${TH}`" preserveAspectRatio="none">
@@ -321,7 +323,7 @@ const TABS: { id: Tab; label: string }[] = [
             </svg>
             <div class="wname">
               <span>{{ tileLabel(w) }}</span>
-              <button :title="onBoard.has(waveAudioId(w.name)) ? 'Select its pad on the board (Enter)' : 'Put it back on the board (Enter)'" :disabled="!!busy" @click.stop="addAkwf([w])">+</button>
+              <button :title="tableOnBoard(w.folder) ? 'Select its table on the board, at this wave (Enter)' : 'Put its table back on the board, at this wave (Enter)'" :disabled="!!busy" @click.stop="addAkwf(w)">+</button>
               <button v-for="i in 3" :key="i" :title="`Put in VCO ${i} of the patch (${i})`" :disabled="!!busy" @click.stop="toSlot(w, i - 1)">
                 {{ i }}
               </button>
@@ -394,10 +396,10 @@ const TABS: { id: Tab; label: string }[] = [
         </div>
         <div v-else-if="error" class="warn">{{ error }}</div>
         <template v-else-if="tab === 'akwf'">
-          <span class="dim">{{ current ? `${current.name} · ${categoryTag(current.folder)}` : 'Every wave is a sound of the board: + selects its pad. They loop while a key is held; root C2.' }}</span>
+          <span class="dim">{{ current ? `${current.name} · wave ${indexOf(current) + 1} of ${categoryLabel(current.folder)} · ${categoryTag(current.folder)}` : 'Every category is a wavetable on the board: + selects it at a wave. They loop while a key is held; root C2.' }}</span>
           <v-spacer />
-          <button class="hw-btn" :disabled="!missingShown.length" :title="missingShown.length ? 'Put the deleted ones back on the board' : ''" @click="addAkwf(missingShown)">
-            {{ missingShown.length ? `PUT BACK ${missingShown.length}` : 'ALL ON THE BOARD' }}
+          <button class="hw-btn" :disabled="!missingTables.length" :title="missingTables.length ? 'Put the deleted wavetables back on the board' : ''" @click="putBack()">
+            {{ missingTables.length ? `PUT BACK ${missingTables.length}` : 'ALL ON THE BOARD' }}
           </button>
         </template>
         <div v-else class="dim">Loaded sounds are saved with the board like dropped files.</div>
@@ -586,6 +588,9 @@ h3 {
 .cats button small {
   font-size: 13px;
   color: var(--text-faint);
+}
+.cats button.gone span {
+  opacity: 0.45;
 }
 .cats button:hover {
   background: color-mix(in srgb, var(--c-primary) 8%, transparent);

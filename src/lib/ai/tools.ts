@@ -7,6 +7,7 @@ import type { useBoard } from '../../stores/board'
 import { patchLayers, type Patch, type Sound } from '../../types'
 import type { AgentTool, ToolReply } from './agent'
 import { analyse } from './analysis'
+import { isTableAudioId, loadAkwf, tableFolderOf, tableLength } from '../akwf'
 import { applyChange, fromSpec, toSpec, type PatchChange, type PatchSpec } from './patchSpec'
 import type { JsonSchema } from './types'
 
@@ -85,18 +86,18 @@ export function createTools(board: Board, o: ToolOptions): AgentTool[] {
   const tools: AgentTool[] = [
     {
       name: 'board_state',
-      description: 'What is on the board now: the selected patch, how many patches and sounds, and the AKWF wave categories (with counts) list_sounds can filter by.',
+      description: 'What is on the board now: the selected patch, how many patches and sounds, and the AKWF categories (each a wavetable; with their wave counts) list_sounds can filter by.',
       schema: { type: 'object', properties: {}, additionalProperties: false },
       run: () => {
         const cats = new Map<string, number>()
-        for (const s of board.sounds) for (const t of s.settings.tag.split(',').map((x) => x.trim())) if (t.startsWith('akwf_')) cats.set(t, (cats.get(t) ?? 0) + 1)
+        for (const s of board.akwfWaves()) for (const t of s.settings.tag.split(',').map((x) => x.trim())) if (t.startsWith('akwf_')) cats.set(t, (cats.get(t) ?? 0) + 1)
         const sel = board.selectedPatch
         return {
           text: json({
             selected_patch: sel ? { id: sel.id, name: sel.name } : null,
             patches: board.patches.length,
             sounds: board.sounds.length,
-            own_samples: board.sounds.filter((s) => !s.audioId.startsWith('akwf-') && !s.audioId.startsWith('synth:')).length,
+            own_samples: board.sounds.filter((s) => !/^akw[ft]-|^synth:/.test(s.audioId)).length,
             wave_categories: Object.fromEntries([...cats].sort((a, b) => b[1] - a[1])),
           }),
         }
@@ -105,7 +106,7 @@ export function createTools(board: Board, o: ToolOptions): AgentTool[] {
     {
       name: 'list_sounds',
       description:
-        'Find sounds for patch slots. With a query, ordered by how well each matches it (what it sounds like, its name and tags: "bright buzzy saw", "breathy choir", "glassy bell"); a category (e.g. "akwf_epiano") narrows to one. Returns each sound\'s "sound" reference for specs, its name and tags.',
+        'Find sounds for patch slots: the board\'s sounds (its AKWF wavetables, the user\'s samples) and every single AKWF wave. With a query, ordered by how well each matches it (what it sounds like, its name and tags: "bright buzzy saw", "breathy choir", "glassy bell"); a category (e.g. "akwf_epiano") narrows to one. Returns each one\'s "sound" reference for specs (a wave\'s is its name: its table at that wave), its name and tags, and for a wavetable how many waves it holds.',
       schema: {
         type: 'object',
         properties: {
@@ -117,7 +118,8 @@ export function createTools(board: Board, o: ToolOptions): AgentTool[] {
         additionalProperties: false,
       },
       run: async (input: { query?: string; category?: string; limit?: number; offset?: number }) => {
-        let list: Sound[] = board.sounds
+        await loadAkwf().catch(() => {})
+        let list: Sound[] = [...board.sounds, ...board.akwfWaves()]
         if (input.category) {
           const c = input.category.toLowerCase()
           list = list.filter((s) => s.settings.tag.toLowerCase().split(',').some((t) => t.trim() === c))
@@ -133,8 +135,10 @@ export function createTools(board: Board, o: ToolOptions): AgentTool[] {
           }
         }
         const shown = page(list, input.offset, input.limit ?? 20).map((s) => {
+          if (s.id.startsWith('wave:')) return { sound: s.id.slice(5), name: s.settings.name, tags: s.settings.tag, table: tableFolderOf(s.audioId), wt: s.settings.wt }
           const r = board.soundRef(s.id)!
-          return { sound: r.ref, name: s.settings.name, tags: s.settings.tag }
+          const waves = isTableAudioId(s.audioId) ? tableLength(tableFolderOf(s.audioId)) : 0
+          return { sound: r.ref, name: s.settings.name, tags: s.settings.tag, ...(waves ? { wavetable_waves: waves } : {}) }
         })
         return { text: json({ total: list.length, sounds: shown }) }
       },

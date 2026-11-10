@@ -7,7 +7,8 @@ import { isSvfType, type SvfType } from './svfMath'
 import type { ToSvf } from './grains.worklet'
 import { scheduleAttack, scheduleRelease, type Env } from './envelope'
 import { getImpulse } from './impulse'
-import { grainNode, grainsLoaded, loadGrains, type GrainNode } from './grains'
+import { grainNode, grainsLoaded, loadGrains, tableNode, type GrainNode, type TableNode } from './grains'
+import { tableCount, tableCycleBuffer, tablePos } from './wavetable'
 import type { GrainConfig, GrainEvent } from './grainMath'
 import {
   clipBounds, cycleSeconds, glideSemis, knobRate, playSeconds, semisToRate, tailSeconds,
@@ -20,10 +21,11 @@ const MAX_MARKS = 240
 
 /**
  * sample:  one looping AudioBufferSourceNode (tape-style pitch/speed)
+ * table:   a wavetable (audio/wavetable.ts): one cycle blended into the next, tuned as a sample
  * stretch: grains that walk through the clip at SPEED, played at PITCH
  * cloud:   grains around the GRAIN POS knob
  */
-export type VoiceKind = 'sample' | 'stretch' | 'cloud'
+export type VoiceKind = 'sample' | 'table' | 'stretch' | 'cloud'
 
 export interface VoiceOptions {
   /** semitones from the sample's recorded pitch (keyboard play) */
@@ -245,6 +247,11 @@ export class Voice {
   private atValue = 0
   private bendValue = 0
   private src?: AudioBufferSourceNode
+  /** the wavetable oscillator (table), once the worklet has loaded */
+  private table?: TableNode
+  /** the table's cycles and their length (table) */
+  private tableSize = 0
+  private tableCycles = 0
   /** the grain processor (cloud / stretch), once the worklet has loaded */
   private grainVoice?: GrainNode
   private impulseKey = ''
@@ -337,9 +344,20 @@ export class Voice {
     this.noteBendSrc.offset.value = opts.noteBend ?? 0
     this.noteBendValue = this.bendBefore = opts.noteBend ?? 0
     this.timbreSrc.offset.value = this.timbreValue
-    this.kind = s.grain ? 'cloud' : s.timeMode === 'stretch' ? 'stretch' : 'sample'
     this.zone = opts.zone
-    this.clip = this.zone ? zoneBounds(this.zone, buffer.duration) : clipBounds(s, buffer.duration)
+    // a wavetable plays as one (unless it's played as grains, or stretched: then it's a sample like any other)
+    this.tableCycles = this.zone ? 0 : tableCount(buffer.length, s.wtSize ?? 0)
+    this.tableSize = s.wtSize ?? 0
+    this.kind = s.grain ? 'cloud' : s.timeMode === 'stretch' ? 'stretch' : this.tableCycles >= 1 ? 'table' : 'sample'
+    // grains and STRETCH play the table's wave WT and BLEND pick, as a single-cycle wave (audio/wavetable.ts)
+    if (this.tableCycles >= 1 && this.kind !== 'table') {
+      const p = tablePos(Math.round(s.wt ?? 0), Math.min(1, Math.max(0, s.wtBlend ?? 0)), 0, this.tableCycles)
+      this.buffer = tableCycleBuffer(buffer, this.tableSize, p)
+      this.audioId = `${audioId}@${p}`
+    }
+    this.clip = this.zone ? zoneBounds(this.zone, this.buffer.duration) : clipBounds(s, this.buffer.duration)
+    // a table's "clip" is one cycle: REPEAT counts cycles, as it counted a single-cycle wave's passes
+    if (this.kind === 'table') this.clip = { clipIn: 0, clipOut: this.tableSize / buffer.sampleRate, clipLen: this.tableSize / buffer.sampleRate }
     this.kRate = knobRate(s)
     this.speed = s.speed
     // an SFZ region's own envelope wins over the pad's ADSR, field by field
@@ -374,11 +392,12 @@ export class Voice {
     this.endTime = this.t0 + (this.zone ? this.zoneSeconds(note) : playSeconds(s, this.clip.clipLen, this.kind === 'cloud', note))
 
     if (this.kind === 'sample') this.startSource()
+    if (this.kind === 'table') this.startTable()
     scheduleAttack(this.env.gain, this.t0, this.ampEnv, 1)
     this.fenvCut.gain.value = this.filtPeak
     scheduleAttack(this.fenvSrc.offset, this.t0, this.filtEnv, 1)
     if (Number.isFinite(this.endTime)) this.releaseAt(Math.max(this.t0, this.endTime - this.ampEnv.r))
-    if (this.kind !== 'sample') this.startGrains()
+    if (this.kind === 'cloud' || this.kind === 'stretch') this.startGrains()
   }
 
   /** How long a zone plays: until note-off when it loops, else to the end of its sample. */
@@ -403,7 +422,7 @@ export class Voice {
 
   /** Buffer position of the playhead, or null for grain clouds (those draw grain marks). */
   positionAt(t: number): number | null {
-    if (this.kind === 'cloud') return null
+    if (this.kind === 'cloud' || this.kind === 'table') return null
     const elapsed = Math.max(0, t - this.t0)
     const { clipIn, clipOut, clipLen } = this.clip
     if (this.kind === 'stretch') return clipIn + ((elapsed * this.speed) % clipLen)
@@ -467,6 +486,33 @@ export class Voice {
     this.src = src
   }
 
+  /** WT + BLEND, as the knobs set them */
+  private tablePosKnobs() {
+    return Math.round(this.settings.wt ?? 0) + Math.min(1, Math.max(0, this.settings.wtBlend ?? 0))
+  }
+
+  /** The wavetable oscillator, tuned as startSource tunes a sample (its rate scheduled as playbackRate would be). */
+  private startTable() {
+    if (this.disposed || !this.playing) return
+    if (!grainsLoaded(this.ctx)) {
+      void loadGrains(this.ctx).then(() => this.startTable())
+      return
+    }
+    const t = tableNode(this.ctx, this.audioId, this.buffer, { size: this.tableSize, pos: this.tablePosKnobs(), t0: this.t0 }, () => this.finish())
+    const p = t.node.parameters.get('rate')!
+    const to = this.tapeRate(this.glide.to)
+    const now = this.ctx.currentTime
+    if (this.glide.dur > 0 && this.glide.from !== this.glide.to && this.t0 + this.glide.dur > now) {
+      p.setValueAtTime(this.tapeRate(this.glide.from), this.t0)
+      p.exponentialRampToValueAtTime(to, this.t0 + this.glide.dur)
+    } else p.value = to
+    t.node.connect(this.env)
+    this.pitchBus.connect(t.node.parameters.get('detune')!)
+    if (Number.isFinite(this.endTime)) t.stop(this.endTime)
+    this.table = t
+    this.wireRoutes() // WT POS routes land on its parameter
+  }
+
   /** Adaptive tuning moved this note: quickly, while the note that caused it starts and hides the step. */
   retune(cents: number) {
     this.tuneSrc?.offset.setTargetAtTime(cents, this.ctx.currentTime, RAMP)
@@ -483,8 +529,9 @@ export class Voice {
     if (dur > 0) this.keySrc.offset.linearRampToValueAtTime(semis / 12, now + dur)
     else this.keySrc.offset.setValueAtTime(semis / 12, now)
     this.midiNote = midiNote
-    if (this.src) {
-      const p = this.src.playbackRate
+    const rateParam = this.src?.playbackRate ?? this.table?.node.parameters.get('rate')
+    if (rateParam) {
+      const p = rateParam
       p.cancelScheduledValues(now)
       p.setValueAtTime(this.tapeRate(cur), now)
       if (dur > 0) p.exponentialRampToValueAtTime(this.tapeRate(semis), now + dur)
@@ -681,6 +728,10 @@ export class Voice {
       }
       if (tuned) set(this.src.playbackRate, this.tapeRate(this.glide.to))
     }
+    if (this.table) {
+      if (tuned) set(this.table.node.parameters.get('rate')!, this.tapeRate(this.glide.to))
+      this.table.setPos(this.tablePosKnobs())
+    }
     this.regrain()
     clearTimeout(this.impulseTimer)
     this.impulseTimer = setTimeout(() => this.setImpulse(), 150)
@@ -822,6 +873,8 @@ export class Voice {
         return this.padLfo(1).rateIn
       case 'lfo2Amt':
         return this.padLfo(1).depthIn
+      case 'wtPos':
+        return this.table?.node.parameters.get('posMod') ?? null
     }
   }
 
@@ -1019,6 +1072,7 @@ export class Voice {
     scheduleRelease(this.fenvSrc.offset, this.t0, tr, this.filtEnv, 1)
     this.endTime = Math.min(this.endTime, end)
     this.src?.stop(this.endTime)
+    this.table?.stop(this.endTime)
     this.regrain()
   }
 
@@ -1054,6 +1108,7 @@ export class Voice {
       /* already stopped */
     }
     this.grainVoice?.stop()
+    this.table?.stop(now + fade)
     if (this.playing) {
       this.playing = false
       this.onEnd(this)
@@ -1086,6 +1141,8 @@ export class Voice {
     for (const n of [this.env, this.filter, this.lo, this.mid, this.hi, this.dry, this.delay, this.feedback,
       this.delayWet, this.convolver, this.reverbWet, this.out, this.panner, this.kill]) n.disconnect()
     this.src?.disconnect()
+    this.table?.stop()
+    this.table?.node.disconnect()
     this.grainVoice?.node.disconnect()
     this.onDispose(this)
   }

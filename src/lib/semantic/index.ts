@@ -125,7 +125,8 @@ export class SemanticIndex {
   }
 
   private timbreOfSound(s: Sound): Float32Array | undefined {
-    const key = s.zones?.[0]?.audioId ?? s.audioId
+    // (a wavetable sounds like the cycle it's at)
+    const key = (s.zones?.[0]?.audioId ?? s.audioId) + (s.settings.wtSize ? `@${Math.round(s.settings.wt)}+${s.settings.wtBlend}` : '')
     const hit = this.timbres.get(key)
     if (hit) return hit
     const a = this.host.audioOf(s)
