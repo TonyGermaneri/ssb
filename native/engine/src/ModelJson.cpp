@@ -78,7 +78,7 @@ std::optional<ModDest> modDest (const juce::String& s)
         { "grainDetune", ModDest::grainDetune }, { "grainScan", ModDest::grainScan },
         { "lfo1Rate", ModDest::lfo1Rate }, { "lfo1Amt", ModDest::lfo1Amt }, { "lfo2Rate", ModDest::lfo2Rate },
         { "lfo2Amt", ModDest::lfo2Amt }, { "delayMix", ModDest::delayMix }, { "reverbMix", ModDest::reverbMix },
-        { "wtPos", ModDest::wtPos },
+        { "wtPos", ModDest::wtPos }, { "wtBlend", ModDest::wtBlend },
     };
     for (const auto& [name, v] : table)
         if (s == name) return v;

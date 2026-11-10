@@ -213,10 +213,13 @@ export const FACTORY_MPE: Record<string, MpeBinding[]> = {
  * Built-in patches a board installed before they had MPE bindings get them (by their factory id). A patch whose
  * `mpe` is a list already -- even an empty one, the user's choice -- keeps it. Returns how many were filled in.
  */
-export function fillFactoryMpe(patches: Pick<Patch, 'factoryId' | 'mpe'>[]): number {
+export function fillFactoryMpe(
+  patches: Pick<Patch, 'factoryId' | 'mpe'>[],
+  lookup: (id: string) => MpeBinding[] | undefined = (id) => FACTORY_MPE[id],
+): number {
   let n = 0
   for (const p of patches) {
-    const b = p.factoryId ? FACTORY_MPE[p.factoryId] : undefined
+    const b = p.factoryId ? lookup(p.factoryId) : undefined
     if (!b || p.mpe !== undefined) continue
     p.mpe = b.map((x) => ({ ...x, ...(x.slots ? { slots: [...x.slots] } : {}) }))
     n++

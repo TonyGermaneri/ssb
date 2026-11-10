@@ -109,7 +109,8 @@ const rowHeight = computed(() => Math.round(PAD_H * board.master.scale + 8))
 .empty {
   display: grid;
   place-items: center;
-  min-height: 60vh;
+  height: 100%;
+  min-height: 120px;
   padding: 16px;
 }
 .cart {

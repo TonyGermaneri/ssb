@@ -568,7 +568,7 @@ registerProcessor('ssb-grains', GrainProcessor)
 
 /** What the page tells a wavetable processor (grains.ts tableNode). */
 export type ToTable =
-  | { type: 'pos'; pos: number }
+  | { type: 'pos'; wt: number; blend: number }
   | { type: 'sample'; id: string; channels: Float32Array[]; rate: number }
   /** stop at a context time (the release's end), or now */
   | { type: 'stop'; at?: number }
@@ -585,29 +585,36 @@ class TableProcessor extends AudioWorkletProcessor {
       { name: 'rate', defaultValue: 1, automationRate: 'k-rate' },
       { name: 'detune', defaultValue: 0, automationRate: 'k-rate' },
       { name: 'posMod', defaultValue: 0, automationRate: 'a-rate' },
+      // the matrix's WT BLEND: added to BLEND, held to 0..1
+      { name: 'blendMod', defaultValue: 0, automationRate: 'a-rate' },
     ]
   }
 
   private id: string
   private size: number
-  private pos: number
+  private wt: number
+  private blend: number
   private phase = 0
   private t0: number
   private stopAt = Infinity
   private asked = false
   private done = false
 
-  constructor(options: { processorOptions: { id: string; size: number; pos: number; t0: number; sample?: Sample } }) {
+  constructor(options: { processorOptions: { id: string; size: number; wt: number; blend: number; t0: number; sample?: Sample } }) {
     super()
     const o = options.processorOptions
     this.id = o.id
     this.size = o.size
-    this.pos = o.pos
+    this.wt = o.wt
+    this.blend = o.blend
     this.t0 = o.t0
     if (o.sample) samples.set(o.id, o.sample)
     this.port.onmessage = (e: MessageEvent<ToTable>) => {
       const m = e.data
-      if (m.type === 'pos') this.pos = m.pos
+      if (m.type === 'pos') {
+        this.wt = m.wt
+        this.blend = m.blend
+      }
       else if (m.type === 'sample') samples.set(m.id, { ch: m.channels, rate: m.rate })
       else if (m.type === 'stop') this.stopAt = Math.min(this.stopAt, m.at ?? currentTime)
     }
@@ -629,6 +636,7 @@ class TableProcessor extends AudioWorkletProcessor {
     const count = tableCount(smp.ch[0].length, size)
     const step = params.rate[0] * Math.pow(2, params.detune[0] / 1200) * (smp.rate / sampleRate)
     const mod = params.posMod
+    const bmod = params.blendMod
     const dt = 1 / sampleRate
     let t = currentTime
     for (let i = 0; i < n; i++, t += dt) {
@@ -638,7 +646,7 @@ class TableProcessor extends AudioWorkletProcessor {
         this.port.postMessage({ type: 'done' } satisfies FromGrains)
         return false
       }
-      const p = tablePos(this.pos, 0, mod.length > 1 ? mod[i] : mod[0], count)
+      const p = tablePos(this.wt, this.blend, mod.length > 1 ? mod[i] : mod[0], count, bmod.length > 1 ? bmod[i] : bmod[0])
       for (let c = 0; c < out.length; c++) out[c][i] = tableRead(smp.ch[Math.min(c, smp.ch.length - 1)], size, count, this.phase, p)
       this.phase += step
       if (this.phase >= size) this.phase %= size

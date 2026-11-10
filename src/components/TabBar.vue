@@ -1,14 +1,20 @@
 <script setup lang="ts">
 import { computed, reactive, watch } from 'vue'
 import { useBoard } from '../stores/board'
+import TagStrip from './TagStrip.vue'
 import type { ListView } from '../types'
 
 /**
- * The two catalogs as tabs, and the list's own controls: a description to order it by (and, for patches, to make
- * one from), ≈ SIMILAR (order by likeness to the selected item), cards or grid (each tab keeps its own), card size.
+ * A catalog's bar (the patches' or the samples'; the header's VIEW toggles show either or both), one row: its tag
+ * filter (a drop-down), a description to order it by (and, for patches, to make one from), ≈ SIMILAR (order by
+ * likeness to the selected item), card size, cards or grid (each keeps its own). Using it makes it the catalog last
+ * used (master.tab).
  */
+const props = defineProps<{ kind: 'sounds' | 'patches' }>()
 const board = useBoard()
-const tab = computed(() => (board.master.tab === 'patches' ? 'patches' : 'sounds'))
+const tab = computed(() => props.kind)
+const listView = computed(() => board.listViewOf(props.kind))
+const touch = () => (board.master.tab = props.kind)
 /** each tab's description, as typed */
 const query = reactive({ sounds: '', patches: '' })
 let typing = 0
@@ -16,7 +22,7 @@ let typing = 0
 function onInput(e: Event) {
   query[tab.value] = (e.target as HTMLInputElement).value
   clearTimeout(typing)
-  typing = window.setTimeout(() => board.showMatching(query[tab.value]), 250)
+  typing = window.setTimeout(() => board.showMatching(query[tab.value], tab.value), 250)
 }
 const ordering = computed(() => board.similarTo[tab.value])
 // another ordering (≈ SIMILAR, or cleared) leaves the description behind; one restored with the plugin's view
@@ -30,9 +36,9 @@ watch(() => board.similarTo.sounds, () => syncQuery('sounds'), { immediate: true
 watch(() => board.similarTo.patches, () => syncQuery('patches'), { immediate: true })
 function clear() {
   query[tab.value] = ''
-  board.clearSimilar()
+  board.clearSimilar(tab.value)
 }
-/** Enter in the Patches tab: a candidate patch made from the description */
+/** Enter in the patches' bar: a candidate patch made from the description */
 function onEnter() {
   if (tab.value === 'patches' && query.patches.trim()) void board.describePatch(query.patches)
 }
@@ -55,13 +61,8 @@ function nudge(dir: number) {
 </script>
 
 <template>
-  <nav class="tabs">
-    <button class="tab" :class="{ on: board.master.tab === 'sounds' }" @click="board.master.tab = 'sounds'">
-      <v-icon size="15" icon="mdi-waveform" /> SOUNDS <b>{{ board.sounds.length }}</b>
-    </button>
-    <button class="tab" :class="{ on: board.master.tab === 'patches' }" @click="board.master.tab = 'patches'">
-      <v-icon size="15" icon="mdi-layers-triple" /> PATCHES <b>{{ board.patches.length }}</b>
-    </button>
+  <nav class="tabs" @pointerdown="touch">
+    <TagStrip :kind="kind" />
     <div class="tools">
       <label class="find" :class="{ on: ordering?.kind === 'text' }">
         <v-icon size="14" icon="mdi-text-search" />
@@ -90,11 +91,11 @@ function nudge(dir: number) {
         class="chip"
         :class="{ on: similarOn }"
         :title="similarOn ? `Ordered by likeness to ${ordering?.kind === 'item' ? ordering.name : ''}: click to stop` : similarTitle"
-        @click="similarOn ? board.clearSimilar() : board.showSimilar()"
+        @click="similarOn ? board.clearSimilar(tab) : board.showSimilar(undefined, tab)"
       >
         ≈ {{ similarOn && ordering?.kind === 'item' ? ordering.name : 'SIMILAR' }}
       </button>
-      <div v-if="board.listView === 'pads'" class="scale" title="Card size (scroll or click − / +; double-click = 100%)" @wheel.prevent="nudge($event.deltaY < 0 ? 1 : -1)">
+      <div v-if="listView === 'pads'" class="scale" title="Card size (scroll or click − / +; double-click = 100%)" @wheel.prevent="nudge($event.deltaY < 0 ? 1 : -1)">
         <button class="chip" @click="nudge(-1)">−</button>
         <span class="lcd" @dblclick="board.master.scale = 1">{{ scale }}</span>
         <button class="chip" @click="nudge(1)">+</button>
@@ -104,10 +105,10 @@ function nudge(dir: number) {
           v-for="v in VIEWS"
           :key="v.id"
           class="chip"
-          :class="{ on: board.listView === v.id }"
-          :aria-pressed="board.listView === v.id"
+          :class="{ on: listView === v.id }"
+          :aria-pressed="listView === v.id"
           :title="v.title"
-          @click="board.listView = v.id"
+          @click="board.setListView(kind, v.id)"
         >
           <v-icon size="13" :icon="v.icon" /> {{ v.label }}
         </button>
@@ -121,47 +122,22 @@ function nudge(dir: number) {
   container-type: inline-size;
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 2px;
-  padding: 6px 22px 0;
-  background: color-mix(in srgb, var(--panel-lo) 70%, #000);
-}
-.tab {
-  display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 6px 18px 5px;
-  border-radius: 6px 6px 0 0;
-  font-family: 'Orbitron', sans-serif;
-  font-size: 11px;
-  font-weight: 900;
-  letter-spacing: 0.16em;
-  color: var(--ink-mute);
-  background: #141317;
-  border: 1px solid #000;
-  border-bottom: 0;
+  gap: 6px 10px;
+  padding: 5px 12px;
+  background: linear-gradient(180deg, var(--panel-lo), color-mix(in srgb, var(--panel-lo) 70%, #000));
+  border-bottom: 2px solid #000;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.45);
 }
-.tab b {
-  font-family: 'VT323', monospace;
-  font-size: 15px;
-  font-weight: 400;
-  color: var(--text-faint);
-}
-.tab.on {
-  color: var(--c-primary);
-  background: linear-gradient(180deg, var(--panel-hi), var(--panel-lo));
-  text-shadow: 0 0 6px color-mix(in srgb, var(--c-primary) 50%, transparent);
-}
-.tab.on b {
-  color: var(--c-secondary);
-}
-/* the list's own controls, right of the tabs, sitting on the same baseline */
+/* the list's own controls, after its tag filter */
 .tools {
-  margin-left: auto;
+  flex: 1;
+  min-width: 0;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
-  gap: 10px;
-  padding-bottom: 4px;
+  gap: 6px 10px;
 }
 .find {
   display: flex;
@@ -206,13 +182,9 @@ function nudge(dir: number) {
 }
 /* beside the rack the list is narrow: its controls take a row of their own, over the tabs */
 @container (max-width: 900px) {
+  /* narrow: the description takes what room there is */
   .tools {
-    order: -1;
-    width: 100%;
-    flex-wrap: wrap;
-    justify-content: flex-end;
     gap: 6px;
-    padding-bottom: 6px;
   }
   .find {
     flex: 1;

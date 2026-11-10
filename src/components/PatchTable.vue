@@ -112,8 +112,8 @@ function onButton(id: string, column: string) {
   if (column === 'menu') board.editPatch(id)
   else if (column === 'like') {
     const to = board.similarTo.patches
-    if (to?.kind === 'item' && to.id === id) board.clearSimilar()
-    else board.showSimilar(id)
+    if (to?.kind === 'item' && to.id === id) board.clearSimilar('patches')
+    else board.showSimilar(id, 'patches')
   }
 }
 /** behind the rows: the selected patch's main VCO */

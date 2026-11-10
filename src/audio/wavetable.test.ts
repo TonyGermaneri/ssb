@@ -20,6 +20,10 @@ describe('wavetables', () => {
     expect(tablePos(0, 0, 0.25, 4)).toBeCloseTo(1)
     expect(tablePos(1, 0, -0.5, 4)).toBeCloseTo(3)
     expect(tablePos(2, 0, 0, 1)).toBe(0)
+    // the matrix's WT BLEND adds to BLEND, held to 0..1 (it never steps into a third wave)
+    expect(tablePos(1, 0.3, 0, 4, 0.5)).toBeCloseTo(1.8)
+    expect(tablePos(1, 0.8, 0, 4, 0.9)).toBeCloseTo(2)
+    expect(tablePos(1, 0.2, 0, 4, -0.5)).toBeCloseTo(1)
   })
 
   it('read a cycle as it is at BLEND 0, and blend it into the next at one phase', () => {

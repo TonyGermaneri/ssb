@@ -220,7 +220,7 @@ const buttons = computed(() => {
   }
 })
 function onButton(id: string, column: string) {
-  if (column === 'like') return board.similarTo.sounds?.kind === 'item' && board.similarTo.sounds.id === id ? board.clearSimilar() : board.showSimilar(id)
+  if (column === 'like') return board.similarTo.sounds?.kind === 'item' && board.similarTo.sounds.id === id ? board.clearSimilar('sounds') : board.showSimilar(id, 'sounds')
   if (column !== 'menu') return
   if (panelShown.value && board.master.selectedId === id) board.master.gridPanel = false
   else {
@@ -260,11 +260,12 @@ const backdrop = computed(() => (board.selected ? { peaks: board.peaksOf(board.s
     @toggle="onToggle"
     @button="onButton"
     @move="board.move"
+    slot-above
   >
-    <template #default="{ narrow }">
-      <!-- the selected sound's panel: beside a wide grid, under a narrow one -->
-      <aside v-if="panelShown && board.selected" class="side" :class="{ under: narrow }">
-        <ControlPanel :key="board.selected.id" :sound="board.selected" :hue="hueOf(board.selected)" :wide="narrow" />
+    <template #default>
+      <!-- the selected sound's panel, above the grid -->
+      <aside v-if="panelShown && board.selected" class="side above">
+        <ControlPanel :key="board.selected.id" :sound="board.selected" :hue="hueOf(board.selected)" wide />
       </aside>
     </template>
   </DataGrid>
@@ -276,7 +277,7 @@ const backdrop = computed(() => (board.selected ? { peaks: board.peaksOf(board.s
   overflow-y: auto;
   scrollbar-width: thin;
 }
-.side.under {
-  max-height: 52%;
+.side.above {
+  max-height: 55%;
 }
 </style>

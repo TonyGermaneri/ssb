@@ -29,8 +29,9 @@ npm run build    # typecheck + production build
 
 ### Sounds and patches
 
-Two catalogs, as tabs under the header, each with card and grid views and its own tag filter:
-- **Sounds** — the audio you've loaded (pads). Clicking a pad plays it and selects it: the selected sound is what
+Two catalogs, each with card and grid views and its own tag filter, shown by the header's **VIEW** toggles
+(**PATCHES**, **SAMPLES**; both on, they stack, patches above, with a split to drag between them):
+- **Samples** — the sounds: the AKWF wavetables and the audio you've loaded (pads). Clicking a pad plays it and selects it: the selected sound is what
   NEW PATCH starts from and what the keys play while no patch is selected.
 - **Patches** — playable instruments built from up to **3 VCO slots**, each holding a sound (as the patch's own
   copy of its settings, so editing a patch never changes the sound), plus the header knobs (volume, glide, mono/poly,
@@ -48,7 +49,7 @@ its session. Name, tags and ♥ save as they change. Built-in patches (marked **
 and in the grid's KIND column) aren't overwritten: SAVE on one makes your edits a patch of your own, with the same
 name, beside it, and the built-in goes back as it was. A DUPLICATE of a built-in is yours too.
 
-The header **◀ ▶** step through patches (in the Patches tab's filtered order) and the keyboard (PLAY) plays the selected
+The header **◀ ▶** step through patches (in the patches' filtered order) and the keyboard (PLAY) plays the selected
 patch. **♥** marks favourites on sound cards, patch cards, the rack and in the grids (♥ column); **♥ FAV** in the tag
 strip shows only those.
 
@@ -59,7 +60,8 @@ each becomes a **sound of the board** — the perfect waves first, then AKWF's o
 category (`akwf_epiano`). A table is its category's waves end to end, each 600-frame cycle at the rate that makes it
 exactly C2 and centred on zero (some AKWF cycles sit well off it, which as an oscillator is only a thump); it loops
 while held. The tables take no storage of their own: their audio is made from the files that ship with SSB when one is
-first played or drawn. **+ → BROWSE WAVETABLES** shows each category's waves as outlines: click one to hear it, **+**
+first played or drawn. **+ → BROWSE WAVETABLES** shows each category's waves as outlines: click one to hear it (in the plugin it plays through the DAW's track, as
+everything SSB plays does), **+**
 selects its table on the board at that wave (and puts the table back if you deleted it), **1 / 2 / 3** put the table,
 at that wave, straight into that VCO slot of the patch; ← → step through the waves, ↑ ↓ through the categories, **PUT
 BACK** restores deleted tables. `scripts/akwf.mjs` rebuilds `public/akwf` from an AKWF-FREE checkout.
@@ -67,9 +69,11 @@ BACK** restores deleted tables. `scripts/akwf.mjs` rebuilds `public/akwf` from a
 **Wavetables** play as an oscillator (`src/audio/wavetable.ts`, and the native engine): a VCO on a table plays one of
 its waves, chosen by **WT**, blended at the same phase into the next by **WT BLEND** — 0 % that wave, 50 % half and
 half, 98 % nearly all the next; after the last wave comes the first. A route to **WT POS** in the matrix sweeps the
-table (±1 = all of it, wrapping round), so an LFO, the filter envelope or an MPE slide moves through it. In the sample
+table (±1 = all of it, wrapping round), so an LFO, the filter envelope or an MPE slide moves through it; a route to
+**WT BLEND** moves the blend itself (on the built-ins, MPE pressure does). In the sample
 views (2D and ISO) a table is drawn in ISO: its waves stacked from the first at the back to the last at the front, the
-one WT and BLEND make lit (and seen through what's in front of it); drag it to turn the view, as any ISO view. With GRAIN on (or STRETCH) the table is the wave WT and BLEND pick, played as a single cycle, so the
+one WT and BLEND make lit (and seen through what's in front of it); drag it to turn the view, as any ISO view. With
+GRAIN on (or STRETCH) the table is the wave WT and BLEND pick, played as a single cycle, so the
 grains read that wave. A wavetable WAV of your own (Serum's format and the tools that follow it: equal cycles end to
 end, a `clm` chunk giving their length) is recognised when dropped and plays the same way, its cycles at C2. Why an
 oscillator rather than the granulator at audio rate: grains are windowed and overlap two to a period, which at the pitch
@@ -107,7 +111,9 @@ AKWF waves.
 
 ### VCO slots + rack
 
-The **rack** under the header shows the selected patch's three slots side by side, each with its sound's full panel.
+The **rack** under the header shows the selected patch's three slots as tabs (**1 2 3**, each named after its sound,
+its LED lit while it sounds, MOD on a silent modulator), one at a time with its sound's full panel across the width.
+Clicking a VCO in the header opens its tab; a sound dragged over a tab opens it, and dropped there fills that slot.
 - **Fill a slot** by dragging a sound card by its ⋮⋮ grip (or a grid row by its ⠿) into it, or onto that VCO in the
   header, or pressing **1 / 2 / 3** on the card or in the grid's 1 2 3 columns (the number lights while the sound
   sits in that slot, and pressing it again takes it out; the previous sound is replaced). With no patch selected this
@@ -141,10 +147,13 @@ The **rack** under the header shows the selected patch's three slots side by sid
     of equal pitch: thick for the original pitch, red for stopped, the one below it the original pitch backwards, the
     thin one through the crosshair what plays now.
   It's the same settings as the knobs (GRAIN, LENGTH, BACK, RING, filter, reverb, PITCH / FINE): PLAY again shows them.
-- The header's **VIEW** group picks what's under the header — **RACK**, **BOTH** (the rack with the list beside it)
-  or **LIST**. Clicking a VCO in the header shows the rack too. The list's own bar, right of the SOUNDS / PATCHES
-  tabs, shows it as **CARDS** or a **GRID** (each tab keeps its own) and sizes the cards (− 100% +). Beside the rack the list starts at a third of the window; drag the divider to resize it
-  (double-click = 33%).
+- Each list has one bar: its tag filter (a drop-down), a description field, **≈ SIMILAR**, card size and **CARDS** /
+  **GRID**; both lists open as grids.
+- The header's **VIEW** group has three toggles for what's under the header: **RACK**, **PATCHES** and **SAMPLES**
+  (one always stays on). With the rack, the lists go beside it: they start at a third of the window; drag the divider
+  to resize them (double-click = 33%). Patches and samples together stack, patches above; drag the split between them
+  (double-click = half and half). Clicking a VCO in the header shows the rack too. Each list's own bar shows it as
+  **CARDS** or a **GRID** (each keeps its own) and sizes the cards (− 100% +).
 - Each panel section has a **fold** triangle (top right) that shrinks it to its title. EQ, DELAY and REVERB start
   folded; folds are shared by every panel and saved.
 
@@ -221,7 +230,7 @@ Contract tests against the real APIs: `SSB_AI_LIVE=1 npx vitest run src/lib/ai/p
 
 ### Semantic search
 
-The list's bar has a description field, **≈ SIMILAR** and, in the Patches tab, **MAKE**:
+Each list's bar has a description field, **≈ SIMILAR** and, on the patches', **MAKE**:
 - **A description** ("airy choir", "dark gritty bass") orders the list by how near each sound or patch is to it, as you
   type: its name and tags (AKWF's short names spelt out: `epiano` → electric piano) and words made from its settings
   (slow attack, dark, plucked, grain cloud, vibrato, wobble, glide, detuned unison, reverb…). A word it shares exactly
@@ -250,14 +259,15 @@ in rolidrummer: each text is embedded once, a few synth words are spelt out befo
 
 ### Starting up
 
-Every launch starts as a **soundboard**: the pads as cards, the VCO rack put away (**VIEW → RACK** or **BOTH**
-brings it back).
+Every launch starts as a **soundboard**: the samples as a grid, the VCO rack and the patches put away (**VIEW → RACK**
+and **PATCHES** bring them back; a plugin instance reopens as it was left).
 
 ### Tags
 
-A pad's TAGS field holds comma-separated tags (chips in the panel). The **tag strip** under the header lists every tag
-with how many pads carry it; click tags to filter (AND) — the strip then shows only tags that co-occur with the
-selection, with counts for the remaining pads. **Right-click** a tag to hide everything carrying it instead (the
+A pad's TAGS field holds comma-separated tags (chips in the panel). Each list's **tag filter** is the drop-down at the
+start of its bar (it says ALL, or what's picked and how many that leaves): its menu lists every tag with how many carry
+it; click tags to filter (AND) — the menu then shows only tags that co-occur with the selection, with counts for what
+remains. **Right-click** a tag to hide everything carrying it instead (the
 chip turns red and struck through, counting what it hides; click it again to bring them back). **ALL** clears both. Imports are tagged automatically with where
 they came from: `dropped, <folder>`, `sfzinstruments, <repo>`, `gm, <set>, <family>`, `dirt-samples, <bank>`,
 `url, <host>`, or `imported, <board>` — plus `sfz` or `sample`.
@@ -303,7 +313,8 @@ FILTER ENV (the pad's filter ADSR, 0–1, whatever its AMOUNT: a second envelope
 Destinations: pitch, cutoff, resonance, volume, pan, grain pos, grain size, skew / xfade, variation, detune, scan speed
 (× 1 + the route: up to three times as fast, and backwards below −100 %), the pad's LFO 1 / 2 RATE (±36 semitones) and
 AMOUNT (added to its AMOUNT knob; a pad matrix only — an LFO doesn't drive itself, and two LFOs only one way),
-delay mix, reverb mix, WT POS (a wavetable's position, ±1 = the whole table).
+delay mix, reverb mix, WT POS (a wavetable's position, ±1 = the whole table), WT BLEND (added to the WT BLEND knob,
+held to 0–100 %).
 The **GLOBAL** matrix (header MATRIX button) applies to every sound and its LFOs run freely; each pad's matrix
 (panel MATRIX button) applies to that pad and its LFOs restart per note. Pitch bend always bends pitch by the
 pad's BEND range. Negative volume modulation from an LFO is a tremolo that never boosts.
@@ -436,14 +447,14 @@ clip markers' flags along the top still grab them too).
 
 ### Grid mode
 
-**GRID** in the list's bar (each tab has its own) switches it to a spreadsheet (canvas-datagrid, loaded on first use).
-Click a row to select that sound, **☰** shows its full control panel beside the grid (under it when the list is
-narrow; ☰ on that row again, or Esc, puts it away), click **▷** or double-click a read-only cell to play, **Delete** or **Backspace** removes the selected rows (after
-asking; ⌘Z brings them back), double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type a
+**GRID** in a list's bar (each list has its own) switches it to a spreadsheet (canvas-datagrid, loaded on first use).
+Click a row to select that sound, **☰** shows its full control panel above the grid (☰ on that row again, or Esc,
+puts it away), click **▷** or double-click a read-only cell to play, **Delete** or **Backspace** removes the selected
+rows (after asking; ⌘Z brings them back), double-click an editable cell (name, tag, mode, rpt, vol, pan, pitch, speed, cutoff, choke) to type a
 value, and click a column title to sort. Drag a row by its **⠿** into a VCO slot (dragging anywhere else selects
 rows) or onto another row to move it there (while the grid isn't sorted), and **1 2 3** put the sound into that VCO
 of the patch or take it out, as on the cards. **WAVE** draws each sound's waveform, with a playhead while it plays.
-In the Patches tab a row click (or ▷) loads the patch, **☰** shows it in the rack, and **VCOS** draws its three
+In the patches' grid a row click (or ▷) loads the patch, **☰** shows it in the rack, and **VCOS** draws its three
 slots' waves. In both, **≈** orders the list by likeness to that row and **SIM** shows how alike each row is (to it,
 or to a description; see [Semantic search](#semantic-search)): the grid then sorts by #, the order of likeness. Behind the rows the grid paints the selected sound's waveform, large and faint, and while anything
 plays, the master's spectrum and scope (in the AU / VST3, whose engine plays outside the page, a glow that follows
@@ -477,7 +488,9 @@ always polyphonic.
   **PRESS** (pressure into it while held) and **SLIDE** (moving up and down it, CC74) — on its VCOs, as routes of their
   own: the rack's **MPE** chip (or the matrix modal's MPE tab) shows and edits them. They act only while MPE is on;
   off, the patch plays as it always did. Every built-in patch comes voiced for MPE (PRESS and SLIDE always, STRIKE where
-  it adds something), and the AI patch maker binds them on what it makes. Sideways (GLIDE) bends each note's pitch;
+  it adds something): **PRESS is WT BLEND** on every VCO that plays its wavetable, so leaning into a key fades its
+  wave into the next (all the way at full pressure; VCOs played as grains keep a press of their own). The AI patch
+  maker binds them on what it makes. Sideways (GLIDE) bends each note's pitch;
   LIFT (release velocity) isn't used.
 - **On / off and bend range** belong to the controller, not the patch: changing patches keeps them, and a plugin
   instance saves them with the session. With MPE on, the button halves and a dropdown beside it sets the per-note bend
@@ -500,7 +513,7 @@ included in exports.
 ### Header
 
 OUTPUT + vertical VU · PATCH (◀ selected ▶, new, PLAY, POLY/MONO, HLD, MPE, octave, GLIDE) · VCO (the patch's three
-slots) · VIEW (RACK / BOTH / LIST, CARDS / GRID, SCALE) · PERFORM (SUS, global MATRIX) · TEMPO · MIDI · global CHORUS /
+slots) · VIEW (RACK, PATCHES, SAMPLES toggles) · PERFORM (SUS, global MATRIX) · TEMPO · MIDI · global CHORUS /
 DELAY / REVERB · BOARD (undo, redo, and **+**: add files or a folder, browse waves or the library, restore built-ins,
 export / import the board). PERFORM, TEMPO · MIDI and the effects fold sideways (◀); PERFORM and the three effects
 start folded. The rest always show. Wraps into rows on narrow windows.
@@ -511,7 +524,7 @@ shown), or take EVERYTHING. A ticked patch brings the sounds its VCOs use, and e
 (from the board's store, the plugin's sample cache, or the decoded audio); if one can't be found the dialog names it
 rather than leaving it out. AKWF wavetables and generators travel by name. **IMPORT BOARD…** reads the .zip back.
 
-- **Select a patch** by clicking its card in the Patches tab, or with ◀ ▶ in the header.
+- **Select a patch** by clicking its card in the patches, or with ◀ ▶ in the header.
 - **PLAY** turns MIDI and the computer keyboard into a piano for the selected patch (C4 = original pitch).
   Computer keys: `Z` row = C3 octave, `Q` row = C4 octave, `-` / `=` = octave down/up.
 - **MONO** + **GLIDE** = legato portamento; **POLY** = each note its own voice (glide slides from the last note).

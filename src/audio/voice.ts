@@ -486,9 +486,9 @@ export class Voice {
     this.src = src
   }
 
-  /** WT + BLEND, as the knobs set them */
-  private tablePosKnobs() {
-    return Math.round(this.settings.wt ?? 0) + Math.min(1, Math.max(0, this.settings.wtBlend ?? 0))
+  /** WT and BLEND, as the knobs set them */
+  private tableKnobs() {
+    return { wt: Math.round(this.settings.wt ?? 0), blend: Math.min(1, Math.max(0, this.settings.wtBlend ?? 0)) }
   }
 
   /** The wavetable oscillator, tuned as startSource tunes a sample (its rate scheduled as playbackRate would be). */
@@ -498,7 +498,7 @@ export class Voice {
       void loadGrains(this.ctx).then(() => this.startTable())
       return
     }
-    const t = tableNode(this.ctx, this.audioId, this.buffer, { size: this.tableSize, pos: this.tablePosKnobs(), t0: this.t0 }, () => this.finish())
+    const t = tableNode(this.ctx, this.audioId, this.buffer, { size: this.tableSize, ...this.tableKnobs(), t0: this.t0 }, () => this.finish())
     const p = t.node.parameters.get('rate')!
     const to = this.tapeRate(this.glide.to)
     const now = this.ctx.currentTime
@@ -730,7 +730,8 @@ export class Voice {
     }
     if (this.table) {
       if (tuned) set(this.table.node.parameters.get('rate')!, this.tapeRate(this.glide.to))
-      this.table.setPos(this.tablePosKnobs())
+      const k = this.tableKnobs()
+      this.table.setPos(k.wt, k.blend)
     }
     this.regrain()
     clearTimeout(this.impulseTimer)
@@ -875,6 +876,8 @@ export class Voice {
         return this.padLfo(1).depthIn
       case 'wtPos':
         return this.table?.node.parameters.get('posMod') ?? null
+      case 'wtBlend':
+        return this.table?.node.parameters.get('blendMod') ?? null
     }
   }
 

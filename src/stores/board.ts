@@ -21,7 +21,7 @@ import { normalisePath, parseSfz } from '../lib/sfz'
 import { sniffSampleRate } from '../lib/sampleRate'
 import { filterPlayable, nearestZone, pickZones, regionToZone, zoneSemis } from '../lib/zones'
 import { isSynthAudioId, synthAudioId, synthWave } from '../audio/synthWaves'
-import { FACTORY_PATCHES, LAYER_VOLUME, LEGACY_FACTORY_NAMES, type FactoryPatch } from '../lib/factory'
+import { FACTORY_PATCHES, factoryMpe, LAYER_VOLUME, LEGACY_FACTORY_NAMES, type FactoryPatch } from '../lib/factory'
 import { fillFactoryMpe } from '../lib/factoryMpe'
 import { FACTORY_LEVELS, FACTORY_LEVELS_V3 } from '../lib/factoryLevels'
 import {
@@ -58,8 +58,8 @@ const INSTANCE_FIELDS = [
  * track reopened, or duplicated, shows what it showed -- its tab, layout, folds, scope settings and scroll.
  */
 const VIEW_FIELDS = [
-  'tab', 'view', 'patchView', 'gridPanel', 'list', 'listWidth', 'folded', 'headerFolded', 'rack', 'waveView', 'scope',
-  'isoView', 'favSounds', 'favPatches', 'scale', 'vcoPlay',
+  'tab', 'view', 'patchView', 'gridPanel', 'showPatches', 'showSamples', 'paneSplit', 'listWidth', 'folded',
+  'headerFolded', 'rack', 'waveView', 'scope', 'isoView', 'favSounds', 'favPatches', 'scale', 'vcoPlay', 'rackTab',
 ] as const
 /** tells the other tabs / instances the library was saved, so they reload it */
 const libraryChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('ssb-library') : null
@@ -100,8 +100,9 @@ interface SavedBoard {
 const uid = () => crypto.randomUUID()
 /** 2: the factory patches are made of AKWF waves; 3: every AKWF wave is a sound, and the built-in patches; 4: those
  *  patches with headroom for chords; 5: the built-ins dry (their chorus, delay and reverb mixes at 0; see upgradeFactory);
- *  6: AKWF's categories are wavetables, the board's waves and patches moved onto them (wavesToTables) */
-const FACTORY_VERSION = 6
+ *  6: AKWF's categories are wavetables, the board's waves and patches moved onto them (wavesToTables); 7: PRESS is
+ *  the built-ins' WT BLEND (factory.ts pressBlends) */
+const FACTORY_VERSION = 7
 /** AKWF's cycles are all this long: a table's WT SIZE */
 const AKWF_FRAMES = 600
 /** the global FX mixes at 0: how the built-in patches start */
@@ -234,17 +235,17 @@ export const useBoard = defineStore('board', () => {
   )
   const patchFacets = computed(() => tagFacets(patches.value.map((p) => p.tag), patchTagFilter.value, patchTagHidden.value))
   const togglePatchTag = (tag: string) => toggleIn(tag, patchTagFilter, patchTagHidden)
-  /** the tag strip follows the tab */
-  const currentFacets = computed(() => (master.tab === 'patches' ? patchFacets.value : facets.value))
-  const currentFilter = computed(() => (master.tab === 'patches' ? patchTagFilter.value : tagFilter.value))
-  const currentTotal = computed(() => (master.tab === 'patches' ? patches.value.length : sounds.value.length))
-  const currentShown = computed(() => (master.tab === 'patches' ? visiblePatches.value.length : visible.value.length))
-  const currentHidden = computed(() => (master.tab === 'patches' ? patchTagHidden.value : tagHidden.value))
-  const toggleCurrentTag = (tag: string) => (master.tab === 'patches' ? togglePatchTag(tag) : toggleTag(tag))
-  const hideCurrentTag = (tag: string) =>
-    master.tab === 'patches' ? toggleOut(tag, patchTagFilter, patchTagHidden) : toggleOut(tag, tagFilter, tagHidden)
-  function clearCurrentTags() {
-    if (master.tab === 'patches') patchTagFilter.value = patchTagHidden.value = []
+  /** each catalog's tag strip (the patches' and the samples', which can show together) */
+  type Catalog = 'sounds' | 'patches'
+  const tagsOf = (kind: Catalog) =>
+    kind === 'patches'
+      ? { facets: patchFacets.value, filter: patchTagFilter.value, hidden: patchTagHidden.value, total: patches.value.length, shown: visiblePatches.value.length }
+      : { facets: facets.value, filter: tagFilter.value, hidden: tagHidden.value, total: sounds.value.length, shown: visible.value.length }
+  const toggleTagOf = (kind: Catalog, tag: string) => (kind === 'patches' ? togglePatchTag(tag) : toggleTag(tag))
+  const hideTagOf = (kind: Catalog, tag: string) =>
+    kind === 'patches' ? toggleOut(tag, patchTagFilter, patchTagHidden) : toggleOut(tag, tagFilter, tagHidden)
+  function clearTagsOf(kind: Catalog) {
+    if (kind === 'patches') patchTagFilter.value = patchTagHidden.value = []
     else tagFilter.value = tagHidden.value = []
   }
 
@@ -264,7 +265,7 @@ export const useBoard = defineStore('board', () => {
     return m
   })
   const padsForNote = (note: number) => sounds.value.filter((s) => noteFor.value.get(s.id) === note)
-  /** the sound being edited in the Sounds tab (rack, grid row) */
+  /** the sound being edited in the samples (its panel, a grid row) */
   const selected = computed(() => (master.selectedId ? byId(master.selectedId) ?? null : null))
 
   /**
@@ -318,14 +319,12 @@ export const useBoard = defineStore('board', () => {
   })
   /** what the keyboard plays: the selected patch, or (with no patches yet) the sound being edited */
   const playable = computed(() => patchMain.value ?? selected.value)
-  /** the showing tab's view: cards or the grid (each tab keeps its own) */
-  const listView = computed<ListView>({
-    get: () => (master.tab === 'patches' ? master.patchView : master.view),
-    set: (v) => {
-      if (master.tab === 'patches') master.patchView = v
-      else master.view = v
-    },
-  })
+  /** a catalog's view: cards or the grid (each keeps its own) */
+  const listViewOf = (kind: Catalog): ListView => (kind === 'patches' ? master.patchView : master.view)
+  function setListView(kind: Catalog, v: ListView) {
+    if (kind === 'patches') master.patchView = v
+    else master.view = v
+  }
   const patchNumber = computed(() => patches.value.findIndex((p) => p.id === master.patchId) + 1)
   /** 1-based position of the selected patch in the grid. */
   const selectedNumber = computed(() => {
@@ -574,8 +573,8 @@ export const useBoard = defineStore('board', () => {
       if (!saved && inNative()) saved = (await mergeLegacyBoards()) ?? undefined
       if (saved) {
         Object.assign(master, migrateMaster(saved.master))
-        // every launch starts as a soundboard: the pads as cards, the VCO rack put away
-        Object.assign(master, { rack: false, view: 'pads', patchView: 'pads', list: true, tab: 'sounds' })
+        // every launch starts as a soundboard: the samples as a grid, the VCO rack and the patches put away
+        Object.assign(master, { rack: false, view: 'grid', patchView: 'grid', showPatches: false, showSamples: true, tab: 'sounds' })
         presets.value = (saved.presets ?? []).map((p) => ({ ...p, settings: migratePresetSettings(p.settings) }))
         patches.value = (saved.patches ?? []).map((p) => tracked(migratePatch(p)))
         const ok = await readSounds(saved.sounds)
@@ -589,7 +588,7 @@ export const useBoard = defineStore('board', () => {
       else if (master.factoryVersion < FACTORY_VERSION) await upgradeFactory()
       // built-in patches installed before they had MPE bindings get them, whatever the board's factory version (a patch
       // with a list of its own keeps it)
-      fillFactoryMpe(patches.value)
+      fillFactoryMpe(patches.value, factoryMpe)
       // what's stored is what's saved (the upgrades just now included); the app's unsaved edits come back as edits
       markAllSaved()
       if (nativeBoardKey()) await restoreInstance()
@@ -2162,6 +2161,12 @@ export const useBoard = defineStore('board', () => {
     }
     // 0.14: the waves into wavetables, the patches onto them
     const moved = master.factoryVersion < 6 ? await wavesToTables() : 0
+    // 0.15: PRESS is the built-ins' WT BLEND (a built-in is never the user's own: SAVE makes a copy)
+    if (master.factoryVersion < 7)
+      for (const p of patches.value) {
+        const mpe = p.factoryId ? factoryMpe(p.factoryId) : undefined
+        if (mpe) p.mpe = clone(mpe)
+      }
     await installFactory(
       relevelled ? `Built-in patches turned down for headroom (${relevelled})`
         : moved ? `AKWF's waves are wavetables now: ${moved.toLocaleString()} waves folded into their categories' tables` : undefined,
@@ -2220,19 +2225,21 @@ export const useBoard = defineStore('board', () => {
   type SimilarTo = { kind: 'item'; id: string; name: string } | { kind: 'text'; text: string }
   const similarTo = reactive<{ sounds: SimilarTo | null; patches: SimilarTo | null }>({ sounds: null, patches: null })
   const tabKey = () => (master.tab === 'patches' ? 'patches' : 'sounds')
-  /** order the showing tab by likeness to its selected sound or patch (or `id`) */
-  function showSimilar(id?: string) {
-    const tab = tabKey()
+  /** which catalog an id is in (else the one last used) */
+  const catalogOf = (id?: string): Catalog => (id && patchById(id) ? 'patches' : id && byId(id) ? 'sounds' : tabKey())
+  /** order a catalog by likeness to its selected sound or patch (or `id`) */
+  function showSimilar(id?: string, kind: Catalog = catalogOf(id)) {
+    const tab = kind
     const item = tab === 'patches' ? patchById(id ?? master.patchId) : byId(id ?? master.selectedId ?? '')
     const name = item ? ('slots' in item ? item.name : item.settings.name) : ''
     similarTo[tab] = item ? { kind: 'item', id: item.id, name } : null
   }
-  /** order the showing tab by how near each item's words are to `text` (empty: the board's order again) */
-  function showMatching(text: string) {
-    similarTo[tabKey()] = text.trim() ? { kind: 'text', text: text.trim() } : null
+  /** order a catalog by how near each item's words are to `text` (empty: the board's order again) */
+  function showMatching(text: string, kind: Catalog = tabKey()) {
+    similarTo[kind] = text.trim() ? { kind: 'text', text: text.trim() } : null
     if (text.trim()) void semantic.load().catch(() => {})
   }
-  const clearSimilar = () => (similarTo[tabKey()] = null)
+  const clearSimilar = (kind: Catalog = tabKey()) => (similarTo[kind] = null)
   /** likeness scores for one tab's ordering (null: the board's order) */
   function scoresFor<T extends Sound | Patch>(kind: 'sound' | 'patch', to: SimilarTo | null, items: T[]): Map<string, number> | null {
     void semantic.version.value
@@ -2704,11 +2711,11 @@ export const useBoard = defineStore('board', () => {
   )
 
   return {
-    sounds, master, listView, openPanels, view, pressed, tagFilter, peaks, peaksOf, changes, setEngineGate, loaded, toast, midi, heldNotes,
+    sounds, master, listViewOf, setListView, openPanels, view, pressed, tagFilter, peaks, peaksOf, changes, setEngineGate, loaded, toast, midi, heldNotes,
     perform, presets, clipboard, matrixScope, canUndo, canRedo, tempo, bpm, noteFor, theme, cycleTheme,
     undo, redo, savePreset, loadPreset, deletePreset, copySettings, pasteSettings, openMatrix, onMidi,
     patches, patchTagFilter, patchTags, visiblePatches, patchFacets, togglePatchTag,
-    currentFacets, currentFilter, currentTotal, currentShown, toggleCurrentTag, clearCurrentTags, currentHidden, hideCurrentTag,
+    tagsOf, toggleTagOf, hideTagOf, clearTagsOf,
     tagHidden, patchTagHidden,
     selectedPatch, patchMain, playable, patchNumber, resolveSound, layerSound, patchLayerIds, vcoLinks, tunedSlots, patchById,
     semantic, similarTo, showSimilar, showMatching, clearSimilar, soundScores, patchScores, shownSounds, shownPatches,

@@ -293,11 +293,14 @@ TEST ("engine: BLEND fades a wavetable's cycle into the next, and the last cycle
     CHECK_NEAR (tableRms ([] (auto& s) { s.wt = 5; }), 0.50 * r2, 0.01);
 }
 
-TEST ("engine: WT POS in the matrix moves through the table, a share of it per unit")
+TEST ("engine: WT POS in the matrix moves through the table, a share of it per unit; WT BLEND adds to the blend")
 {
     // +0.25 of a 4-cycle table is one cycle on: cycle 0 plays as cycle 1
     const double r2 = tableRms ([] (auto& s) { s.wt = 3; });
     CHECK_NEAR (tableRms ([] (auto& s) { s.wt = 0; s.mod.routes.push_back ({ ssb::ModSource::velocity, ssb::ModDest::wtPos, 0.25f }); }), 0.50 * r2, 0.01);
+    // WT BLEND in the matrix adds to the knob, held to 0..1: 0.3 + 0.5 blends cycle 1 80 % into cycle 2
+    CHECK_NEAR (tableRms ([] (auto& s) { s.wt = 1; s.wtBlend = 0.3f; s.mod.routes.push_back ({ ssb::ModSource::velocity, ssb::ModDest::wtBlend, 0.5f }); }), (0.2 * 0.5 + 0.8 * 0.75) * r2, 0.01);
+    CHECK_NEAR (tableRms ([] (auto& s) { s.wt = 1; s.wtBlend = 0.8f; s.mod.routes.push_back ({ ssb::ModSource::velocity, ssb::ModDest::wtBlend, 0.9f }); }), 0.75 * r2, 0.01);
 }
 
 TEST ("engine: played as grains, a wavetable is the wave WT and BLEND pick, repeated as a single-cycle wave's buffer")
@@ -319,6 +322,23 @@ TEST ("engine: played as grains, a wavetable is the wave WT and BLEND pick, repe
     // played as a table, the sound keeps the whole table
     auto plain = ssb::soundFromJson (juce::JSON::parse (R"({"id": "p", "audioId": "t.wav", "s": {"wtSize": 600, "wt": 2}})"), [&] (const std::string&) { return t; });
     CHECK (plain->sample == t);
+}
+
+TEST ("engine: an audition plays out of the engine (the plugin's output), fades, and stops when told")
+{
+    Rig rig;
+    rig.commit();
+    rig.engine.preview (sine (440, 0.25), 1, 0.3);
+    rig.render (0.6);
+    CHECK (rig.rms (0.05, 0.25) > 0.1);
+    CHECK_NEAR (rig.hz (0.05, 0.25), 440.0, 3.0);
+    CHECK (rig.rms (0.5, 0.6) < 1e-6);   // over after its seconds and the fade
+    // a stop fades it within 50 ms
+    rig.engine.preview (sine (440, 0.25), 1, 5);
+    rig.render (0.2);
+    rig.engine.stopPreview();
+    rig.render (0.2);
+    CHECK (rig.rms (0.1, 0.2) < 1e-6);
 }
 
 TEST ("engine: attack ramps linearly, release fades to silence")

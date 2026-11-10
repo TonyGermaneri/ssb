@@ -38,7 +38,7 @@ using SamplePtr = std::shared_ptr<const Sample>;
 enum class LfoShape : uint8_t { sine, triangle, square, sawtooth, rampDown, random, smooth, wander };
 enum class ModSource : uint8_t { lfo1, lfo2, mod, aftertouch, velocity, key, random, bend, timbre, fenv, vco1, vco2, vco3 };
 enum class ModDest : uint8_t { pitch, cutoff, resonance, volume, pan, grainPos, grainSize, grainSkew, grainVar, grainDetune,
-                               grainScan, lfo1Rate, lfo1Amt, lfo2Rate, lfo2Amt, delayMix, reverbMix, wtPos };
+                               grainScan, lfo1Rate, lfo1Amt, lfo2Rate, lfo2Amt, delayMix, reverbMix, wtPos, wtBlend };
 
 struct LfoDef
 {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useTheme } from 'vuetify'
 import { applyThemeVars } from './theme/themes'
 import { useBoard } from './stores/board'
@@ -12,7 +12,6 @@ import { activeVoices, getCtx, levels, readSound, soundSounding, SCOPE_SAMPLES, 
 import DropZone from './components/DropZone.vue'
 import MatrixDialog from './components/MatrixDialog.vue'
 import MasterStrip from './components/MasterStrip.vue'
-import TagStrip from './components/TagStrip.vue'
 import Rack from './components/Rack.vue'
 import TabBar from './components/TabBar.vue'
 import CandidateBar from './components/CandidateBar.vue'
@@ -127,6 +126,27 @@ function onKeyUp(e: KeyboardEvent) {
   padHeld.delete(code)
   if (id && board.pressed.has(id)) board.release(id)
 }
+/** the lists on (the header's PATCHES / SAMPLES), and both at once (stacked) */
+const lists = computed(() => board.master.showPatches || board.master.showSamples)
+const both = computed(() => board.master.showPatches && board.master.showSamples)
+/** the legend under the lists: the samples' (or the patches' when they're alone), while it shows cards */
+const legend = computed(() => {
+  const m = board.master
+  if (m.showSamples && board.listViewOf('sounds') === 'pads') return 'sounds'
+  if (m.showPatches && !m.showSamples && board.listViewOf('patches') === 'pads') return 'patches'
+  return ''
+})
+/** the patches | samples split: dragging sets the patches' share of the list pane's height */
+const listPane = ref<HTMLDivElement>()
+function onSplitDown(e: PointerEvent) {
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+}
+function onSplitMove(e: PointerEvent) {
+  const el = listPane.value
+  if (!el || !(e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) return
+  const r = el.getBoundingClientRect()
+  board.master.paneSplit = Math.round(Math.min(0.85, Math.max(0.15, (e.clientY - r.top) / r.height)) * 1000) / 1000
+}
 /** the rack | list divider: dragging sets the list's share of the window */
 function onDividerDown(e: PointerEvent) {
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
@@ -189,13 +209,13 @@ onBeforeUnmount(() => {
         <MasterStrip @add="fileInput?.click()" @add-folder="folderInput?.click()" @library="openLibrary('sfz')" @waves="openLibrary('akwf')" @ai="openAi" />
       </div>
       <CandidateBar />
-      <!-- rack (the selected patch's three VCO slots) on the left, the sounds / patches list on the right third -->
-      <div class="body" :class="{ split: board.master.rack && board.master.list }">
-        <Rack v-if="board.master.rack || !board.master.list" class="rack-pane" />
+      <!-- the header's VIEW toggles: the rack on the left, the lists on the right (the patches above the samples) -->
+      <div class="body" :class="{ split: board.master.rack && lists }">
+        <Rack v-if="board.master.rack || !lists" class="rack-pane" />
         <div
-          v-if="board.master.rack && board.master.list"
+          v-if="board.master.rack && lists"
           class="divider"
-          title="Drag to resize the list · double-click = 33%"
+          title="Drag to resize the lists · double-click = 33%"
           @pointerdown="onDividerDown"
           @pointermove="onDividerMove"
           @dblclick="board.master.listWidth = 0.33"
@@ -203,36 +223,53 @@ onBeforeUnmount(() => {
           <i />
         </div>
         <div
-          v-if="board.master.list"
+          v-if="lists"
+          ref="listPane"
           class="list-pane"
           :style="board.master.rack ? { width: `${board.master.listWidth * 100}vw` } : undefined"
         >
-          <TabBar />
-          <TagStrip v-if="board.sounds.length || board.patches.length" />
-          <main class="deck">
-        <template v-if="board.master.tab === 'patches'">
-          <PatchTable v-if="board.listView === 'grid' && board.patches.length" />
-          <PatchCards v-else />
-        </template>
-        <template v-else>
-          <GridView v-if="board.listView === 'grid' && board.sounds.length" />
-          <SoundGrid v-else @add="fileInput?.click()" />
-        </template>
-      </main>
-      <footer v-if="board.listView === 'pads'" class="legend">
-        <template v-if="board.master.play">
-          PLAY MODE · Z–/ AND Q–P ROWS = PIANO (Q = C4, ORIGINAL PITCH) · - / = = OCTAVE · SPACE = PANIC · ESC = CLOSE
-          PANELS
-        </template>
-        <template v-else-if="board.master.tab === 'patches'">
-          CLICK A PATCH = LOAD + PLAY · ☰ = EDIT IN THE RACK · DESCRIBE ONE + ENTER = MAKE IT · ≈ = ORDER BY LIKENESS ·
-          ◀ ▶ IN THE HEADER = STEP PATCHES · ♥ = FAVOURITE · SPACE = PANIC
-        </template>
-        <template v-else>
-          CLICK PAD = PLAY · 1 2 3 = PUT IN THAT VCO SLOT · DRAG ⋮⋮ INTO A SLOT · ☰ = CONTROLS · ♥ = FAVOURITE · 1–0 Q–P A–L Z–M = PADS · SPACE = PANIC ·
-          ESC = CLOSE PANELS · KNOBS: DRAG / SCROLL / DOUBLE-CLICK RESET / SHIFT = FINE
-        </template>
-      </footer>
+          <section
+            v-if="board.master.showPatches"
+            class="catalog"
+            :style="both ? { flex: `0 0 ${board.master.paneSplit * 100}%` } : undefined"
+          >
+            <TabBar kind="patches" />
+            <main class="deck" @pointerdown="board.master.tab = 'patches'">
+              <PatchTable v-if="board.listViewOf('patches') === 'grid' && board.patches.length" />
+              <PatchCards v-else />
+            </main>
+          </section>
+          <div
+            v-if="both"
+            class="hsplit"
+            title="Drag to share the height between the patches and the samples · double-click = half and half"
+            @pointerdown="onSplitDown"
+            @pointermove="onSplitMove"
+            @dblclick="board.master.paneSplit = 0.5"
+          >
+            <i />
+          </div>
+          <section v-if="board.master.showSamples" class="catalog">
+            <TabBar kind="sounds" />
+            <main class="deck" @pointerdown="board.master.tab = 'sounds'">
+              <GridView v-if="board.listViewOf('sounds') === 'grid' && board.sounds.length" />
+              <SoundGrid v-else @add="fileInput?.click()" />
+            </main>
+          </section>
+          <footer v-if="legend" class="legend">
+            <template v-if="board.master.play">
+              PLAY MODE · Z–/ AND Q–P ROWS = PIANO (Q = C4, ORIGINAL PITCH) · - / = = OCTAVE · SPACE = PANIC · ESC = CLOSE
+              PANELS
+            </template>
+            <template v-else-if="legend === 'patches'">
+              CLICK A PATCH = LOAD + PLAY · ☰ = EDIT IN THE RACK · DESCRIBE ONE + ENTER = MAKE IT · ≈ = ORDER BY LIKENESS ·
+              ◀ ▶ IN THE HEADER = STEP PATCHES · ♥ = FAVOURITE · SPACE = PANIC
+            </template>
+            <template v-else>
+              CLICK PAD = PLAY · 1 2 3 = PUT IN THAT VCO SLOT · DRAG ⋮⋮ INTO A SLOT · ☰ = CONTROLS · ♥ = FAVOURITE · 1–0 Q–P A–L Z–M = PADS · SPACE = PANIC ·
+              ESC = CLOSE PANELS · KNOBS: DRAG / SCROLL / DOUBLE-CLICK RESET / SHIFT = FINE
+            </template>
+          </footer>
         </div>
       </div>
     </div>
@@ -314,10 +351,37 @@ onBeforeUnmount(() => {
 .divider:hover i {
   background: var(--c-primary);
 }
+.catalog {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .list-pane .deck {
   flex: 1;
   min-height: 0;
   width: 100%;
+  overflow: hidden;
+}
+/* the patches | samples split */
+.hsplit {
+  flex: none;
+  display: grid;
+  place-items: center;
+  height: 8px;
+  cursor: ns-resize;
+  touch-action: none;
+  background: #000;
+}
+.hsplit i {
+  width: 60px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--text-faint);
+}
+.hsplit:hover i {
+  background: var(--c-primary);
 }
 .legend {
   flex: none;

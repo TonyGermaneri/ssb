@@ -54,6 +54,7 @@ const DEST_SHORT: Record<ModDest, string> = {
   delayMix: 'DELAY',
   reverbMix: 'REVERB',
   wtPos: 'WT POS',
+  wtBlend: 'WT BLEND',
 }
 
 const open = computed({

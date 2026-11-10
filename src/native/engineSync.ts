@@ -121,14 +121,7 @@ function metaJson(board: Board, ids: string[]) {
 }
 
 /** Planar float32 of a decoded buffer, base64 (the engine plays exactly what the page decoded). */
-function encode(buffer: AudioBuffer): string {
-  const channels = Math.min(2, buffer.numberOfChannels)
-  const bytes = new Uint8Array(buffer.length * channels * 4)
-  for (let ch = 0; ch < channels; ch++) bytes.set(new Uint8Array(buffer.getChannelData(ch).slice().buffer), ch * buffer.length * 4)
-  let binary = ''
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-  return btoa(binary)
-}
+const encode = (buffer: AudioBuffer) => engine.planarBase64(buffer)
 
 export function startEngineSync(board: Board) {
   const sent = new Map<string, string>()

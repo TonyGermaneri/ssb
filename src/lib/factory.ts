@@ -195,5 +195,32 @@ export const LEGACY_FACTORY_NAMES: Record<string, string> = {
   'RING BELL': 'ring-bell',
 }
 
-/** every built-in patch, with what the MPE surfaces do to it (lib/factoryMpe.ts) */
-export const FACTORY_PATCHES: FactoryPatch[] = [...CLASSICS, ...FACTORY_PATCHES_MORE].map((fp) => ({ ...fp, mpe: fp.mpe ?? FACTORY_MPE[fp.id] ?? [] }))
+/**
+ * PRESS is a wavetable's WT BLEND: on every slot that plays its table as one (each built-in layer is an AKWF table), a
+ * finger pressing into the key fades its wave into the next, all the way at full pressure, and that is what PRESS does
+ * there (lib/factoryMpe.ts's other press gestures give way). A slot played as grains or STRETCH plays its wave as a
+ * single cycle fixed when the note starts, which a blend can't move: it keeps its press.
+ */
+export function pressBlends(fp: Pick<FactoryPatch, 'slots'>, mpe: MpeBinding[]): MpeBinding[] {
+  const filled = fp.slots.map((x, i) => (x ? i : -1)).filter((i) => i >= 0)
+  const tables = filled.filter((i) => !fp.slots[i]!.settings?.grain && fp.slots[i]!.settings?.timeMode !== 'stretch')
+  const out: MpeBinding[] = []
+  for (const b of mpe) {
+    if (b.surface !== 'press') {
+      out.push(b)
+      continue
+    }
+    const keep = (b.slots ?? filled).filter((i) => !tables.includes(i))
+    if (keep.length) out.push({ ...b, slots: keep })
+  }
+  if (tables.length) out.push(tables.length === filled.length ? { surface: 'press', dest: 'wtBlend', amount: 1 } : { surface: 'press', dest: 'wtBlend', amount: 1, slots: tables })
+  return out
+}
+
+/** every built-in patch, with what the MPE surfaces do to it (lib/factoryMpe.ts, PRESS as WT BLEND: pressBlends) */
+export const FACTORY_PATCHES: FactoryPatch[] = [...CLASSICS, ...FACTORY_PATCHES_MORE].map((fp) => ({
+  ...fp,
+  mpe: pressBlends(fp, fp.mpe ?? FACTORY_MPE[fp.id] ?? []),
+}))
+/** a built-in's MPE bindings as it ships, by its factory id */
+export const factoryMpe = (id: string): MpeBinding[] | undefined => FACTORY_PATCHES.find((p) => p.id === id)?.mpe

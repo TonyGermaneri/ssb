@@ -42,11 +42,16 @@ function onDrop(e: DragEvent, i: number) {
 }
 
 const sounding = computed(() => new Set(activeVoices.value.map((v) => v.soundId)))
+/** a click shows the rack, at this VCO's tab */
+function showSlot(i: number) {
+  board.master.rack = true
+  board.master.rackTab = i
+}
 const hue = (s: Sound) => padHue(s.settings.tag, s.settings.name, board.theme.padHues)
 
 function tip(i: number, x: PatchSlot | null, name: string) {
   const what = !board.selectedPatch ? 'no patch selected' : x ? `${name}${i > 0 && !x.audible ? ' (mod only)' : ''}` : 'empty'
-  return `VCO ${i + 1}: ${what}${board.master.rack ? '' : ' — click to show the rack'}`
+  return `VCO ${i + 1}: ${what} — click to show it in the rack`
 }
 </script>
 
@@ -58,7 +63,7 @@ function tip(i: number, x: PatchSlot | null, name: string) {
       class="vco"
       :class="{ empty: !sound, live: sound && sounding.has(sound.id), target: dropTarget === i }"
       :title="tip(i, x, name)"
-      @click="board.master.rack = true"
+      @click="showSlot(i)"
       @dragover="(e) => onDragOver(e, i)"
       @dragleave="dropTarget = -1"
       @drop="(e) => onDrop(e, i)"

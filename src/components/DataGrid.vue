@@ -51,6 +51,8 @@ const props = defineProps<{
   backdrop?: { peaks?: Float32Array; hue?: number } | null
   /** changes when the rows come in a new order of their own (≈ similar, a description): the grid shows that order */
   order?: unknown
+  /** the slot (a panel) above the grid, whatever the width */
+  slotAbove?: boolean
 }>()
 const emit = defineEmits<{
   edit: [id: string, column: string, value: string]
@@ -561,7 +563,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="root" class="grid-mode" :class="{ narrow }">
+  <div ref="root" class="grid-mode" :class="{ narrow, above: slotAbove }">
     <div class="grid-shell">
       <div ref="host" class="grid-host"><canvas ref="back" class="backdrop" aria-hidden="true" /></div>
       <p class="hint" :title="hint">{{ hint }}</p>
@@ -588,13 +590,19 @@ onBeforeUnmount(() => {
   gap: 12px;
   padding: 12px;
   height: 100%;
-  min-height: 300px;
+  min-height: 0;
+  overflow: hidden;
 }
-.grid-mode.narrow {
+.grid-mode.narrow,
+.grid-mode.above {
   flex-direction: column;
 }
-/* under a narrow grid the panel needs the room: the hint keeps to one line (all of it on hover) */
-.narrow .hint {
+/* the panel over the grid: first in the column */
+.grid-mode.above > :deep(:not(.grid-shell):not(.drag-ghost)) {
+  order: -1;
+}
+/* the hint keeps to one line (all of it on hover): the grid needs the room, stacked lists most of all */
+.hint {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -169,6 +169,30 @@ SsbEditor::SsbEditor (SsbProcessor& p)
               plugin.library.addSample (args[0].toString().toStdString(), sample);
               complete (juce::var (true));
           })
+          .withNativeFunction ("ssbPreview", [this] (const juce::Array<juce::var>& args, auto complete)
+          {
+              // the library's audition (engine.ts preview): (sampleRate, channels, base64 of planar float32, rate,
+              // seconds), played by the engine so it leaves through the plugin's output, not the computer's
+              if (args.size() < 5)
+                  return complete (juce::var (false));
+              juce::MemoryOutputStream decoded;
+              if (! juce::Base64::convertFromBase64 (decoded, args[2].toString()))
+                  return complete (juce::var (false));
+              const auto channels = juce::jlimit (1, 2, (int) args[1]);
+              const auto frames = decoded.getDataSize() / sizeof (float) / (size_t) channels;
+              auto sample = std::make_shared<ssb::Sample>();
+              sample->rate = (double) args[0];
+              const auto* data = static_cast<const float*> (decoded.getData());
+              for (int ch = 0; ch < channels; ++ch)
+                  sample->channels.emplace_back (data + (size_t) ch * frames, data + (size_t) (ch + 1) * frames);
+              plugin.engine.preview (std::move (sample), (double) args[3], juce::jlimit (0.05, 10.0, (double) args[4]));
+              complete (juce::var (true));
+          })
+          .withNativeFunction ("ssbPreviewStop", [this] (const juce::Array<juce::var>&, auto complete)
+          {
+              plugin.engine.stopPreview();
+              complete (juce::var (true));
+          })
           .withNativeFunction ("ssbGetAudio", [] (const juce::Array<juce::var>& args, auto complete)
           {
               // A sample from the disk cache, for a page whose own storage lost it:

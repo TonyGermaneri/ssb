@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, shallowReactive } from 'vue'
+import { activeVoices } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { rememberElementScroll } from '../lib/scrollMemory'
 import { fmtCents, fmtPct, fmtSemis, midiNoteName, padHue } from '../lib/format'
@@ -9,9 +10,9 @@ import PlayView from './PlayView.vue'
 import Knob from './Knob.vue'
 
 /**
- * The selected patch's three VCO slots, side by side across the width: the one place a patch is edited. Empty slots
- * are drop zones for sounds (drag a pad by its grip, or press 1 / 2 / 3 on it). Fills its pane (left of the list, or
- * the whole window).
+ * The selected patch's three VCO slots as tabs, one showing at a time across the width: the one place a patch is
+ * edited. A tab lights while its VCO sounds; a sound dragged over a tab opens it, and dropped there goes into that slot
+ * (as into an empty slot's panel, or pressing 1 / 2 / 3 on a sound). Fills its pane (left of the lists, or the window).
  */
 const board = useBoard()
 const REORDER_TYPE = 'application/x-ssb-sound'
@@ -41,6 +42,15 @@ function togglePlay(i: number) {
   board.master.vcoPlay = next
 }
 
+// the VCO tab showing (kept with a plugin instance's view)
+const tab = computed({
+  get: () => Math.min(PATCH_SLOTS - 1, Math.max(0, board.master.rackTab ?? 0)),
+  set: (i: number) => (board.master.rackTab = i),
+})
+const sounding = computed(() => new Set(activeVoices.value.map((v) => v.soundId)))
+const tabTitle = (x: PatchSlot | null, i: number) =>
+  `VCO ${i + 1}${i === 0 ? ' (the main voice)' : ''}: ${x ? sourceName(x) + (i > 0 && !x.audible ? ' — mod only' : '') : 'empty — drop a sound here'}`
+
 // each slot's panel scrolls on its own; where, is kept with a plugin instance's view
 const bodies = shallowReactive<(HTMLElement | null)[]>([null, null, null])
 for (const i of [0, 1, 2]) rememberElementScroll(() => `rack:${i}`, () => bodies[i])
@@ -52,6 +62,7 @@ function onDragOver(e: DragEvent, i: number) {
   e.preventDefault()
   e.dataTransfer.dropEffect = 'copy'
   dropTarget.value = i
+  tab.value = i // (a tab dragged over opens)
 }
 function onDrop(e: DragEvent, i: number) {
   dropTarget.value = -1
@@ -134,10 +145,31 @@ function onDrop(e: DragEvent, i: number) {
       <span v-else class="lbl">NO PATCH — drop a sound into a slot (or press 1 / 2 / 3 on a sound) to start one</span>
     </div>
 
-    <div class="slots">
-      <div
+    <div class="vtabs" role="tablist" aria-label="VCOs">
+      <button
         v-for="(x, i) in slots"
         :key="i"
+        class="vtab"
+        role="tab"
+        :aria-selected="tab === i"
+        :class="{ on: tab === i, empty: !x, live: !!x && sounding.has(x.layer.id), target: dropTarget === i }"
+        :title="tabTitle(x, i)"
+        @click="tab = i"
+        @dragover="(e) => onDragOver(e, i)"
+        @dragleave="dropTarget = -1"
+        @drop="(e) => onDrop(e, i)"
+      >
+        <i class="led" />
+        <b>{{ i + 1 }}</b>
+        <span class="nm">{{ x ? sourceName(x) : 'EMPTY' }}</span>
+        <em v-if="x && i > 0 && !x.audible">MOD</em>
+        <em v-else-if="x && playing(i)" class="play">PLAY</em>
+      </button>
+    </div>
+    <div class="slots">
+      <template v-for="(x, i) in slots" :key="i">
+      <div
+        v-if="i === tab"
         class="slot"
         :class="{ empty: !x, target: dropTarget === i }"
         @dragover="(e) => onDragOver(e, i)"
@@ -206,6 +238,7 @@ function onDrop(e: DragEvent, i: number) {
           </div>
         </div>
       </div>
+      </template>
     </div>
   </div>
 </template>
@@ -307,20 +340,93 @@ function onDrop(e: DragEvent, i: number) {
   color: #ff3d6e;
   filter: drop-shadow(0 0 4px #ff3d6e);
 }
-/* three slots share the width: 3 wide at 1920 */
+/* the VCO tabs, folder tabs on the slot showing */
+.vtabs {
+  flex: none;
+  display: flex;
+  gap: 3px;
+  padding: 0 4px;
+}
+.vtab {
+  flex: 0 1 220px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 6px 6px 0 0;
+  font-family: 'VT323', monospace;
+  font-size: 16px;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  background: #141317;
+  border: 1px solid #000;
+  border-bottom: 0;
+}
+.vtab:hover {
+  color: var(--text);
+}
+.vtab b {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 10px;
+  font-weight: 900;
+  color: var(--text-mute);
+}
+.vtab .nm {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vtab em {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.vtab em.play {
+  color: var(--c-accent);
+}
+.vtab.empty .nm {
+  color: var(--text-faint);
+}
+.vtab.on {
+  color: var(--c-secondary);
+  background: rgba(0, 0, 0, 0.5);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.vtab.on b {
+  color: var(--c-primary);
+}
+.vtab.target {
+  color: var(--c-secondary);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--c-secondary) 45%, transparent);
+}
+.vtab .led {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #1a2a1a;
+  box-shadow: inset 0 0 2px #000;
+}
+.vtab.live .led {
+  background: var(--c-success);
+  box-shadow: 0 0 6px var(--c-success);
+}
+/* the slot showing takes the width */
 .slots {
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  display: flex;
 }
 .slot {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-radius: 6px;
+  border-radius: 0 6px 6px 6px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(0, 0, 0, 0.18);
 }
@@ -345,7 +451,7 @@ function onDrop(e: DragEvent, i: number) {
   /* a dark strip (like the LCDs) so names and chips read on light themes too */
   color: var(--ink-dim);
   text-transform: uppercase;
-  border-radius: 5px 5px 0 0;
+  border-radius: 0 5px 0 0;
   background: rgba(0, 0, 0, 0.5);
   border-bottom: 1px solid rgba(0, 0, 0, 0.5);
   container-type: inline-size;

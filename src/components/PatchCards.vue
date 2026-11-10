@@ -88,7 +88,8 @@ const hue = (p: Patch) => padHue(p.tag, p.name, board.theme.padHues)
 .empty {
   display: grid;
   place-items: center;
-  min-height: 50vh;
+  height: 100%;
+  min-height: 120px;
   padding: 16px;
 }
 .cart {

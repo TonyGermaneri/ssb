@@ -1,121 +1,159 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useBoard } from '../stores/board'
 import { padHue } from '../lib/format'
 
-/** Faceted tag filter: two rows of chips with counts; picking a tag narrows the rest (AND). */
+/**
+ * A catalog's tag filter as a drop-down: one chip in the list's bar saying what's showing (ALL, or the tags picked and
+ * how many that leaves), opening a menu of every tag with its count; picking a tag narrows the rest (AND), right-click
+ * hides what carries it. One per catalog.
+ */
+const props = defineProps<{ kind: 'sounds' | 'patches' }>()
 const board = useBoard()
-const favOnly = computed(() => (board.master.tab === 'patches' ? board.master.favPatches : board.master.favSounds))
+const open = ref(false)
+const tags = computed(() => board.tagsOf(props.kind))
+const favOnly = computed(() => (props.kind === 'patches' ? board.master.favPatches : board.master.favSounds))
 function toggleFav() {
-  if (board.master.tab === 'patches') board.master.favPatches = !board.master.favPatches
+  if (props.kind === 'patches') board.master.favPatches = !board.master.favPatches
   else board.master.favSounds = !board.master.favSounds
 }
-
-function onWheel(e: WheelEvent) {
-  // vertical wheel scrolls the chip rows sideways
-  const el = e.currentTarget as HTMLElement
-  if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
-    el.scrollLeft += e.deltaY
-    e.preventDefault()
-  }
-}
+const filtered = computed(() => tags.value.filter.length > 0 || tags.value.hidden.length > 0 || favOnly.value)
+/** what the chip says: everything, or what the filter is and what it leaves */
+const label = computed(() => {
+  const t = tags.value
+  if (!filtered.value) return `ALL ${t.total}`
+  const parts = [...(favOnly.value ? ['♥'] : []), ...t.filter, ...t.hidden.map((h) => `−${h}`)]
+  return `${parts.length > 2 ? `${parts.slice(0, 2).join(', ')} +${parts.length - 2}` : parts.join(', ')} · ${t.shown}`
+})
 </script>
 
 <template>
-  <div class="tagstrip">
-    <div class="lead">
-      <h5>TAGS</h5>
+  <v-menu v-model="open" location="bottom start" :close-on-content-click="false" max-height="70vh">
+    <template #activator="{ props: act }">
       <button
-        class="chip all"
-        :class="{ on: !board.currentFilter.length && !board.currentHidden.length }"
-        title="Show everything (clears hidden tags too)"
-        @click="board.clearCurrentTags()"
+        class="tag-pick"
+        :class="{ on: filtered, open }"
+        v-bind="act"
+        :title="filtered ? `Filtered by tags: ${tags.shown} of ${tags.total} showing — click to change` : 'Filter by tags'"
       >
-        ALL <b>{{ board.currentTotal }}</b>
+        <v-icon size="14" icon="mdi-tag-multiple" />
+        <span class="what">{{ label }}</span>
+        <i class="caret" />
       </button>
-      <button
-        class="chip fav"
-        :class="{ on: favOnly }"
-        title="Show favourites only"
-        @click="toggleFav"
-      >
-        ♥ FAV
-      </button>
-      <span v-if="board.currentFilter.length || board.currentHidden.length || favOnly" class="shown">{{ board.currentShown }} SHOWN</span>
+    </template>
+    <div class="tag-menu" @keydown.esc="open = false">
+      <div class="lead">
+        <button
+          class="chip all"
+          :class="{ on: !tags.filter.length && !tags.hidden.length }"
+          title="Show everything (clears hidden tags too)"
+          @click="board.clearTagsOf(kind)"
+        >
+          ALL <b>{{ tags.total }}</b>
+        </button>
+        <button class="chip fav" :class="{ on: favOnly }" title="Show favourites only" @click="toggleFav">♥ FAV</button>
+        <span v-if="filtered" class="shown">{{ tags.shown }} SHOWN</span>
+        <span class="hint">CLICK = ONLY THESE · RIGHT-CLICK = HIDE THESE</span>
+      </div>
+      <div class="chips">
+        <button
+          v-for="f in tags.facets"
+          :key="f.name"
+          class="chip"
+          :class="{ on: f.selected, hidden: f.excluded }"
+          :style="{ '--hue': padHue(f.name, f.name, board.theme.padHues) }"
+          :title="
+            f.excluded
+              ? `Hiding ${f.count} tagged ${f.name} — click (or right-click) to show them again`
+              : f.selected
+                ? `Remove ${f.name} from the filter · right-click to hide these instead`
+                : `Show only what's tagged ${f.name} · right-click to hide them`
+          "
+          @click="board.toggleTagOf(kind, f.name)"
+          @contextmenu.prevent="board.hideTagOf(kind, f.name)"
+        >
+          <i class="dot" />
+          <span class="nm">{{ f.name }}</span>
+          <b>{{ f.count }}</b>
+          <span v-if="f.selected" class="x">✕</span>
+          <v-icon v-else-if="f.excluded" size="12" icon="mdi-eye-off" />
+        </button>
+        <span v-if="!tags.facets.length" class="empty">NO TAGS YET (COMMA-SEPARATED, IN EACH ITEM'S PANEL)</span>
+      </div>
     </div>
-    <div class="chips" @wheel="onWheel">
-      <button
-        v-for="f in board.currentFacets"
-        :key="f.name"
-        class="chip"
-        :class="{ on: f.selected, hidden: f.excluded }"
-        :style="{ '--hue': padHue(f.name, f.name, board.theme.padHues) }"
-        :title="
-          f.excluded
-            ? `Hiding ${f.count} tagged ${f.name} — click (or right-click) to show them again`
-            : f.selected
-              ? `Remove ${f.name} from the filter · right-click to hide these instead`
-              : `Show pads tagged ${f.name} · right-click to hide them`
-        "
-        @click="board.toggleCurrentTag(f.name)"
-        @contextmenu.prevent="board.hideCurrentTag(f.name)"
-      >
-        <i class="dot" />
-        <span class="nm">{{ f.name }}</span>
-        <b>{{ f.count }}</b>
-        <span v-if="f.selected" class="x">✕</span>
-        <v-icon v-else-if="f.excluded" size="12" icon="mdi-eye-off" />
-      </button>
-      <span v-if="!board.currentFacets.length" class="empty">NO TAGS YET (COMMA-SEPARATED, IN EACH ITEM'S PANEL)</span>
-    </div>
-  </div>
+  </v-menu>
 </template>
 
 <style scoped>
-.tagstrip {
-  display: flex;
-  align-items: stretch;
-  gap: 8px;
-  padding: 4px 22px;
-  background: linear-gradient(180deg, var(--panel-lo), color-mix(in srgb, var(--panel-lo) 70%, #000));
-  border-bottom: 2px solid #000;
-  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.45);
+/* the chip in the list's bar */
+.tag-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  max-width: 260px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--ink-dim);
+  background: #0c0c0e;
+  border: 1px solid #000;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6);
+  white-space: nowrap;
+}
+.tag-pick:hover,
+.tag-pick.open {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--c-primary) 40%, #000);
+}
+.tag-pick.on {
+  color: var(--c-primary);
+  border-color: color-mix(in srgb, var(--c-primary) 55%, #000);
+}
+.tag-pick .what {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.caret {
+  width: 0;
+  height: 0;
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-top: 4px solid currentColor;
+}
+/* the menu: every tag, wrapping */
+.tag-menu {
+  width: min(560px, 92vw);
+  padding: 8px;
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--panel-hi), var(--panel-lo));
+  border: 1px solid #000;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
 }
 .lead {
-  flex: none;
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 3px;
-  min-width: 70px;
-}
-h5 {
-  margin: 0;
-  font-family: 'Orbitron', sans-serif;
-  font-size: 7px;
-  font-weight: 900;
-  letter-spacing: 0.2em;
-  color: var(--text-head);
-  opacity: 0.75;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
 }
 .shown {
   font-family: 'VT323', monospace;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--c-primary);
 }
-/* two rows of chips, flowing sideways */
+.hint {
+  margin-left: auto;
+  font-family: 'VT323', monospace;
+  font-size: 12px;
+  color: var(--text-faint);
+}
 .chips {
-  flex: 1;
-  min-width: 0;
-  display: grid;
-  grid-auto-flow: column;
-  grid-template-rows: repeat(2, 20px);
-  grid-auto-columns: max-content;
-  gap: 3px 4px;
-  align-content: center;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 .chip {
   display: inline-flex;
@@ -149,10 +187,6 @@ h5 {
 .chip.on b {
   color: #3a2a00;
 }
-.chip.all,
-.chip.fav {
-  align-self: flex-start;
-}
 .chip.fav.on {
   color: #fff;
   background: #d8245a;
@@ -181,8 +215,6 @@ h5 {
   font-size: 12px;
 }
 .empty {
-  grid-row: 1 / span 2;
-  align-self: center;
   font-family: 'VT323', monospace;
   font-size: 14px;
   color: var(--text-faint);

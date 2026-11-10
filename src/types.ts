@@ -59,7 +59,7 @@ export type ModSource =
   | 'vco1' | 'vco2' | 'vco3'
 export type ModDest =
   | 'pitch' | 'cutoff' | 'resonance' | 'volume' | 'pan' | 'grainPos' | 'grainSize' | 'grainSkew' | 'grainVar'
-  | 'grainDetune' | 'grainScan' | 'lfo1Rate' | 'lfo1Amt' | 'lfo2Rate' | 'lfo2Amt' | 'delayMix' | 'reverbMix' | 'wtPos'
+  | 'grainDetune' | 'grainScan' | 'lfo1Rate' | 'lfo1Amt' | 'lfo2Rate' | 'lfo2Amt' | 'delayMix' | 'reverbMix' | 'wtPos' | 'wtBlend'
 export type LfoShape = 'sine' | 'triangle' | 'square' | 'sawtooth' | 'rampDown' | 'random' | 'smooth' | 'wander'
 /** sources that swing both ways (-1..1); the rest are 0..1. A route's UNIPOLAR only changes these. */
 export const BIPOLAR_SOURCES: ModSource[] = ['lfo1', 'lfo2', 'bend', 'random', 'vco1', 'vco2', 'vco3']
@@ -144,6 +144,8 @@ export const MOD_DESTS: Record<ModDest, { label: string; scale: number; unit: st
   reverbMix: { label: 'REVERB MIX', scale: 1, unit: '', audio: true },
   // a wavetable's position (WT + BLEND), as a share of the table: ±1 sweeps all of it, wrapping round (audio/wavetable.ts)
   wtPos: { label: 'WT POS', scale: 1, unit: '', audio: true },
+  // added to WT BLEND (0..1, held there): how far into the next wave
+  wtBlend: { label: 'WT BLEND', scale: 1, unit: '', audio: true },
 }
 export const MOD_DEST_IDS = Object.keys(MOD_DESTS) as ModDest[]
 export const LFO_SHAPES: LfoShape[] = ['sine', 'triangle', 'square', 'sawtooth', 'rampDown', 'random', 'smooth', 'wander']
@@ -621,6 +623,8 @@ export interface MasterState {
   isoView: IsoView
   /** which rack slots (VCO 1-3) show the Play view instead of their panel */
   vcoPlay: boolean[]
+  /** the rack's VCO tab showing (0..2) */
+  rackTab: number
   /** seconds to slide between notes */
   glide: number
   /** computer-keyboard piano octave shift */
@@ -637,14 +641,18 @@ export interface MasterState {
   bpm: number
   clockSource: 'internal' | 'midi'
   theme: string
-  /** the Sounds tab as cards (pads) or a spreadsheet (grid, canvas-datagrid) */
+  /** the samples (the sounds catalog) as cards (pads) or a spreadsheet (grid, canvas-datagrid) */
   view: ListView
-  /** the Patches tab's likewise */
+  /** the patches' likewise */
   patchView: ListView
   /** the grid's control panel for the selected sound is showing (☰ in the grid) */
   gridPanel: boolean
-  /** show the catalog (cards / grid): beside the rack (right third) when the rack is on, else full width */
-  list: boolean
+  /** the header's VIEW toggles: the patches and the samples (the sounds), beside the rack when it's on, else full
+   *  width; both on, they stack, patches above (at least one of RACK / PATCHES / SAMPLES is always on) */
+  showPatches: boolean
+  showSamples: boolean
+  /** the patches' share of the list pane's height when both are showing (drag the split between them) */
+  paneSplit: number
   /** list pane width beside the rack, as a fraction of the window (drag the divider) */
   listWidth: number
   /** control-panel sections folded to their title (shared by every panel) */
@@ -661,7 +669,7 @@ export interface MasterState {
   factoryVersion: number
   /** show the selected patch (+ its VCOs) panels under the header */
   rack: boolean
-  /** which catalog is showing */
+  /** the catalog last used (what an ordering or a shortcut means when both are showing) */
   tab: 'sounds' | 'patches'
   /** the patch the keyboard plays and the header ◀ ▶ steps through */
   patchId: string | null
@@ -682,6 +690,7 @@ export const defaultMaster = (): MasterState => ({
   scope: defaultScopeKnobs(),
   isoView: { ...ISO_VIEW },
   vcoPlay: [false, false, false],
+  rackTab: 0,
   glide: 0,
   octave: 0,
   selectedId: null,
@@ -692,10 +701,12 @@ export const defaultMaster = (): MasterState => ({
   bpm: 120,
   clockSource: 'internal',
   theme: 'console85',
-  view: 'pads',
-  patchView: 'pads',
+  view: 'grid',
+  patchView: 'grid',
   gridPanel: true,
-  list: true,
+  showPatches: false,
+  showSamples: true,
+  paneSplit: 0.5,
   listWidth: 0.33,
   folded: ['eq', 'ring', 'delay', 'reverb'],
   headerFolded: ['perform', 'chorus', 'delay', 'reverb'],
@@ -716,7 +727,18 @@ export function migrateMaster(raw?: Partial<MasterState>): MasterState {
   if (raw && !raw.scope) m.waveView = 'scope'
   m.scope = { ...defaultScopeKnobs(), ...raw?.scope }
   m.isoView = { ...ISO_VIEW, ...raw?.isoView }
+  // before the VIEW toggles: one catalog at a time, as a tab, shown or not (LIST)
+  const old = raw as { list?: boolean; tab?: string } | undefined
+  if (old && raw?.showPatches === undefined && raw?.showSamples === undefined) {
+    const list = old.list !== false
+    m.showPatches = list && old.tab === 'patches'
+    m.showSamples = list && old.tab !== 'patches'
+  }
+  if (!m.rack && !m.showPatches && !m.showSamples) m.showSamples = true
+  m.paneSplit = Math.min(0.85, Math.max(0.15, Number(m.paneSplit) || 0.5))
+  delete (m as { list?: boolean }).list
   m.vcoPlay = [0, 1, 2].map((i) => !!raw?.vcoPlay?.[i])
+  m.rackTab = Math.min(2, Math.max(0, Math.round(Number(raw?.rackTab) || 0)))
   return m
 }
 

@@ -231,14 +231,29 @@ export function cycleBuffer(channels: Float32Array[], rate: number): AudioBuffer
   return buf
 }
 
-let previewCtx: AudioContext | null = null
 let previewing: { src: AudioBufferSourceNode; gain: GainNode } | null = null
+/** an audition's level: a full-scale wave about as loud as a built-in patch (Engine.cpp previewInto's too) */
+const PREVIEW_LEVEL = 0.25
+/** Planar float32 of a buffer's channels (two at most), base64: how audio crosses to the native engine. */
+export function planarBase64(buffer: AudioBuffer): string {
+  const channels = Math.min(2, buffer.numberOfChannels)
+  const bytes = new Uint8Array(buffer.length * channels * 4)
+  for (let ch = 0; ch < channels; ch++) bytes.set(new Uint8Array(buffer.getChannelData(ch).slice().buffer), ch * buffer.length * 4)
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  return btoa(binary)
+}
 /**
- * Audition a buffer that isn't a pad yet (the library's waves): looped at `rate`, faded in and out, dry. In the
- * plugin this page's engine is silent, so it plays from a little context of its own.
+ * Audition a buffer that isn't a pad yet (the library's waves): looped at `rate`, faded in and out, dry, after the
+ * master level. In the plugin (and the app) the native engine plays it, so it comes out where everything else does --
+ * the DAW's track -- never from a context of the page's own (that went straight to the computer's speakers).
  */
 export function preview(buffer: AudioBuffer, rate: number, seconds = 0.9) {
-  const c = external ? (previewCtx ??= new AudioContext({ latencyHint: 'interactive' })) : getCtx()
+  if (external) {
+    void callNative('ssbPreview', buffer.sampleRate, Math.min(2, buffer.numberOfChannels), planarBase64(buffer), rate, seconds).catch(() => {})
+    return
+  }
+  const c = getCtx()
   void c.resume()
   stopPreview()
   const src = c.createBufferSource()
@@ -248,10 +263,10 @@ export function preview(buffer: AudioBuffer, rate: number, seconds = 0.9) {
   const gain = c.createGain()
   const t = c.currentTime
   gain.gain.setValueAtTime(0, t)
-  gain.gain.linearRampToValueAtTime(0.45, t + 0.008)
-  gain.gain.setValueAtTime(0.45, t + seconds)
+  gain.gain.linearRampToValueAtTime(PREVIEW_LEVEL, t + 0.008)
+  gain.gain.setValueAtTime(PREVIEW_LEVEL, t + seconds)
   gain.gain.linearRampToValueAtTime(0, t + seconds + 0.12)
-  src.connect(gain).connect(external ? c.destination : master)
+  src.connect(gain).connect(master)
   src.start(t)
   src.stop(t + seconds + 0.15)
   previewing = { src, gain }
@@ -261,6 +276,10 @@ export function preview(buffer: AudioBuffer, rate: number, seconds = 0.9) {
   }
 }
 export function stopPreview() {
+  if (external) {
+    void callNative('ssbPreviewStop').catch(() => {})
+    return
+  }
   if (!previewing) return
   const { src, gain } = previewing
   const t = src.context.currentTime

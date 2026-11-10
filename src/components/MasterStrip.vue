@@ -43,15 +43,22 @@ const saveTitle = computed(() => {
     ? `SAVE: "${p.name}" is built in and stays as it is; your edits become a patch of your own with its name`
     : `SAVE the edits into "${p.name}"`
 })
-// VIEW: what's under the header: the rack, the list, or both side by side (the list's own bar picks cards or grid)
-type Layout = 'rack' | 'both' | 'list'
-const LAYOUTS: { id: Layout; label: string; title: string }[] = [
-  { id: 'rack', label: 'RACK', title: "The rack only: the selected patch's three VCOs across the window" },
-  { id: 'both', label: 'BOTH', title: 'The rack with the sounds / patches list beside it (drag the divider to resize)' },
-  { id: 'list', label: 'LIST', title: 'The sounds / patches list only' },
+// VIEW: what's under the header, three toggles: the rack, the patches, the samples (the sounds). With the rack, the lists
+// go beside it; the patches and the samples together stack, with a split between them. One of them always stays on.
+type ViewPart = 'rack' | 'showPatches' | 'showSamples'
+const VIEW_PARTS: { id: ViewPart; label: string; title: string }[] = [
+  { id: 'rack', label: 'RACK', title: "The rack: the selected patch's three VCOs (beside the lists when they're on; drag the divider to resize)" },
+  { id: 'showPatches', label: 'PATCHES', title: 'The patches (above the samples when both are on; drag the split between them)' },
+  { id: 'showSamples', label: 'SAMPLES', title: 'The samples: every sound on the board, the wavetables and yours' },
 ]
-const layout = computed<Layout>(() => (board.master.rack ? (board.master.list ? 'both' : 'rack') : 'list'))
-const setLayout = (l: Layout) => Object.assign(board.master, { rack: l !== 'list', list: l !== 'rack' })
+const viewOn = (id: ViewPart) => board.master[id]
+function toggleView(id: ViewPart) {
+  const m = board.master
+  const on = VIEW_PARTS.filter((p) => m[p.id])
+  if (m[id] && on.length === 1) return // the last one showing stays
+  m[id] = !m[id]
+  if (id !== 'rack' && m[id]) m.tab = id === 'showPatches' ? 'patches' : 'sounds'
+}
 
 /** new patch from the sound being edited (or the first sound) */
 function newPatch() {
@@ -228,14 +235,15 @@ function onImport(e: Event) {
     <StripSection id="view" title="VIEW" fixed>
       <div class="stack">
         <button
-          v-for="l in LAYOUTS"
-          :key="l.id"
+          v-for="p in VIEW_PARTS"
+          :key="p.id"
           class="chip"
-          :class="{ on: layout === l.id }"
-          :title="l.title"
-          @click="setLayout(l.id)"
+          :class="{ on: viewOn(p.id) }"
+          :aria-pressed="viewOn(p.id)"
+          :title="p.title"
+          @click="toggleView(p.id)"
         >
-          {{ l.label }}
+          {{ p.label }}
         </button>
       </div>
     </StripSection>

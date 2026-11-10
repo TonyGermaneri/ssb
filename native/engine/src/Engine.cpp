@@ -177,6 +177,7 @@ struct Engine::Voice
     // control-rate values (refreshed every `controlEvery` samples)
     float cPitch { 0 }, cCut { 0 }, cRes { 0 }, cTrem { 1 }, cPan { 0 }, cDelay { 0 }, cReverb { 0 };
     float cWtPos { 0 };   // WT POS routes: a share of the table
+    float cWtBlend { 0 }; // WT BLEND routes: added to BLEND, held to 0..1
     float cCutR { 0 };   // the cutoff routes for Granulator III's filter's right side (an LFO's STEREO)
     // Granulator III's filter: [side][stage] state and coefficients, and the knob's cutoff (log2 Hz) followed
     std::array<std::array<dsp::SvfStage, 2>, 2> svf {};
@@ -260,6 +261,14 @@ struct Engine::Impl
 
     // ---- threads ----
     std::atomic<PerformancePtr*> incoming { nullptr };
+    // the library's audition (Engine::preview): handed over as a holder, as performances are
+    struct Preview { SamplePtr sample; double rate { 1 }; double seconds { 0.9 }; };
+    using PreviewPtr = std::shared_ptr<const Preview>;
+    std::atomic<PreviewPtr*> previewIncoming { nullptr };
+    std::atomic<bool> previewStop { false };
+    Ring<PreviewPtr*, 16> previewHolders;
+    PreviewPtr auditioning;
+    double previewPos { 0 }, previewT { 0 }, previewEnd { 0 }, previewFadeFrom { -1 };
     Ring<Command, 1024> commands;
     Ring<std::shared_ptr<const void>, 8192> trash;
     Ring<PerformancePtr*, 64> trashHolders;
@@ -1649,7 +1658,7 @@ struct Engine::Impl
         const auto& s = v.s();
         v.tuneCents += (v.tuneTarget - v.tuneCents) * (1.0f - std::exp (-(float) (controlEvery / engine.rate) / tuneSmoothing));
         float pitch = s.bendRange * 100.0f * v.bend + noteBendRange * 100.0f * v.noteBend + v.ccPitch + v.tuneCents;
-        float cut = v.ccCut, cutR = v.ccCut, res = 0, trem = v.tremBase, panMod = 0, dly = 0, rev = 0, wtp = 0;
+        float cut = v.ccCut, cutR = v.ccCut, res = 0, trem = v.tremBase, panMod = 0, dly = 0, rev = 0, wtp = 0, wtb = 0;
         std::array<float, 2> gPos {}, gSize {}, gSkew {}, gVar {}, gDetune {}, gScan {}, lRate {}, lAmt {};
         for (int i = 0; i < v.routeCount; ++i)
         {
@@ -1683,10 +1692,12 @@ struct Engine::Impl
                 case ModDest::lfo2Rate:  lRate[1] += x; break;
                 case ModDest::lfo2Amt:   lAmt[1] += x; break;
                 case ModDest::wtPos:     wtp += x; break;
+                case ModDest::wtBlend:   wtb += x; break;
                 default: break;
             }
         }
         v.cWtPos = wtp;
+        v.cWtBlend = wtb;
         // SFZ region LFOs (Voice.startZoneLfos): oscillators straight into their destinations
         if (const Zone* z = v.z())
             for (const auto& l : z->lfos)
@@ -2235,7 +2246,8 @@ struct Engine::Impl
                 double tp = 0;
                 if (count > 1)
                 {
-                    tp = std::fmod ((double) s.wt + (double) s.wtBlend + (double) v.cWtPos * count, (double) count);
+                    const double blend = std::clamp ((double) s.wtBlend + (double) v.cWtBlend, 0.0, 1.0);
+                    tp = std::fmod ((double) s.wt + blend + (double) v.cWtPos * count, (double) count);
                     if (tp < 0) tp += count;
                     if (tp >= count) tp = 0;
                 }
@@ -2462,6 +2474,42 @@ struct Engine::Impl
         }
 
         masterEffects (offset, n);
+        previewInto (offset, n);
+    }
+
+    /** The audition, looped, faded in and out (0.25 at most, as the page's PREVIEW_LEVEL: a full-scale wave about as loud
+        as a built-in patch), after the master level (engine.ts preview). */
+    void previewInto (int offset, int n) noexcept
+    {
+        if (! auditioning || ! auditioning->sample || auditioning->sample->frames() < 2) return;
+        const auto& smp = *auditioning->sample;
+        const float* l = smp.channels[0].data();
+        const float* r = smp.channels.size() > 1 ? smp.channels[1].data() : l;
+        const auto frames = (double) smp.frames();
+        const double step = auditioning->rate * smp.rate / engine.rate;
+        const double dt = 1.0 / engine.rate;
+        const float master = perf ? (perf->muted ? 0.0f : perf->volume) : 1.0f;
+        for (int i = 0; i < n; ++i)
+        {
+            if (previewT >= previewEnd)
+            {
+                discard (std::move (auditioning));
+                return;
+            }
+            float g = (float) std::min (1.0, previewT / 0.008);
+            if (previewFadeFrom >= 0) g *= (float) std::max (0.0, 1.0 - (previewT - previewFadeFrom) / 0.03);
+            else if (previewT > auditioning->seconds) g *= (float) std::max (0.0, 1.0 - (previewT - auditioning->seconds) / 0.12);
+            g *= 0.25f * master;
+            const auto i0 = (size_t) previewPos;
+            const auto i1 = (double) i0 + 1 >= frames ? (size_t) 0 : i0 + 1;
+            const auto f = (float) (previewPos - (double) i0);
+            const auto o = (size_t) (offset + i);
+            mainL[o] += g * (l[i0] + (l[i1] - l[i0]) * f);
+            mainR[o] += g * (r[i0] + (r[i1] - r[i0]) * f);
+            previewPos += step;
+            if (previewPos >= frames) previewPos = std::fmod (previewPos, frames);
+            previewT += dt;
+        }
     }
 
     void masterEffects (int offset, int n) noexcept
@@ -2687,6 +2735,21 @@ void Engine::collectGarbage()
     while (m.trash.pop (p)) p.reset();
     PerformancePtr* h = nullptr;
     while (m.trashHolders.pop (h)) delete h;
+    Impl::PreviewPtr* ph = nullptr;
+    while (m.previewHolders.pop (ph)) delete ph;
+}
+
+void Engine::preview (SamplePtr sample, double rate, double seconds)
+{
+    auto& m = *impl;
+    auto* holder = new Impl::PreviewPtr (std::make_shared<Impl::Preview> (Impl::Preview { std::move (sample), rate, seconds }));
+    if (auto* stale = m.previewIncoming.exchange (holder))
+        delete stale;   // never reached the audio thread
+}
+
+void Engine::stopPreview() noexcept
+{
+    impl->previewStop.store (true, std::memory_order_release);
 }
 
 bool Engine::post (const Command& c) noexcept
@@ -2726,6 +2789,24 @@ void Engine::process (float* left, float* right, int n, const MidiEvent* midi, i
             if (def.sync && def.divisionBeats > 0)
                 m.globalLfo[(size_t) i].syncTo (host.ppq / (double) def.divisionBeats);
         }
+
+    // the audition: a new one starts over; a stop fades it out
+    if (auto* holder = m.previewIncoming.exchange (nullptr))
+    {
+        m.discard (std::move (m.auditioning));
+        m.auditioning = std::move (*holder);
+        m.previewPos = m.previewT = 0;
+        m.previewFadeFrom = -1;
+        m.previewEnd = m.auditioning ? m.auditioning->seconds + 0.15 : 0;
+        if (! m.previewHolders.push (std::move (holder)))
+            delete holder;   // (ring full: rare)
+        m.previewStop.store (false, std::memory_order_relaxed);
+    }
+    if (m.previewStop.exchange (false, std::memory_order_acq_rel) && m.auditioning && m.previewFadeFrom < 0)
+    {
+        m.previewFadeFrom = m.previewT;
+        m.previewEnd = std::min (m.previewEnd, m.previewT + 0.05);
+    }
 
     Command c;
     while (m.commands.pop (c))

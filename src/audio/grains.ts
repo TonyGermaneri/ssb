@@ -83,8 +83,8 @@ export function grainNode(
 
 export interface TableNode {
   node: AudioWorkletNode
-  /** WT + BLEND, as the knobs set them */
-  setPos(pos: number): void
+  /** WT and BLEND, as the knobs set them */
+  setPos(wt: number, blend: number): void
   /** stop at a context time (the release's end), or now */
   stop(at?: number): void
 }
@@ -97,7 +97,7 @@ export function tableNode(
   ctx: BaseAudioContext,
   audioId: string,
   buffer: AudioBuffer,
-  o: { size: number; pos: number; t0: number },
+  o: { size: number; wt: number; blend: number; t0: number },
   onDone: () => void,
 ): TableNode {
   const sent = scopes.get(ctx)?.sent ?? new Map<string, number>()
@@ -120,5 +120,5 @@ export function tableNode(
       send({ type: 'sample', ...p }, p.channels.map((c) => c.buffer))
     }
   }
-  return { node, setPos: (pos) => send({ type: 'pos', pos }), stop: (at) => send({ type: 'stop', at }) }
+  return { node, setPos: (wt, blend) => send({ type: 'pos', wt, blend }), stop: (at) => send({ type: 'stop', at }) }
 }

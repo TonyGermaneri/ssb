@@ -21,10 +21,14 @@
 /** how many whole cycles a sample of `frames` holds (0: not a wavetable) */
 export const tableCount = (frames: number, size: number) => (size >= 2 ? Math.floor(frames / size) : 0)
 
-/** The position, in cycles from the first: WT + BLEND + modulation (a share of the table), wrapped into 0..count. */
-export function tablePos(wt: number, blend: number, mod: number, count: number): number {
+/**
+ * The position, in cycles from the first: WT + BLEND + modulation (WT POS: a share of the table), wrapped into
+ * 0..count. `blendMod` (the matrix's WT BLEND) adds to BLEND, held to 0..1.
+ */
+export function tablePos(wt: number, blend: number, mod: number, count: number, blendMod = 0): number {
   if (count <= 1) return 0
-  let p = (wt + blend + mod * count) % count
+  const b = Math.min(1, Math.max(0, blend + blendMod))
+  let p = (wt + b + mod * count) % count
   if (p < 0) p += count
   return p >= count ? 0 : p
 }

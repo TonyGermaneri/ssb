@@ -7,6 +7,7 @@ import { defaultMatrix, MOD_DESTS, MPE_SURFACES, type MpeBinding, type Patch } f
 const MAX: Partial<Record<keyof typeof MOD_DESTS, number>> = {
   cutoff: 0.5, resonance: 0.25, volume: 0.8, reverbMix: 0.35, delayMix: 0.35, pitch: 0.2, grainSize: 0.15,
   grainDetune: 0.05, grainPos: 0.3, grainScan: 0.2, lfo1Amt: 0.5, lfo2Amt: 0.5, lfo1Rate: 0.2, lfo2Rate: 0.2,
+  wtBlend: 1,
 }
 
 describe('built-in patches: MPE surfaces', () => {
@@ -23,6 +24,23 @@ describe('built-in patches: MPE surfaces', () => {
     // the table names only real patches
     const ids = new Set(FACTORY_PATCHES.map((p) => p.id))
     for (const id of Object.keys(FACTORY_MPE)) expect(ids.has(id), id).toBe(true)
+  })
+
+  it('PRESS is WT BLEND on every slot that plays its table, and nothing else there; grain slots keep their press', () => {
+    let blended = 0
+    for (const fp of FACTORY_PATCHES) {
+      const filled = fp.slots.map((x, i) => (x ? i : -1)).filter((i) => i >= 0)
+      const tables = filled.filter((i) => !fp.slots[i]!.settings?.grain && fp.slots[i]!.settings?.timeMode !== 'stretch')
+      const presses = (fp.mpe ?? []).filter((b) => b.surface === 'press')
+      const on = (b: MpeBinding) => b.slots ?? filled
+      for (const i of tables) {
+        const here = presses.filter((b) => on(b).includes(i))
+        expect(here.map((b) => `${b.dest} ${b.amount}`), `${fp.id} slot ${i}`).toEqual(['wtBlend 1'])
+      }
+      for (const i of filled.filter((x) => !tables.includes(x))) expect(presses.some((b) => b.dest !== 'wtBlend' && on(b).includes(i)) || !presses.length, `${fp.id} grain slot ${i}`).toBe(true)
+      if (tables.length) blended++
+    }
+    expect(blended).toBeGreaterThan(90)
   })
 
   it('destinations are real, amounts modest, slots filled, volume only ever up', () => {

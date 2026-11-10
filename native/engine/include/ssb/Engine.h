@@ -106,6 +106,12 @@ public:
     /** Free what the audio thread has finished with (old performances, sounds, samples). */
     void collectGarbage();
 
+    /** Audition `sample` (the library's waves; engine.ts preview): looped at `rate` × its own speed for `seconds`,
+        faded in and out, dry, after the master level -- out of the plugin like everything else. A new one replaces it. */
+    void preview (SamplePtr sample, double rate, double seconds);
+    /** Fade the audition out now. */
+    void stopPreview() noexcept;
+
     // ---- any thread ----------------------------------------------------------------------
     bool post (const Command& c) noexcept;
 
