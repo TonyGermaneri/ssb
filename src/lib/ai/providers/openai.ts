@@ -22,7 +22,7 @@ type OaiMessage =
   | { role: 'tool'; tool_call_id: string; content: string }
 
 /**
- * OpenAI's Chat Completions API, and the servers that speak it (LM Studio). Streams; tool calls arrive in pieces by
+ * The Chat Completions API, as LM Studio and other local servers speak it (OpenAI itself: OpenAiResponsesSession below). Streams; tool calls arrive in pieces by
  * index and are put together here. Tool results go back as `role: "tool"` messages; a tool's images follow them in
  * a user message (a tool message carries text only). OpenAI caches a prompt's prefix by itself (prompt_cache_key
  * keeps a conversation on one cache); local servers reuse what they can of their own context.
@@ -162,6 +162,212 @@ export class OpenAiSession implements ChatSession {
   }
 }
 
+/** a Responses API input item: a message, or an output item the model returned (reasoning, function_call, message) sent back as it came */
+type RItem = Record<string, unknown> & { type?: string; role?: string }
+type RPart = { type: 'input_text'; text: string } | { type: 'input_image'; image_url: string }
+
+/**
+ * OpenAI's own API, the Responses API. Its reasoning models (gpt-5.5, gpt-6…) refuse function tools with reasoning on
+ * the Chat Completions route ("use /v1/responses"), so the OpenAI provider speaks this one. Stateless: `store: false`
+ * keeps conversations off OpenAI's servers, and the model's reasoning comes back encrypted
+ * (`reasoning.encrypted_content`) to go back with the next request, as the output items it returned. A tool's images
+ * go back in its own function_call_output. A setting the model doesn't take (temperature on a reasoning model,
+ * reasoning effort on gpt-4.1) is dropped for the rest of the conversation instead of failing it.
+ */
+export class OpenAiResponsesSession implements ChatSession {
+  readonly provider = 'openai' as const
+  readonly model: string
+  items: RItem[]
+  pins: number[] = []
+  private tools: { type: 'function'; name: string; description: string; parameters: unknown; strict: false }[]
+  /** request fields the model refused ('temperature', 'reasoning.effort'), left out from then on */
+  private refused = new Set<string>()
+
+  constructor(
+    private settings: AiSettings,
+    private system: string,
+    private toolSpecs: ToolSpec[],
+    private fetchImpl: typeof fetch = (...a: Parameters<typeof fetch>) => fetch(...a),
+    saved?: SavedTranscript,
+    private cacheKey = '',
+  ) {
+    this.model = saved?.model ?? settings.model
+    this.items = saved ? fromChat(saved.messages as RItem[]) : []
+    if (saved) this.pins = saved.pins
+    // strict: false: the Responses API makes function tools strict by default, which wants every property required
+    this.tools = [...toolSpecs]
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      .map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.schema, strict: false }))
+  }
+
+  addUser(text: string, images: AiImage[] = []) {
+    this.items.push({ role: 'user', content: [...images.map(inputImage), { type: 'input_text', text }] })
+    return this.items.length - 1
+  }
+
+  addToolResults(results: ToolOutput[]) {
+    for (const r of results) {
+      const text = (r.isError ? 'ERROR: ' : '') + (r.text || 'done')
+      this.items.push({
+        type: 'function_call_output',
+        call_id: r.callId,
+        output: r.images?.length ? [{ type: 'input_text', text }, ...r.images.map(inputImage)] : text,
+      })
+    }
+  }
+
+  /** the request body for the transcript as it stands */
+  body(): Record<string, unknown> {
+    const s = this.settings
+    const reasoning: Record<string, unknown> = { summary: 'auto' }
+    if (s.reasoningEffort && !this.refused.has('reasoning.effort')) reasoning.effort = s.reasoningEffort
+    const body: Record<string, unknown> = {
+      model: this.model,
+      instructions: this.system,
+      input: this.items,
+      tools: this.tools,
+      stream: true,
+      store: false,
+      include: ['reasoning.encrypted_content'],
+      reasoning,
+      max_output_tokens: s.maxTokens,
+    }
+    if (s.temperature !== null && !this.refused.has('temperature')) body.temperature = s.temperature
+    if (this.cacheKey) body.prompt_cache_key = this.cacheKey
+    return body
+  }
+
+  async step(onEvent: (e: AiEvent) => void, signal?: AbortSignal): Promise<TurnResult> {
+    let res: Response | null = null
+    for (let tries = 0; !res; tries++) {
+      try {
+        res = await request(this.fetchImpl, this.settings, '/responses', { method: 'POST', body: JSON.stringify(this.body()), signal })
+      } catch (e) {
+        // "Unsupported parameter: 'temperature' is not supported with this model." → without it
+        const field = e instanceof AiError && e.kind === 'request' ? /Unsupported parameter: '([\w.]+)'/.exec(e.message)?.[1] : undefined
+        if (!field || tries > 2 || this.refused.has(field) || !['temperature', 'reasoning.effort'].includes(field)) throw e
+        this.refused.add(field)
+      }
+    }
+    let text = ''
+    let thinking = ''
+    let final: ResponseObject | null = null
+    const names = new Map<string, string>()
+    try {
+      for await (const ev of sse(res!, signal) as AsyncGenerator<unknown> as AsyncGenerator<ResponseEvent>) {
+        switch (ev.type) {
+          case 'response.output_text.delta':
+            text += ev.delta ?? ''
+            onEvent({ type: 'text', delta: ev.delta ?? '' })
+            break
+          case 'response.reasoning_summary_part.added':
+            if (thinking) {
+              thinking += '\n\n'
+              onEvent({ type: 'thinking', delta: '\n\n' })
+            }
+            break
+          case 'response.reasoning_summary_text.delta':
+            thinking += ev.delta ?? ''
+            onEvent({ type: 'thinking', delta: ev.delta ?? '' })
+            break
+          case 'response.output_item.added':
+            if (ev.item?.type === 'function_call') names.set(String(ev.item.id), String(ev.item.name ?? ''))
+            break
+          case 'response.function_call_arguments.delta':
+            onEvent({ type: 'tool_input', id: ev.item_id ?? '', name: names.get(ev.item_id ?? '') ?? '', partial: ev.delta ?? '' })
+            break
+          case 'response.completed':
+          case 'response.incomplete':
+            final = ev.response ?? null
+            break
+          case 'response.failed':
+            throw new AiError(`The server reported: ${ev.response?.error?.message ?? 'the response failed'}`, 'server')
+          case 'error':
+            throw new AiError(`The server reported: ${ev.message ?? ev.error?.message ?? 'an error'}`, 'server')
+        }
+      }
+    } catch (e) {
+      throw e instanceof AiError ? e : (e as Error).name === 'AbortError' ? new AiError('Stopped', 'aborted') : new AiError(`The stream broke off: ${(e as Error).message}`, 'network')
+    }
+    if (!final) throw new AiError('The stream ended before the response did', 'network')
+    const output = (final.output ?? []) as RItem[]
+    const calls = output.filter((o) => o.type === 'function_call') as RItem[]
+    const refusal = output.flatMap((o) => (o.type === 'message' ? ((o.content as { type: string; refusal?: string }[]) ?? []) : [])).find((c) => c.type === 'refusal')
+    const why = final.incomplete_details?.reason
+    const stop = final.status === 'incomplete' ? (why === 'content_filter' ? 'refusal' : why === 'max_output_tokens' ? 'max_tokens' : 'other')
+      : refusal ? 'refusal'
+      : calls.length ? 'tool_use'
+      : 'end'
+    // the turn goes into the transcript as the model returned it; a turn cut short keeps its words only (a call
+    // with no output, or reasoning without the item it led to, would be refused next time)
+    this.items.push(...(stop === 'tool_use' ? output : output.filter((o) => o.type === 'message')))
+    if (!text) text = output.flatMap((o) => (o.type === 'message' ? ((o.content as { type: string; text?: string }[]) ?? []) : [])).map((c) => c.text ?? '').join('')
+    const toolCalls: ToolCall[] = calls.map((c) => {
+      const spec = this.toolSpecs.find((t) => t.name === c.name)
+      const input = parseInput(String(c.arguments ?? ''))
+      const inputError = input.error ?? (spec ? validate(spec.schema, input.value) : `unknown tool ${String(c.name)}`) ?? undefined
+      return { id: String(c.call_id), name: String(c.name), input: input.value, inputError }
+    })
+    const u = final.usage
+    const cached = u?.input_tokens_details?.cached_tokens ?? 0
+    const written = u?.input_tokens_details?.cache_write_tokens ?? 0
+    const usage = { input: Math.max(0, (u?.input_tokens ?? 0) - cached - written), output: u?.output_tokens ?? 0, cacheRead: cached, cacheWrite: written }
+    return {
+      stop,
+      text,
+      thinking,
+      toolCalls: stop === 'tool_use' ? toolCalls : [],
+      usage,
+      model: final.model ?? this.model,
+      ...(refusal ? { refusal: { explanation: refusal.refusal ?? null } } : {}),
+    }
+  }
+
+  save(): SavedTranscript {
+    return { provider: 'openai', model: this.model, messages: this.items, pins: this.pins }
+  }
+}
+
+/** a conversation saved from the Chat Completions days (it starts with its system message), as Responses input */
+function fromChat(messages: RItem[]): RItem[] {
+  if (messages[0]?.role !== 'system') return messages
+  const out: RItem[] = []
+  for (const m of messages as OaiMessage[]) {
+    if (m.role === 'system') continue
+    if (m.role === 'user')
+      out.push({
+        role: 'user',
+        content: typeof m.content === 'string' ? [{ type: 'input_text', text: m.content }]
+          : m.content.map((p): RPart => (p.type === 'text' ? { type: 'input_text', text: p.text } : { type: 'input_image', image_url: p.image_url.url })),
+      })
+    else if (m.role === 'assistant') {
+      if (m.content) out.push({ role: 'assistant', content: m.content })
+      for (const c of m.tool_calls ?? []) out.push({ type: 'function_call', call_id: c.id, name: c.function.name, arguments: c.function.arguments })
+    } else out.push({ type: 'function_call_output', call_id: m.tool_call_id, output: m.content })
+  }
+  return out
+}
+
+const inputImage = (im: AiImage): RPart => ({ type: 'input_image', image_url: `data:${im.mediaType};base64,${im.data}` })
+
+interface ResponseObject {
+  status?: string
+  model?: string
+  output?: unknown[]
+  incomplete_details?: { reason?: string } | null
+  error?: { message?: string } | null
+  usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number } }
+}
+interface ResponseEvent {
+  type: string
+  delta?: string
+  item_id?: string
+  item?: { type?: string; id?: string; name?: string }
+  response?: ResponseObject
+  message?: string
+  error?: { message?: string }
+}
+
 /**
  * Tool calls a model wrote out as text, in the chat templates' own formats: Qwen3.5 / Qwen3-coder's
  * `<function=name><parameter=key>value</parameter></function>` and Hermes / Qwen's `<tool_call>{"name", "arguments"}</tool_call>`.
@@ -243,6 +449,7 @@ interface Chunk {
 
 /** the data events of a server-sent event stream, parsed */
 async function* sse(res: Response, signal?: AbortSignal): AsyncGenerator<Chunk> {
+  // (the Responses API's events come through here too: their errors arrive as typed events, read by its session)
   if (!res.body) throw new AiError('The server sent no stream', 'server')
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
@@ -266,7 +473,7 @@ async function* sse(res: Response, signal?: AbortSignal): AsyncGenerator<Chunk> 
         if (data === '[DONE]') return
         try {
           const chunk = JSON.parse(data) as Chunk & { error?: { message?: string } }
-          if (chunk.error) throw new AiError(`The server reported: ${chunk.error.message ?? 'an error'}`, 'server')
+          if (chunk.error && !(chunk as { type?: string }).type) throw new AiError(`The server reported: ${chunk.error.message ?? 'an error'}`, 'server')
           yield chunk
         } catch (e) {
           if (e instanceof AiError) throw e

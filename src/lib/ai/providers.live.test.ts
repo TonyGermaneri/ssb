@@ -7,7 +7,7 @@
  *
  * with ANTHROPIC_API_KEY / OPENAI_API_KEY in the environment (each provider's tests skip without its key), and
  * LM Studio's server up (LMSTUDIO_URL, default http://localhost:1234/v1; LMSTUDIO_MODEL, default its first chat
- * model). ANTHROPIC_MODEL / OPENAI_MODEL pick the models.
+ * model). ANTHROPIC_MODEL / OPENAI_MODEL pick the models; OPENAI_EFFORT sets OpenAI's reasoning effort.
  */
 import { describe, expect, it } from 'vitest'
 import { runAgent, type AgentTool } from './agent'
@@ -49,7 +49,7 @@ const targets: Target[] = [
     provider: 'openai',
     ready: live && !!env('OPENAI_API_KEY'),
     settings: async () => {
-      const s = { ...defaultAiSettings('openai'), apiKey: env('OPENAI_API_KEY'), maxTokens: 8000 }
+      const s = { ...defaultAiSettings('openai'), apiKey: env('OPENAI_API_KEY'), maxTokens: 8000, reasoningEffort: (env('OPENAI_EFFORT') || '') as AiSettings['reasoningEffort'] }
       // OPENAI_MODEL, else the newest general GPT model the key can use
       oaModel ||= env('OPENAI_MODEL') || pickOpenAi(await listModels(s))
       return { ...s, model: oaModel }
@@ -179,6 +179,47 @@ for (const t of targets) {
     }, 120_000)
   })
 }
+
+describe.skipIf(!targets[1].ready)('openai: reasoning models with tools (the Responses API)', () => {
+  const settings = async (model: string, extra: Partial<AiSettings> = {}) => ({ ...(await targets[1].settings()), model, ...extra })
+
+  // Chat Completions refuses these: "Function tools with reasoning_effort are not supported … use /v1/responses"
+  for (const [model, effort] of [['gpt-6-astra', ''], ['gpt-6-astra', 'high'], ['gpt-5.5', 'low']] as const) {
+    it(`runs tools on ${model} with reasoning effort ${effort || 'default'}`, async () => {
+      const s = createSession(await settings(model, { reasoningEffort: effort }), SYSTEM, tools)
+      const out = await runAgent(s, tools, { text: 'What is the level of the patch WOOL BLANKET PAD? Use the tool, then tell me the number.' }, { onEvent: noop })
+      console.log(model, effort, out.steps, '→', out.text.slice(0, 120))
+      expect(out.stop).toBe('end')
+      expect(out.text).toMatch(/12[.,]5/)
+    }, 240_000)
+  }
+
+  it('leaves out a temperature the reasoning model refuses', async () => {
+    const s = createSession(await settings('gpt-6-astra', { temperature: 0.7 }), SYSTEM, tools)
+    s.addUser('Reply with exactly the word: pong')
+    const r = await s.step(noop)
+    expect(r.text.toLowerCase()).toContain('pong')
+  }, 120_000)
+
+  it('continues a conversation saved in the Chat Completions format', async () => {
+    const saved = {
+      provider: 'openai' as const,
+      model: 'gpt-6-astra',
+      pins: [],
+      messages: [
+        { role: 'system', content: SYSTEM },
+        { role: 'user', content: 'What is the level of WOOL BLANKET PAD?' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'call_old1', type: 'function', function: { name: 'get_patch_level', arguments: '{"name":"WOOL BLANKET PAD"}' } }] },
+        { role: 'tool', tool_call_id: 'call_old1', content: 'WOOL BLANKET PAD: -12.5 dB' },
+        { role: 'assistant', content: 'It is -12.5 dB.' },
+      ],
+    }
+    const s = createSession(await settings('gpt-6-astra'), SYSTEM, tools, { saved })
+    s.addUser('Repeat the number you told me, digits only.')
+    const r = await s.step(noop)
+    expect(r.text).toMatch(/12[.,]5/)
+  }, 120_000)
+})
 
 describe.skipIf(!targets[0].ready)('anthropic caching and errors', () => {
   // a system prompt well over the minimum cacheable prefix

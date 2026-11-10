@@ -182,8 +182,10 @@ tools:
   continue. Each reply shows its tokens: at full price, read from the cache, written to it, and output. OpenAI
   caches by itself; LM Studio reuses its own context.
 - Claude runs with adaptive thinking (**EFFORT**, and its summary shown or hidden) and, on the models that have it,
-  a server-side fallback when a request is declined. Local models that write a tool call into their text (Qwen3.5
-  does, in its thinking) still get it run.
+  a server-side fallback when a request is declined. OpenAI runs through its Responses API, so its reasoning models
+  (gpt-5.5, gpt-6…) use tools with **REASONING** set, their reasoning summary shown, and nothing stored on OpenAI's
+  side; a setting the model doesn't take (temperature on a reasoning model) is left out rather than failing the
+  request. Local models that write a tool call into their text (Qwen3.5 does, in its thinking) still get it run.
 
 **MCP server** (⚙ ▸ MCP SERVER, off until you turn it on; the app and the plugin, not a browser tab): the same tools
 for an agent outside SSB — Claude Code, Claude Desktop, Cursor, anything that speaks MCP — working on the board SSB
