@@ -8,6 +8,7 @@
  */
 import type { AgentTool } from './agent'
 import { validate } from './schema'
+import { errorMessage } from './types'
 
 /** the protocol versions this server speaks, newest first */
 export const MCP_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
@@ -99,7 +100,7 @@ async function one(m: Request, ctx: McpContext): Promise<unknown | null> {
           ],
         })
       } catch (e) {
-        return text(`Failed: ${e instanceof Error ? e.message : String(e)}`, true)
+        return text(`Failed: ${errorMessage(e)}`, true)
       }
     }
     default:

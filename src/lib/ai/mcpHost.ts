@@ -12,6 +12,7 @@ import { freshToken, mcpSaved, mcpStatus, saveMcp } from './mcpStatus'
 import { MCP_INSTRUCTIONS } from './prompt'
 import { createTools } from './tools'
 import { storedSoundAgent } from './soundTools'
+import { errorMessage } from './types'
 
 interface NativeStatus {
   running: boolean
@@ -109,7 +110,7 @@ async function start() {
       error: r.running ? '' : (r.error ?? 'The server didn’t start'),
     })
   } catch (e) {
-    Object.assign(mcpStatus, { state: 'error', error: e instanceof Error ? e.message : String(e) })
+    Object.assign(mcpStatus, { state: 'error', error: errorMessage(e) })
   }
 }
 

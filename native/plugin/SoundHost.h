@@ -69,6 +69,11 @@ public:
         channels, elapsed, model } or { error }, on the message thread */
     void generate (const juce::var& request, std::function<void (juce::var)> done);
 
+    /** the page's `ssbSound` call -- { op, model?, models?, request? } (src/lib/ai/soundHost.ts) -- answered through
+        `complete`: at once, or (generate) on the message thread when the clip is made. A failed op answers
+        { error: "why" }; the others answer status(), check()'s list, or the clip. */
+    void call (const juce::var& args, std::function<void (juce::var)> complete);
+
     static juce::File modelsDirectory();
     static juce::File helperBinary();
     bool isDownloaded (const SoundModelSpec&) const;
@@ -83,7 +88,7 @@ private:
     };
 
     juce::String startJob (const SoundModelSpec&, bool thenLoad);
-    void runJob (SoundModelSpec, bool thenLoad);
+    void runJob (SoundModelSpec);
     bool downloadAll (const SoundModelSpec&);
     bool downloadFile (const SoundModelSpec&, const SoundFile&, juce::int64 doneBefore, juce::int64 total);
     bool startHelper (const SoundModelSpec&);
@@ -107,6 +112,7 @@ private:
     double loadSeconds = 0;
     SoundModelSpec loadedSpec;
     std::optional<Task> task;
+    bool jobLoads = false;   // the download / load job under way loads its model at the end
     juce::String errorModel, errorMessage;
     std::atomic<bool> cancelling { false };
     std::thread worker;      // downloads and loads

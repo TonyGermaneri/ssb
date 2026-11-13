@@ -9,7 +9,7 @@
  * LM Studio's server up (LMSTUDIO_URL, default http://localhost:1234/v1; LMSTUDIO_MODEL, default its first chat
  * model). ANTHROPIC_MODEL / OPENAI_MODEL pick the models; OPENAI_EFFORT sets OpenAI's reasoning effort.
  *
- * (The sound models run in the native app; their live check is native/tests/SoundHostCheck.cpp.)
+ * (The sound models run in the native app; their live tests are sound.live.test.ts and native/tests/SoundHostCheck.cpp.)
  */
 import { describe, expect, it } from 'vitest'
 import { runAgent, type AgentTool } from './agent'

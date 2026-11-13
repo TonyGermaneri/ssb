@@ -106,7 +106,12 @@ int main()
 
     std::printf ("download + load %s\n", s.label.toRawUTF8());
     CHECK (host.load (s).isEmpty());
-    CHECK (host.load (s).startsWith ("busy"));   // one job at a time
+    CHECK (host.load (s).isEmpty());   // asked again while it's on its way: under way
+    {
+        auto other = s;
+        other.id = "another-model";
+        CHECK (host.load (other).startsWith ("busy"));   // one job at a time
+    }
     CHECK (waitIdle (host, 1800));
     auto st = status (host);
     CHECK (st["loaded"]["id"].toString() == s.id);

@@ -122,43 +122,14 @@ SsbEditor::SsbEditor (SsbProcessor& p)
           })
           .withNativeFunction ("ssbSound", [this] (const juce::Array<juce::var>& args, auto complete)
           {
-              // the AI agent's sound models: { op, model?, models?, request? } (src/lib/ai/soundHost.ts)
-              const auto o = args.isEmpty() ? juce::var() : args[0];
-              const auto op = o.getProperty ("op", "status").toString();
-              auto& host = *plugin.sound;
-              const auto spec = ssb::SoundModelSpec::fromVar (o.getProperty ("model", {}));
-              const auto answer = [&complete, &host] (const juce::String& error)
-              {
-                  if (error.isEmpty())
-                      return complete (host.status());
-                  auto* r = new juce::DynamicObject();
-                  r->setProperty ("error", error);
-                  complete (juce::var (r));
-              };
-              if (op == "check")
-              {
-                  juce::Array<ssb::SoundModelSpec> specs;
-                  if (auto* list = o.getProperty ("models", {}).getArray())
-                      for (const auto& m : *list)
-                          specs.add (ssb::SoundModelSpec::fromVar (m));
-                  return complete (host.check (specs));
-              }
-              if (op == "load")     return answer (host.load (spec));
-              if (op == "download") return answer (host.download (spec));
-              if (op == "remove")   return answer (host.remove (spec));
-              if (op == "unload")   { host.unload(); return answer ({}); }
-              if (op == "cancel")   { host.cancel(); return answer ({}); }
-              if (op == "generate")
-              {
-                  // answered when the clip is made (minutes, maybe): the editor may be gone by then
-                  host.generate (o.getProperty ("request", {}), [safe = juce::Component::SafePointer<SsbEditor> (this), complete] (juce::var r)
-                  {
-                      if (safe != nullptr)
-                          complete (r);
-                  });
-                  return;
-              }
-              complete (host.status());
+              // the AI agent's sound models (SoundHost::call). A generation answers when the clip is made
+              // (minutes, maybe): the editor may be gone by then
+              plugin.sound->call (args.isEmpty() ? juce::var() : args[0],
+                                  [safe = juce::Component::SafePointer<SsbEditor> (this), complete] (juce::var r)
+                                  {
+                                      if (safe != nullptr)
+                                          complete (r);
+                                  });
           })
           .withNativeFunction ("ssbMcpReply", [this] (const juce::Array<juce::var>& args, auto complete)
           {

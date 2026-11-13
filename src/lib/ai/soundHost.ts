@@ -11,6 +11,8 @@ export interface SoundTask {
   kind: 'download' | 'load' | 'generate'
   /** the model's id */
   model: string
+  /** it ends with the model loaded (a load, or a download that loads after) */
+  loads?: boolean
   message: string
   done: number
   total: number
@@ -98,7 +100,14 @@ function fromBase64(data: string): ArrayBuffer {
   return bytes.buffer
 }
 
-type Reply = { error?: string } & Record<string, unknown>
+type Reply = { error?: unknown } & Record<string, unknown>
+
+/** a native reply's failure as words, or '' when it didn't fail */
+export function errorText(r: unknown): string {
+  if (!r || typeof r !== 'object' || Array.isArray(r) || !('error' in r)) return ''
+  const e = (r as Reply).error
+  return typeof e === 'string' ? e : ''
+}
 
 export class NativeSoundHost implements SoundHostApi {
   constructor(private readonly token: () => string = () => '') {}
@@ -106,7 +115,10 @@ export class NativeSoundHost implements SoundHostApi {
   private async call<T>(op: string, extra: object = {}): Promise<T> {
     if (!inNative()) throw new AiError('sound models run in the SSB app or plugin, not in a browser tab', 'request')
     const r = await callNative<Reply>('ssbSound', { op, ...extra })
-    if (r && typeof r === 'object' && 'error' in r && r.error) throw new AiError(String(r.error), 'request')
+    // a failed call answers { error: "why" }; a status answers error: { model, message } -- the last download or
+    // load that failed, which is news, not this call failing
+    const why = errorText(r)
+    if (why) throw new AiError(why, 'request')
     return r as T
   }
 
@@ -153,7 +165,8 @@ const sleep = (ms: number, signal?: AbortSignal) =>
 export async function loadAndWait(host: SoundHostApi, model: SoundModelInfo, onStatus?: (s: SoundStatus) => void, signal?: AbortSignal, pollMs = 500): Promise<SoundStatus> {
   const before = await host.status()
   if (before.loaded?.id === model.id && !before.task) return before
-  if (before.task?.model !== model.id || before.task.kind === 'generate') await host.load(model)
+  // a load already under way (a cancelled generation reloads its model) is waited for; anything else is asked
+  if (!(before.task?.model === model.id && before.task.loads)) await host.load(model)
   const onAbort = () => void host.cancel().catch(() => {})
   signal?.addEventListener('abort', onAbort)
   try {

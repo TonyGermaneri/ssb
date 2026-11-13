@@ -9,7 +9,7 @@ import type { AgentTool, ToolReply } from './agent'
 import { clipPitch, readPcmWav, shapeClip } from './audio'
 import { DEFAULT_SOUND_MODEL, downloadBytes, fmtBytes, SOUND_MODELS, soundModelFrom, type SoundModelInfo } from './soundModels'
 import { generateWithStop, loadAndWait, NativeSoundHost, type SoundHostApi, type SoundStatus } from './soundHost'
-import { defaultSoundSettings, type SoundSettings } from './types'
+import { defaultSoundSettings, errorMessage, type SoundSettings } from './types'
 
 type Board = ReturnType<typeof useBoard>
 
@@ -50,12 +50,15 @@ export function createSoundTools(board: Board, agent: SoundAgent): AgentTool[] {
     if (!m) throw new Error(`"${model}" isn't a sound model: give one of sound_models' ids, or the Hugging Face URL of a GGUF`)
     return m
   }
-  /** what the host has loaded, as a catalog model (a custom one: the settings' pick, when it's that) */
-  const loadedModel = (st: SoundStatus): SoundModelInfo | null => {
-    if (!st.loaded) return null
+  /** a model the host names, as a catalog model (a custom one: the settings' pick, when it's that) */
+  const named = (id: string): SoundModelInfo | null => {
     const sel = agent.selected()
-    return SOUND_MODELS.find((m) => m.id === st.loaded!.id) ?? (sel?.id === st.loaded.id ? sel : null)
+    return SOUND_MODELS.find((m) => m.id === id) ?? (sel?.id === id ? sel : null)
   }
+  /** the model make_sound uses when none is named: the loaded one, else the one on its way (a reload, after a
+   * stopped generation), else none */
+  const loadedModel = (st: SoundStatus): SoundModelInfo | null =>
+    st.loaded ? named(st.loaded.id) : st.task?.loads ? named(st.task.model) : null
 
   /** the question to ask before loading `m`, when that means a download (null: it's here, or already loaded) */
   async function downloadQuestion(m: SoundModelInfo): Promise<string | null> {
@@ -98,7 +101,7 @@ export function createSoundTools(board: Board, agent: SoundAgent): AgentTool[] {
         try {
           st = await host.status()
         } catch (e) {
-          return { text: json({ available: false, error: (e as Error).message, models: models.map(describe) }) }
+          return { text: json({ available: false, error: errorMessage(e), models: models.map(describe) }) }
         }
         const checks = await host.check(models).catch(() => [])
         return {

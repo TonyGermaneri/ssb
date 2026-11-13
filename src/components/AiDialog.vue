@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useAi, type Item } from '../lib/ai/store'
-import { PROVIDERS, type Effort, type ProviderKind } from '../lib/ai/types'
+import { errorMessage, PROVIDERS, type Effort, type ProviderKind } from '../lib/ai/types'
 import { downloadBytes, fmtBytes, SOUND_MODELS } from '../lib/ai/soundModels'
 import ComboBox from './ComboBox.vue'
 import { useBoard } from '../stores/board'
@@ -89,7 +89,7 @@ async function test() {
   try {
     testing.value = `✓ ${await ai.testConnection()}`
   } catch (e) {
-    testing.value = `✗ ${e instanceof Error ? e.message : String(e)}`
+    testing.value = `✗ ${errorMessage(e)}`
   }
 }
 const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -145,7 +145,7 @@ async function testSound() {
     testingSound.value = `✓ ${t.text}`
     playClip(t.channels, t.rate)
   } catch (e) {
-    testingSound.value = `✗ ${e instanceof Error ? e.message : String(e)}`
+    testingSound.value = `✗ ${errorMessage(e)}`
   }
 }
 watch(open, (o) => ai.watchSound(o), { immediate: true })

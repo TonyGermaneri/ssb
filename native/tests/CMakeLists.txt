@@ -29,3 +29,14 @@ if(SSB_BUILD_PLUGIN AND TARGET ssb-sound-helper)
     target_link_libraries(ssb-sound-check PRIVATE juce::juce_events juce::juce_recommended_config_flags)
     add_dependencies(ssb-sound-check ssb-sound-helper)
 endif()
+
+# The page's `ssbSound` call over stdin / stdout, for the live test of the agent's sound tools
+# (src/lib/ai/sound.live.test.ts).
+if(SSB_BUILD_PLUGIN AND TARGET ssb-sound-helper)
+    juce_add_console_app(ssb-sound-bridge PRODUCT_NAME "ssb-sound-bridge")
+    target_sources(ssb-sound-bridge PRIVATE SoundBridge.cpp ../plugin/SoundHost.cpp)
+    target_include_directories(ssb-sound-bridge PRIVATE ../plugin ../mcp)
+    target_compile_definitions(ssb-sound-bridge PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0 JUCE_STANDALONE_APPLICATION=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(ssb-sound-bridge PRIVATE juce::juce_events juce::juce_recommended_config_flags)
+    add_dependencies(ssb-sound-bridge ssb-sound-helper)
+endif()

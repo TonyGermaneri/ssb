@@ -30,6 +30,7 @@ import {
   type SavedTranscript,
   type ToolCall,
   type Usage,
+  errorMessage,
 } from './types'
 
 /** what the dialog shows of a conversation */
@@ -130,7 +131,7 @@ export const useAi = defineStore('ai', () => {
       soundStatus.value = await soundAgent.host().status()
     } catch (e) {
       soundStatus.value = null
-      soundError.value = e instanceof Error ? e.message : String(e)
+      soundError.value = errorMessage(e)
     }
   }
   /** keep the host's state fresh while someone's looking (twice a second while it works, else every 3 s) */
@@ -166,7 +167,7 @@ export const useAi = defineStore('ai', () => {
       await f()
       soundError.value = ''
     } catch (e) {
-      soundError.value = e instanceof Error ? e.message : String(e)
+      soundError.value = errorMessage(e)
     }
     await pollSound()
     soundTick()
@@ -194,7 +195,7 @@ export const useAi = defineStore('ai', () => {
       if (!settings.model && models.value.length) settings.model = models.value[0]
     } catch (e) {
       models.value = []
-      modelsError.value = e instanceof Error ? e.message : String(e)
+      modelsError.value = errorMessage(e)
     }
   }
 
@@ -427,7 +428,7 @@ export const useAi = defineStore('ai', () => {
       if (out.stop === 'max_steps') c.items.push({ kind: 'note', level: 'info', text: 'Stopped after many steps; say "go on" to continue.' })
       if (out.stop === 'aborted') c.items.push({ kind: 'note', level: 'info', text: 'Stopped.' })
     } catch (e) {
-      c.items.push({ kind: 'note', level: 'error', text: e instanceof AiError || e instanceof Error ? e.message : String(e) })
+      c.items.push({ kind: 'note', level: 'error', text: errorMessage(e) })
     } finally {
       for (const it of c.items) if (it.kind === 'assistant') it.streaming = false
       for (const t of tools.values()) if (t.status === 'running') t.status = 'error'

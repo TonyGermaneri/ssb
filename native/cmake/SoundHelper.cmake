@@ -67,6 +67,7 @@ foreach(_arch IN LISTS _archs)
             -DENGINE_BUILD_WARMBENCH=OFF
             -DAUDIOCPP_MODEL_SET=custom
             -DAUDIOCPP_MODELS=moss_soundeffect,stable_audio
+            -DAUDIOCPP_DEPLOYMENT_BUILD=ON   # model specs compiled in: a safetensors checkpoint (Stable Audio Open 1.0) needs one
         BUILD_COMMAND "${CMAKE_COMMAND}" --build <BINARY_DIR> --target audiocpp_server --config Release
         INSTALL_COMMAND ""
         BUILD_BYPRODUCTS "<BINARY_DIR>/bin/${_exe}"

@@ -206,3 +206,26 @@ export class AiError extends Error {
     super(message)
   }
 }
+
+/**
+ * What went wrong, as words, whatever was thrown: an Error's message, or a plain object's `message` or `error`
+ * (a native reply, a JSON error body), never "[object Object]".
+ */
+export function errorMessage(e: unknown): string {
+  if (e instanceof Error) return e.message || e.name
+  if (typeof e === 'string') return e
+  if (e && typeof e === 'object') {
+    const o = e as Record<string, unknown>
+    for (const k of ['message', 'error'] as const) {
+      const v = o[k]
+      if (typeof v === 'string' && v) return v
+      if (v && typeof v === 'object') return errorMessage(v)
+    }
+    try {
+      return JSON.stringify(e).slice(0, 400)
+    } catch {
+      /* falls through */
+    }
+  }
+  return String(e)
+}

@@ -261,6 +261,7 @@ juce::var SoundHost::status() const
         auto* t = new juce::DynamicObject();
         t->setProperty ("kind", task->kind);
         t->setProperty ("model", task->model);
+        t->setProperty ("loads", task->kind == "load" || (task->kind == "download" && jobLoads));
         t->setProperty ("message", task->message);
         t->setProperty ("done", task->done);
         t->setProperty ("total", task->total);
@@ -315,26 +316,39 @@ juce::String SoundHost::startJob (const SoundModelSpec& s, bool thenLoad)
         return "this build of SSB doesn't carry the sound model helper (audiocpp_server)";
     {
         const juce::ScopedLock sl (lock);
+        // asked for what's already under way (a cancelled generation reloads its model): it is. A load asked of a
+        // download makes it load at the end
+        if (task && task->model == s.id && task->kind != "generate")
+        {
+            jobLoads = jobLoads || thenLoad;
+            return {};
+        }
         if (task)
             return "busy: " + task->kind + " " + task->model;
         if (thenLoad && loadedId == s.id && helper && helper->isRunning())
             return {};
         errorModel.clear();
         errorMessage.clear();
+        jobLoads = thenLoad;
         task = Task { "download", s.id, "checking", 0, s.totalBytes(), 0.0, now() };
     }
     joinWorker();
     cancelling = false;
-    worker = std::thread ([this, s, thenLoad] { runJob (s, thenLoad); });
+    worker = std::thread ([this, s] { runJob (s); });
     return {};
 }
 
-void SoundHost::runJob (SoundModelSpec s, bool thenLoad)
+void SoundHost::runJob (SoundModelSpec s)
 {
     if (! downloadAll (s))
     {
         clearTask();
         return;
+    }
+    bool thenLoad;
+    {
+        const juce::ScopedLock sl (lock);
+        thenLoad = jobLoads;
     }
     if (thenLoad && ! cancelling)
     {
@@ -653,6 +667,39 @@ void SoundHost::cancel()
         return;
     }
     cancelling = true;
+}
+
+// ── the page's calls ──
+
+void SoundHost::call (const juce::var& o, std::function<void (juce::var)> complete)
+{
+    const auto op = o.getProperty ("op", "status").toString();
+    const auto spec = SoundModelSpec::fromVar (o.getProperty ("model", {}));
+    // a failure is { error: "why" } (a string); status() carries the last failed job as error: { model, message }
+    const auto answer = [this, &complete] (const juce::String& error)
+    {
+        if (error.isEmpty())
+            return complete (status());
+        auto* r = new juce::DynamicObject();
+        r->setProperty ("error", error);
+        complete (juce::var (r));
+    };
+    if (op == "check")
+    {
+        juce::Array<SoundModelSpec> specs;
+        if (auto* list = o.getProperty ("models", {}).getArray())
+            for (const auto& m : *list)
+                specs.add (SoundModelSpec::fromVar (m));
+        return complete (check (specs));
+    }
+    if (op == "load")     return answer (load (spec));
+    if (op == "download") return answer (download (spec));
+    if (op == "remove")   return answer (remove (spec));
+    if (op == "unload")   { unload(); return answer ({}); }
+    if (op == "cancel")   { cancel(); return answer ({}); }
+    if (op == "generate") return generate (o.getProperty ("request", {}), std::move (complete));
+    if (op != "status")   return answer ("unknown sound op: " + op);
+    complete (status());
 }
 
 // ── generating ──

@@ -1,4 +1,4 @@
-import { addUsage, AiError, emptyUsage, type AiEvent, type AiImage, type ChatSession, type ToolCall, type ToolOutput, type ToolSpec, type TurnResult, type Usage } from './types'
+import { addUsage, AiError, errorMessage, emptyUsage, type AiEvent, type AiImage, type ChatSession, type ToolCall, type ToolOutput, type ToolSpec, type TurnResult, type Usage } from './types'
 
 /** what a tool hands back: text for the model, and images it should look at */
 export interface ToolReply {
@@ -97,6 +97,6 @@ async function runTool(tools: AgentTool[], call: ToolCall, hooks: AgentHooks, si
     const reply = await tool.run(call.input as never, signal)
     return { ...base, text: reply.text, images: reply.images, soundId: reply.soundId }
   } catch (e) {
-    return { ...base, text: `Failed: ${e instanceof Error ? e.message : String(e)}`, isError: true }
+    return { ...base, text: `Failed: ${errorMessage(e)}`, isError: true }
   }
 }

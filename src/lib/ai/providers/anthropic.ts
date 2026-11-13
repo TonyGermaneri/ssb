@@ -12,6 +12,7 @@ import {
   type ToolOutput,
   type ToolSpec,
   type TurnResult,
+  errorMessage,
 } from '../types'
 
 type Msg = Anthropic.Beta.Messages.BetaMessageParam
@@ -205,7 +206,7 @@ export function anthropicError(e: unknown): AiError {
   if (e instanceof Anthropic.InternalServerError) return new AiError(`The API had a problem (${e.status}): try again`, 'server')
   if (e instanceof Anthropic.APIConnectionError) return new AiError("Couldn't reach the API (offline, or the endpoint is wrong)", 'network')
   if (e instanceof Anthropic.APIError) return new AiError(`API error ${e.status ?? ''}: ${apiMessage(e)}`, 'other')
-  return new AiError(e instanceof Error ? e.message : String(e))
+  return new AiError(errorMessage(e))
 }
 const apiMessage = (e: InstanceType<typeof Anthropic.APIError>) => {
   const err = (e.error as { error?: { message?: string } } | undefined)?.error
