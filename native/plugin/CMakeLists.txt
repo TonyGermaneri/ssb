@@ -44,6 +44,7 @@ target_sources(SsbInstrument PRIVATE
     PluginProcessor.cpp
     PluginEditor.cpp
     PluginPaths.cpp
+    SoundHost.cpp
     SoundLibrary.cpp
     StandaloneApp.cpp)
 

@@ -85,6 +85,7 @@ endforeach()
 # ---------------------------------------------------------------------------- the web app
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(WebAssets)
+include(SoundHelper)   # audio.cpp's server, for the AI agent's sound models
 
 # ---------------------------------------------------------------------------- JUCE
 #

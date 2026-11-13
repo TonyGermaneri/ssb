@@ -81,6 +81,26 @@ function(ssb_bundle_web target)
         add_dependencies(${target}_web ssb-mcp)
     endif()
 
+    # the sound models' helper (audio.cpp's server, cmake/SoundHelper.cmake) rides along the same way
+    if(TARGET ssb-sound-helper)
+        get_filename_component(_sound_name "${SSB_SOUND_HELPER}" NAME)
+        if(APPLE)
+            set(_sound_dir "$<TARGET_BUNDLE_CONTENT_DIR:${target}>/Helpers")
+            set(_sign_sound COMMAND codesign --force --sign "${SSB_CODESIGN_IDENTITY}" --timestamp=none
+                            "${_sound_dir}/${_sound_name}")
+        else()
+            set(_sound_dir "$<TARGET_FILE_DIR:${target}>")
+            set(_sign_sound "")
+        endif()
+        add_custom_command(TARGET ${target}_web POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${_sound_dir}"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${SSB_SOUND_HELPER}" "${_sound_dir}/"
+            ${_sign_sound}
+            COMMENT "Copying the sound models' helper into ${target}"
+            VERBATIM)
+        add_dependencies(${target}_web ssb-sound-helper)
+    endif()
+
     if(APPLE)
         add_custom_command(TARGET ${target}_web POST_BUILD
             COMMAND codesign --force --sign "${SSB_CODESIGN_IDENTITY}"

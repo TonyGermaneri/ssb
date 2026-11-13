@@ -88,7 +88,7 @@ async function one(m: Request, ctx: McpContext): Promise<unknown | null> {
       const text = (s: string, isError = false) => done({ content: [{ type: 'text', text: s }], ...(isError ? { isError: true } : {}) })
       const invalid = validate(tool.schema, args, 'arguments')
       if (invalid) return text(`Invalid input: ${invalid}. Correct it and call ${name} again.`, true)
-      const question = tool.confirm?.(args as never)
+      const question = await tool.confirm?.(args as never)
       if (question && !(await ctx.approve(question, name))) return text('The user declined this in SSB.', true)
       try {
         const reply = await tool.run(args as never)

@@ -398,7 +398,7 @@ export const useBoard = defineStore('board', () => {
   }
 
   /**
-   * A take the AI's audio agent recorded, as a new sample sound at the end of the list (tagged "ai" and its own
+   * A clip the AI agent generated (a sound model's), as a new sample sound at the end of the list (tagged "ai" and its own
    * tags), playing at its recorded pitch from `rootNote` (+ `fine` cents). Not selected: the agent puts it in patches.
    */
   async function addAgentSound(channels: Float32Array[], rate: number, o: { name: string; tags: string[]; rootNote: number; fine: number }): Promise<Sound> {

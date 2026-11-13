@@ -6,6 +6,7 @@
 
 #include "SoundLibrary.h"
 #include "McpServer.h"
+#include "SoundHost.h"
 
 /**
     SSB as an instrument. The editor is the page; the sound depends on where SSB is running:
@@ -73,6 +74,10 @@ public:
     /** SSB's MCP server for this instance: off until the page turns it on (AI ▸ ⚙ ▸ MCP SERVER).
         It lives with the processor; its requests reach the page while the editor is open. */
     ssb::McpServer mcp;
+
+    /** The AI agent's sound models (audio.cpp in a helper process): one host for every instance in this
+        process, so a DAW with several SSB tracks runs one helper holding one model. */
+    juce::SharedResourcePointer<ssb::SoundHost> sound;
 
     /** This instance's board, as the page stores it: new instances get a new one, a session
         restores its own. Unused in the standalone, which has the one board. */

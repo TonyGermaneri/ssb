@@ -4,15 +4,15 @@ import { addUsage, AiError, emptyUsage, type AiEvent, type AiImage, type ChatSes
 export interface ToolReply {
   text: string
   images?: AiImage[]
-  /** a sound it put on the board (the audio agent's take), for the dialog to offer playing */
+  /** a sound it put on the board (a sound model's clip), for the dialog to offer playing */
   soundId?: string
 }
 
 /** a tool the agent may call: its spec, how it runs, and whether it needs the user's yes first */
 export interface AgentTool extends ToolSpec {
   run(input: never, signal?: AbortSignal): Promise<ToolReply> | ToolReply
-  /** a question for the user before it runs (deleting, say), or null to just run */
-  confirm?(input: never): string | null
+  /** a question for the user before it runs (deleting, or a download), or null to just run */
+  confirm?(input: never): string | null | Promise<string | null>
 }
 
 export type AgentEvent =
@@ -88,7 +88,7 @@ async function runTool(tools: AgentTool[], call: ToolCall, hooks: AgentHooks, si
   if (call.inputError) return { ...base, text: `Invalid input: ${call.inputError}. Correct it and call ${call.name} again.`, isError: true }
   const tool = tools.find((t) => t.name === call.name)
   if (!tool) return { ...base, text: `There is no tool named ${call.name}.`, isError: true }
-  const question = tool.confirm?.(call.input as never)
+  const question = await tool.confirm?.(call.input as never)
   if (question) {
     const yes = hooks.approve ? await hooks.approve(call, question) : false
     if (!yes) return { ...base, text: 'The user declined this. Ask them, or try something else.', isError: true }

@@ -4,30 +4,18 @@
  * Messages API's content blocks exactly as they came back, thinking included, as preserved thinking requires);
  * the agent loop (agent.ts) and the tools (tools.ts) only see what's here.
  */
+import { DEFAULT_SOUND_MODEL } from './soundModels'
 
 export type ProviderKind = 'anthropic' | 'openai' | 'lmstudio'
 
-export type AudioProviderKind = 'openai'
-
-/** gpt-audio-1.5's built-in voices (marin and cedar are OpenAI's newest) */
-export const OPENAI_VOICES = ['marin', 'cedar', 'alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse'] as const
-
-export const AUDIO_PROVIDERS: Record<AudioProviderKind, { label: string; model: string; endpoint: string; voices: readonly string[] }> = {
-  openai: { label: 'OpenAI', model: 'gpt-audio-1.5', endpoint: 'https://api.openai.com/v1', voices: OPENAI_VOICES },
-}
-
-/** the audio agent's settings (part of the AI settings, kept in this browser's storage with the rest) */
-export interface AudioSettings {
-  provider: AudioProviderKind
+/** the sound models' settings (part of the AI settings, kept in this browser's storage with the rest) */
+export interface SoundSettings {
+  /** the model picked: a catalog id (soundModels.ts) or a GGUF's Hugging Face URL, as typed into the combobox */
   model: string
-  /** the voice when the brief names none */
-  voice: string
-  /** its own key; '' = the OpenAI provider's */
-  apiKey: string
-  /** '' = the OpenAI provider's endpoint */
-  endpoint: string
+  /** a Hugging Face token (read access), for gated models (Stable Audio Open 1.0) */
+  hfToken: string
 }
-export const defaultAudioSettings = (): AudioSettings => ({ provider: 'openai', model: AUDIO_PROVIDERS.openai.model, voice: 'marin', apiKey: '', endpoint: '' })
+export const defaultSoundSettings = (): SoundSettings => ({ model: DEFAULT_SOUND_MODEL, hfToken: '' })
 
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
@@ -53,8 +41,8 @@ export interface AiSettings {
   reasoningEffort: '' | 'low' | 'medium' | 'high'
   /** ask before the agent deletes a patch */
   confirmDeletes: boolean
-  /** the audio agent make_audio briefs (audio.ts) */
-  audio: AudioSettings
+  /** the sound models make_sound briefs (soundTools.ts) */
+  sound: SoundSettings
 }
 
 export const PROVIDERS: Record<ProviderKind, { label: string; endpoint: string; model: string; needsKey: boolean; hint: string }> = {
@@ -94,7 +82,7 @@ export const defaultAiSettings = (provider: ProviderKind = 'anthropic'): AiSetti
   temperature: null,
   reasoningEffort: '',
   confirmDeletes: true,
-  audio: defaultAudioSettings(),
+  sound: defaultSoundSettings(),
 })
 
 /** a JSON Schema, as tools describe their input (the subset schema.ts validates) */

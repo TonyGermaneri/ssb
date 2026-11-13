@@ -195,7 +195,8 @@ tools:
 | `create_patch` / `update_patch` | makes or changes a patch: everything checked against the knobs' real ranges first (unknown names refused with suggestions, numbers clamped and reported), one undo step, and the patch selected so you can play it |
 | `delete_patch` | asks you first (a setting) |
 | `render_patch` | plays a note offline and silently, and hands the model its measurements (level, pitch, brightness, envelope times, harmonics, noise, clipping) and two pictures: the waveform with a zoom on a few cycles, and a spectrogram |
-| `make_audio` | briefs the **audio agent** to record a take, which becomes a sample on the board (below) |
+| `sound_models` / `load_sound_model` / `unload_sound_model` | which **sound models** there are, which is loaded and downloaded; load or switch one (asking you before anything downloads), or free its memory |
+| `make_sound` | briefs the loaded sound model to generate a clip from a caption, which becomes a sample on the board (below) |
 
 - **Providers** (⚙): **Anthropic** (Claude; an API key), **OpenAI** (an API key), or **LM Studio** on this computer
   (no key; turn its server's CORS on, and load a model that does tool calling — with vision, for the pictures). Each
@@ -214,16 +215,32 @@ tools:
   side; a setting the model doesn't take (temperature on a reasoning model) is left out rather than failing the
   request. Local models that write a tool call into their text (Qwen3.5 does, in its thinking) still get it run.
 
-**Audio agent** (⚙ ▸ AUDIO AGENT): a second model the patch designer briefs to perform and record a take — OpenAI's
-**gpt-audio-1.5** to begin with. It's a voice: speech in any delivery, sung or hummed notes and vowels, whispers,
-breaths, shouts and vocal chops, beatbox. The designer writes the brief as a **script** (exactly what's voiced) and
-**delivery** notes (how: voice, emotion, pace, the pitch and length of a held note), picks one of its voices, and the
-take comes back trimmed, faded and normalised as a new sample tagged `ai`. A take that holds a note gets that note as
-its root (and fine tune), and in its name, so it plays in tune from the keys; then the designer builds on it (a looped
-or granular vocal pad, a layer with waves) and renders it like any patch. **▷** on a take in the conversation plays it
-(in the plugin, out of the DAW's track). It uses its own OpenAI key or, left blank, the OpenAI provider's; **TEST**
-records a short take and plays it. Audio out costs roughly 8¢ a minute of take. Over MCP, `make_audio` uses the same
-settings.
+**Sound models** (⚙ ▸ SOUND MODEL; the app and the plugin, not a browser tab): text-to-audio models the agent briefs
+to generate sound effects, foley, ambiences, loops and notes, as sub-agents it can load and switch itself. SSB runs
+them on this computer with [audio.cpp](https://github.com/0xShug0/audio.cpp) (on the GPU: Metal on a Mac), in a helper
+process every bundle carries (`Contents/Helpers/audiocpp_server`), so a model's memory, or a crash, stays out of the
+DAW. Nothing to install: pick a model and press **DOWNLOAD + LOAD**.
+
+| Model | Download | Good for | Output |
+|---|---|---|---|
+| [MOSS-SoundEffect v2](https://huggingface.co/OpenMOSS-Team/MOSS-SoundEffect-v2.0) (default) | 4.0 GB | detailed sound effects and foley; about a minute a clip | mono 48 kHz, ≤ 30 s, Apache-2.0 |
+| [Stable Audio 3 Small Music](https://huggingface.co/stabilityai/stable-audio-3-small-music) | 1.7 GB | loops at a BPM, notes, pads, textures; seconds a clip | stereo 44.1 kHz |
+| [Stable Audio 3 Small SFX](https://huggingface.co/stabilityai/stable-audio-3-small-sfx) | 1.7 GB | quick stereo effects | stereo 44.1 kHz |
+| [Stable Audio Open 1.0](https://huggingface.co/stabilityai/stable-audio-open-1.0) | 5.3 GB | the original: samples and loops | stereo 44.1 kHz, ≤ 47 s; gated (accept its licence, paste a Hugging Face token) |
+
+The Stable Audio models are under the Stability AI Community License. The **MODEL** field is a combobox: pick one, or
+paste the Hugging Face URL of another GGUF (a MOSS-SoundEffect or Stable Audio model for audio.cpp). Before anything
+downloads it says how much, and how much memory the model takes while loaded; **DOWNLOAD + LOAD** asks once more, shows
+progress, and **CANCEL** stops it (a download resumes later). Models go to
+`~/Library/Application Support/WaveContour/SSB/sound/models` (**DELETE FILES** removes one). One model is loaded at a
+time, shared by every SSB in the same app or DAW; **UNLOAD** frees its memory. **TEST** generates a short clip and plays
+it; the header shows **♪** and the model while one is loaded.
+
+The agent sees which models there are and which is loaded, picks the loaded one, or loads another when it clearly fits
+better (a model not yet downloaded asks you first, with its size). Each clip comes back trimmed, faded and normalised as
+a new sample tagged `ai`, `generated` and the model; a clip that holds a steady note gets that note as its root (and fine
+tune) and in its name, so it plays in tune from the keys; then the agent builds on it and renders it like any patch.
+**▷** on a clip in the conversation plays it. Over MCP the same tools use the same settings.
 
 **MCP server** (⚙ ▸ MCP SERVER, off until you turn it on; the app and the plugin, not a browser tab): the same tools
 for an agent outside SSB — Claude Code, Claude Desktop, Cursor, anything that speaks MCP — working on the board SSB

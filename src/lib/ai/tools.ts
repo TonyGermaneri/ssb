@@ -1,8 +1,8 @@
 /**
  * What the agent can do to the board: find sounds and patches, read a patch as a spec, create / change / delete
  * patches (every change one undo step, checked before anything moves), select one for the user to play, render
- * a note offline into measurements and pictures it can look at, and brief the audio agent (audio.ts) to record a
- * take that becomes a sample sound.
+ * a note offline into measurements and pictures it can look at, and brief a sound model (soundTools.ts) to generate
+ * a clip that becomes a sample sound.
  */
 import type { useBoard } from '../../stores/board'
 import { patchLayers, type Patch, type Sound } from '../../types'
@@ -10,7 +10,7 @@ import type { AgentTool, ToolReply } from './agent'
 import { analyse } from './analysis'
 import { isTableAudioId, loadAkwf, tableFolderOf, tableLength } from '../akwf'
 import { applyChange, fromSpec, toSpec, type PatchChange, type PatchSpec } from './patchSpec'
-import { matchesScript, OPENAI_VOICES, performTake, readPcmWav, shapeTake, takePitch, type AudioAgentConfig } from './audio'
+import { createSoundTools, type SoundAgent } from './soundTools'
 import type { JsonSchema } from './types'
 
 type Board = ReturnType<typeof useBoard>
@@ -69,8 +69,8 @@ const headerSchema: JsonSchema = {
 export interface ToolOptions {
   /** ask before delete_patch */
   confirmDeletes: boolean
-  /** the audio agent make_audio briefs, as configured when it runs (null: not set up) */
-  audio?: () => AudioAgentConfig | null
+  /** the sound models (sound server) make_sound briefs; without it, no sound tools */
+  sound?: SoundAgent
 }
 
 export function createTools(board: Board, o: ToolOptions): AgentTool[] {
@@ -262,74 +262,6 @@ export function createTools(board: Board, o: ToolOptions): AgentTool[] {
       },
     },
     {
-      name: 'make_audio',
-      description:
-        'Brief the audio agent (a separate voice model) to perform and record one take; it lands on the board as a new sample sound (tagged "ai") you can put in patch slots. It is a voice: speech in any delivery, sung or hummed sustained notes and vowels ("ooh", "aah", "mmm"), whispers, breaths, shouts and vocal chops, beatbox and mouth percussion, vocal sound effects. Not instruments, not music beyond one voice. The take is trimmed, faded and normalised (-1 dBFS); a steadily pitched take gets that pitch as its rootNote (and fine) so it plays in tune on the keys. Answers its "sound" reference, length, pitch and what it voiced. Each take costs the user a little (OpenAI audio); make one when it serves what they asked for.',
-      schema: {
-        type: 'object',
-        properties: {
-          script: {
-            type: 'string',
-            description: 'exactly what it voices, nothing else: the words ("Super Sound Board"), or the sound spelled out ("Ooooooh", "Mmmmmm", "Shhhhh", "pff tss k tss"). Never put directions here: they get read aloud',
-          },
-          delivery: {
-            type: 'string',
-            description: 'how to perform it: voice quality, emotion, pace, pitch and length (e.g. "sung: one long steady note on middle C, soft and pure, about 4 seconds, no vibrato"; "deep, slow, robotic announcer, a pause between words")',
-          },
-          voice: { type: 'string', enum: [...OPENAI_VOICES], description: 'whose voice (default: the one in the settings)' },
-          name: { type: 'string', description: 'the sound\'s name, UPPER CASE (e.g. "SOFT HUM"); a take that holds a note gets the note it holds added (any note you wrote is replaced)' },
-          tags: { type: 'string', description: 'comma separated (e.g. "vocal, hum, sustained")' },
-          max_seconds: { type: 'number', minimum: 0.5, maximum: 60, description: 'cut the take there (default 20)' },
-          root_note: { type: 'integer', minimum: 0, maximum: 127, description: 'the MIDI note the take sounds at, when you know better than the detection (default: the detected steady pitch, else 60)' },
-        },
-        required: ['script'],
-        additionalProperties: false,
-      },
-      run: async (
-        input: { script: string; delivery?: string; voice?: string; name?: string; tags?: string; max_seconds?: number; root_note?: number },
-        signal?: AbortSignal,
-      ): Promise<ToolReply> => {
-        const cfg = o.audio?.()
-        if (!cfg) throw new Error('the audio agent is not set up: it needs an OpenAI API key (the user adds one in the AI settings, under AUDIO AGENT or as the OpenAI provider\'s key). Tell the user.')
-        const take = await performTake(cfg, { script: input.script, delivery: input.delivery, voice: input.voice }, signal)
-        const pcm = readPcmWav(take.wav)
-        if (!pcm) throw new Error('the take came back in a form that could not be read (not a PCM WAV)')
-        const shaped = shapeTake(pcm.channels, pcm.rate, { maxSeconds: input.max_seconds ?? 20 })
-        if (shaped.silent) throw new Error(`the take came back silent${take.transcript ? ` (it says it voiced: “${take.transcript}”)` : ''}; try again, reworded`)
-        const p = takePitch(shaped.data, shaped.rate)
-        const tuned = input.root_note === undefined && !!p?.steady
-        const rootNote = input.root_note ?? (tuned ? Math.round(p!.midi) : 60)
-        const fine = tuned ? -p!.cents : 0
-        // a take that holds a note is named with the note it holds (not one guessed before it was heard)
-        const base = (input.name?.trim() || input.script.trim().slice(0, 24) || 'TAKE').toUpperCase()
-        const name = tuned ? `${base.replace(/\s*\b[A-G]#?-?\d\b/g, '').trim()} ${p!.name}`.trim() : base
-        const tags = ['take', ...(input.tags ?? '').split(',').map((t) => t.trim().toLowerCase())].filter(Boolean)
-        const snd = await board.addAgentSound([shaped.data], shaped.rate, { name, tags, rootNote, fine })
-        const notes: string[] = []
-        if (shaped.cut) notes.push(`it ran past ${input.max_seconds ?? 20} s and was cut there`)
-        if (!matchesScript(input.script, take.transcript)) notes.push('what it says it voiced differs from the script (it may have answered or improvised): listen with render_patch, or try again with the script reworded')
-        if (shaped.peakDb < -30) notes.push(`it came back quiet (peak ${shaped.peakDb} dBFS) and was raised a lot: expect some noise`)
-        return {
-          text: json({
-            sound: board.soundRef(snd.id)?.ref ?? snd.id,
-            name,
-            seconds: Math.round(shaped.seconds * 100) / 100,
-            voiced: take.transcript,
-            pitch: p
-              ? { note: p.name, cents: p.cents, hz: p.hz, steady: p.steady, voiced_share: p.voiced }
-              : 'none: unpitched (noise, whisper, percussion)',
-            rootNote,
-            fine,
-            voice: take.voice,
-            model: take.model,
-            audio_tokens: { in: take.usage.audioIn, out: take.usage.audioOut },
-            ...(notes.length ? { notes } : {}),
-          }),
-          soundId: snd.id,
-        }
-      },
-    },
-    {
       name: 'render_patch',
       description:
         'Play one note of a patch (or a single sound) offline and silently, then measure it: peak / RMS level, pitch, brightness (spectral centroid), attack / decay / release, harmonics, noise, stereo, clipping; and return a waveform picture (with a zoom on a few cycles) and a spectrogram (log frequency, dB colour) to look at. Without patch_id or sound, the selected patch.',
@@ -386,5 +318,6 @@ export function createTools(board: Board, o: ToolOptions): AgentTool[] {
       },
     },
   ]
+  if (o.sound) tools.push(...createSoundTools(board, o.sound))
   return tools
 }

@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useAi, type Item } from '../lib/ai/store'
-import { AUDIO_PROVIDERS, PROVIDERS, type Effort, type ProviderKind } from '../lib/ai/types'
+import { PROVIDERS, type Effort, type ProviderKind } from '../lib/ai/types'
+import { downloadBytes, fmtBytes, SOUND_MODELS } from '../lib/ai/soundModels'
+import ComboBox from './ComboBox.vue'
 import { useBoard } from '../stores/board'
 import { preview } from '../audio/engine'
 import { mcpSaved, mcpStatus } from '../lib/ai/mcpStatus'
@@ -69,7 +71,10 @@ const STARTERS = [
   'Make a punchy FM bass for techno; keep it mono with a short glide.',
   'Look at the selected patch: what does it sound like, and how could it be better?',
   'Find three bell-like waves and build a glassy keys patch from them.',
-  'Record a soft hummed note with the audio agent and make a breathy vocal pad from it.',
+  // the sound models are the app's and the plugin's
+  ...(ai.soundAvailable
+    ? ['Generate a deep sci-fi door whoosh with the sound model and put it on the board.', 'Make a rainy-night ambience with the sound model, then build a slow evolving pad patch around it.']
+    : []),
 ]
 function startRename(id: string, title: string) {
   renaming.value = id
@@ -89,29 +94,63 @@ async function test() {
 }
 const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
-// ── the audio agent (make_audio) ──
-const showAudioKey = ref(false)
-const testingAudio = ref('')
-const audioKeyState = computed(() =>
-  ai.settings.audio.apiKey ? 'Its own key.' : ai.audioReady ? 'Using the OpenAI provider’s key.' : 'No OpenAI key yet: add one here, or as the OpenAI provider’s key.',
-)
-/** a take, played where the board plays (in the plugin: the DAW's track) */
-function playTake(channels: Float32Array[], rate: number) {
-  const buf = new AudioBuffer({ numberOfChannels: 1, length: channels[0].length, sampleRate: rate })
-  buf.getChannelData(0).set(channels[0])
+// ── the sound models (make_sound): the SSB app or plugin runs them natively (none in a browser tab) ──
+const sound = computed(() => ai.soundStatus)
+const pick = computed(() => ai.soundPick)
+const labelOf = (id?: string) => (id ? (SOUND_MODELS.find((m) => m.id === id)?.label ?? (pick.value?.id === id ? pick.value.label : id)) : '')
+const soundOptions = SOUND_MODELS.map((m) => ({
+  value: m.id,
+  label: m.label,
+  detail: `${fmtBytes(downloadBytes(m))} · ${m.channels === 2 ? 'stereo' : 'mono'}${m.gated ? ' · token' : ''}`,
+}))
+const showHfToken = ref(false)
+const confirmDownload = ref(false)
+const testingSound = ref('')
+const soundLoaded = computed(() => !!pick.value && sound.value?.loaded?.id === pick.value.id)
+/** what LOAD would download (0: it's here; null: unknown) */
+const toDownload = computed(() => {
+  const c = ai.soundCheck
+  if (c && c.id === pick.value?.id) return c.downloaded ? 0 : c.missing || (pick.value ? downloadBytes(pick.value) : 0) || null
+  return pick.value ? downloadBytes(pick.value) || null : null
+})
+const taskLine = computed(() => {
+  const t = sound.value?.task
+  if (!t) return ''
+  const who = labelOf(t.model)
+  const pct = t.progress == null ? '' : ` · ${Math.round(t.progress * 100)} %`
+  if (t.kind === 'download') return `Downloading ${who}: ${fmtBytes(t.done)} of ${t.total ? fmtBytes(t.total) : '?'}${pct}`
+  if (t.kind === 'load') return `Loading ${who}… ${Math.round(t.elapsed)} s`
+  return `Generating with ${who}… ${Math.round(t.elapsed)} s`
+})
+function loadSound() {
+  confirmDownload.value = false
+  if (toDownload.value !== 0 && !soundLoaded.value) return void (confirmDownload.value = true)
+  void ai.loadSound()
+}
+function downloadAndLoad() {
+  confirmDownload.value = false
+  void ai.loadSound()
+}
+watch(() => pick.value?.id, () => ((confirmDownload.value = false), (testingSound.value = '')))
+/** a clip, played where the board plays (in the plugin: the DAW's track) */
+function playClip(channels: Float32Array[], rate: number) {
+  const buf = new AudioBuffer({ numberOfChannels: channels.length, length: channels[0].length, sampleRate: rate })
+  channels.forEach((c, i) => buf.getChannelData(i).set(c))
   preview(buf, 1, Math.max(0.1, buf.duration - 0.1))
 }
-async function testAudio() {
-  testingAudio.value = 'Recording a take…'
+async function testSound() {
+  testingSound.value = 'Generating a short clip…'
   try {
-    const t = await ai.testAudio()
-    testingAudio.value = `✓ ${t.text}`
-    playTake(t.channels, t.rate)
+    const t = await ai.testSound(pick.value?.tag === 'stable-audio' ? 'a single bright synth stab, short decay' : 'a short glass clink, close and dry')
+    testingSound.value = `✓ ${t.text}`
+    playClip(t.channels, t.rate)
   } catch (e) {
-    testingAudio.value = `✗ ${e instanceof Error ? e.message : String(e)}`
+    testingSound.value = `✗ ${e instanceof Error ? e.message : String(e)}`
   }
 }
-/** ▷ on a take in the conversation: the board's sound, played once (again: stops it) */
+watch(open, (o) => ai.watchSound(o), { immediate: true })
+onBeforeUnmount(() => open.value && ai.watchSound(false))
+/** ▷ on a clip in the conversation: the board's sound, played once (again: stops it) */
 function playSound(id: string) {
   board.press(id)
   setTimeout(() => board.release(id), 150)
@@ -166,6 +205,15 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
         <span v-if="totals" class="usage" title="This conversation: input at full price · read from / written to the prompt cache · output">{{ totals }}</span>
         <button v-if="mcpStatus.state === 'on'" class="chip on mcp-chip" :title="`MCP server on at ${mcpStatus.url}: agents outside SSB can use these tools`" @click="showSettings = true">
           <i class="led" /> MCP
+        </button>
+        <button
+          v-if="sound?.loaded || sound?.task"
+          class="chip on mcp-chip"
+          :class="{ busy: !!sound?.task }"
+          :title="sound?.task ? taskLine : `Sound model loaded (${sound?.backend}): the agent generates audio with it`"
+          @click="showSettings = true"
+        >
+          <i class="led" /> ♪ {{ sound?.task ? sound.task.kind.toUpperCase() + (sound.task.progress != null ? ` ${Math.round(sound.task.progress * 100)}%` : '…') : sound?.loaded?.label }}
         </button>
         <v-spacer />
         <button class="hw-btn icon" :class="{ lit: showSettings }" title="Settings: provider, key, model" @click="showSettings = !showSettings">
@@ -267,32 +315,73 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
             Keys stay in this computer's browser storage: never in the board, its exports, or a plugin's saved session. Conversations keep the provider and model they began with.
           </p>
 
-          <h4 class="mcp-head">AUDIO AGENT</h4>
+          <h4 class="mcp-head">SOUND MODEL</h4>
           <p class="hint">
-            A voice model the agent can brief to record a take (speech, a sung or hummed note, whispers, shouts, beatbox), which becomes a sample on the
-            board for its patches. OpenAI's {{ AUDIO_PROVIDERS.openai.model }}: roughly 8¢ per minute of audio it records.
+            A text-to-audio model the agent briefs to generate sound effects, ambiences, loops and notes, which land on the board as samples for its
+            patches. SSB runs it on this computer (audio.cpp, on the GPU), one at a time; the agent can load or switch models itself, and asks before
+            anything downloads.
           </p>
-          <div class="grid">
+          <p v-if="!ai.soundAvailable" class="mcp-state">Needs the SSB app or plugin: a browser tab can't run a model.</p>
+          <template v-else>
+            <p v-if="sound && !sound.available" class="err">This build of SSB doesn't carry the sound model helper.</p>
             <label>
-              MODEL
-              <input v-model.trim="ai.settings.audio.model" spellcheck="false" :placeholder="AUDIO_PROVIDERS.openai.model" />
+              MODEL (PICK ONE, OR PASTE A GGUF'S HUGGING FACE URL)
+              <ComboBox v-model="ai.settings.sound.model" :options="soundOptions" placeholder="huggingface.co/org/repo/blob/main/model.gguf" />
             </label>
-            <label>
-              VOICE
-              <select v-model="ai.settings.audio.voice"><option v-for="v in AUDIO_PROVIDERS.openai.voices" :key="v" :value="v">{{ v }}</option></select>
-            </label>
-          </div>
-          <label>
-            OPENAI KEY (BLANK: THE OPENAI PROVIDER'S)
-            <span class="row">
-              <input v-model.trim="ai.settings.audio.apiKey" :type="showAudioKey ? 'text' : 'password'" spellcheck="false" autocomplete="off" placeholder="kept on this computer only" />
-              <button class="hw-btn icon" :title="showAudioKey ? 'Hide' : 'Show'" @click="showAudioKey = !showAudioKey"><v-icon size="14" :icon="showAudioKey ? 'mdi-eye-off' : 'mdi-eye'" /></button>
-            </span>
-          </label>
-          <div class="row">
-            <button class="hw-btn" :disabled="!ai.audioReady" title="Record a short take and play it" @click="testAudio">TEST</button>
-            <span class="test" :class="{ err: testingAudio.startsWith('✗') || !ai.audioReady }">{{ testingAudio || audioKeyState }}</span>
-          </div>
+            <template v-if="pick">
+              <p class="hint">
+                <a :href="pick.url" target="_blank" rel="noopener">{{ pick.url.replace('https://', '') }}</a> · {{ pick.channels === 2 ? 'stereo' : 'mono' }}
+                {{ pick.sampleRate / 1000 }} kHz · up to {{ pick.maxSeconds }} s · {{ pick.license }}<template v-if="pick.custom"> · a custom GGUF: a MOSS-SoundEffect or Stable Audio model for audio.cpp</template>
+              </p>
+              <p v-if="soundLoaded" class="test">✓ Loaded ({{ sound?.backend }}, {{ sound?.loaded?.loadSeconds?.toFixed(0) }} s to load).</p>
+              <p v-else-if="toDownload !== 0" class="warn">
+                ⚠ Loading it downloads <b>{{ toDownload ? fmtBytes(toDownload) : 'a file of unknown size' }}</b> the first time, into SSB's folder on this computer, and it
+                takes about {{ pick.memoryGb }} GB of memory while loaded.
+              </p>
+              <p v-else class="hint">Downloaded: loading it takes a few seconds.</p>
+            </template>
+            <p v-else-if="ai.settings.sound.model" class="err">Not a model: pick one, or give the Hugging Face URL of a .gguf file.</p>
+            <template v-if="pick?.gated">
+              <label>
+                HUGGING FACE TOKEN
+                <span class="row">
+                  <input v-model.trim="ai.settings.sound.hfToken" :type="showHfToken ? 'text' : 'password'" spellcheck="false" autocomplete="off" placeholder="hf_… kept on this computer only" />
+                  <button class="hw-btn icon" :title="showHfToken ? 'Hide' : 'Show'" @click="showHfToken = !showHfToken"><v-icon size="14" :icon="showHfToken ? 'mdi-eye-off' : 'mdi-eye'" /></button>
+                </span>
+              </label>
+              <p class="hint">
+                {{ pick.label }} is gated: sign in to Hugging Face, accept its licence on <a :href="pick.url" target="_blank" rel="noopener">its page</a>, and paste a read token
+                from <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">huggingface.co/settings/tokens</a>.
+              </p>
+            </template>
+            <div v-if="confirmDownload" class="confirm-dl">
+              <v-icon icon="mdi-download" color="secondary" />
+              <span>Download {{ toDownload ? fmtBytes(toDownload) : 'it' }} for {{ pick?.label }}? It's once; CANCEL stops it, and it resumes later.</span>
+              <button class="hw-btn lit" @click="downloadAndLoad">DOWNLOAD</button>
+              <button class="hw-btn" @click="confirmDownload = false">CANCEL</button>
+            </div>
+            <div class="row">
+              <button v-if="!soundLoaded" class="hw-btn" :disabled="!sound?.available || !!sound?.task || !pick" title="Load it (downloading it first if it isn't here)" @click="loadSound">
+                {{ toDownload !== 0 ? 'DOWNLOAD + LOAD' : 'LOAD' }}
+              </button>
+              <button v-if="sound?.loaded" class="hw-btn" :disabled="!!sound.task" title="Free its memory" @click="ai.unloadSound()">UNLOAD</button>
+              <button v-if="sound?.task" class="hw-btn" title="Stop the download, load or generation" @click="ai.cancelSound()">CANCEL</button>
+              <button v-if="soundLoaded" class="hw-btn" :disabled="!!sound?.task" title="Generate a short clip and play it" @click="testSound">TEST</button>
+              <button
+                v-if="pick && !soundLoaded && toDownload === 0"
+                class="hw-btn"
+                :disabled="!!sound?.task"
+                title="Delete its downloaded files (it downloads again when loaded)"
+                @click="ai.removeSound()"
+              >
+                DELETE FILES
+              </button>
+              <span class="test" :class="{ err: testingSound.startsWith('✗') }">{{ taskLine || testingSound }}</span>
+            </div>
+            <div v-if="sound?.task && sound.task.progress != null" class="bar"><i :style="{ width: `${Math.round(sound.task.progress * 100)}%` }" /></div>
+            <p v-if="ai.soundError" class="err">{{ ai.soundError }}</p>
+            <p v-else-if="sound?.error && sound.error.message !== 'cancelled'" class="err">{{ labelOf(sound.error.model) }}: {{ sound.error.message }}</p>
+          </template>
 
           <h4 class="mcp-head">MCP SERVER</h4>
           <p class="hint">
@@ -338,7 +427,7 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
         <section v-else class="chat">
           <div ref="listEl" class="messages selectable">
             <div v-if="!items.length" class="welcome">
-              <p>Describe a sound, or ask about a patch. The agent can find waves, read, make, change and delete patches, render notes to look at their waveform and spectrogram, and brief an audio agent to record voice takes (with an OpenAI key).</p>
+              <p>Describe a sound, or ask about a patch. The agent can find waves, read, make, change and delete patches, render notes to look at their waveform and spectrogram, and, in the SSB app or plugin, generate sound effects, ambiences, loops and notes with a sound model on this computer (⚙ SOUND MODEL).</p>
               <button v-for="s in STARTERS" :key="s" class="starter" :disabled="!ai.configured" @click="send(s)">{{ s }}</button>
               <p v-if="!ai.configured" class="err">Set up a provider first (⚙).</p>
             </div>
@@ -375,7 +464,7 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
                 <pre v-if="it.output" class="io out">{{ it.output }}</pre>
               </details>
               <div v-if="it.kind === 'tool' && it.sound && board.byId(it.sound)" class="take">
-                <button class="hw-btn" title="Play the take (again: stop)" @click="playSound(it.sound)"><v-icon size="13" icon="mdi-play" /> {{ board.byId(it.sound)?.settings.name }}</button>
+                <button class="hw-btn" title="Play it (again: stop)" @click="playSound(it.sound)"><v-icon size="13" icon="mdi-play" /> {{ board.byId(it.sound)?.settings.name }}</button>
                 <span>on the board, in SAMPLES</span>
               </div>
               <div v-if="it.kind === 'tool' && it.images?.length" class="images">
@@ -704,6 +793,58 @@ textarea {
   border-radius: 50%;
   background: var(--c-success);
   box-shadow: 0 0 5px var(--c-success);
+}
+.warn {
+  margin: 4px 0;
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  color: #ffc46b;
+}
+.warn b {
+  color: #ffd99a;
+}
+.settings .hint a {
+  color: var(--c-secondary);
+}
+.confirm-dl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+  padding: 6px 8px;
+  border-radius: 3px;
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  color: var(--ink);
+  background: rgba(255, 196, 107, 0.08);
+  border: 1px solid rgba(255, 196, 107, 0.35);
+}
+.confirm-dl span {
+  flex: 1;
+}
+.bar {
+  height: 4px;
+  margin: 6px 0;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.bar i {
+  display: block;
+  height: 100%;
+  background: var(--c-secondary);
+  box-shadow: 0 0 6px var(--c-secondary);
+  transition: width 0.4s;
+}
+.mcp-chip.busy .led {
+  background: var(--c-secondary);
+  box-shadow: 0 0 5px var(--c-secondary);
+  animation: blink 1s infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0.3;
+  }
 }
 .test {
   font-family: 'VT323', monospace;

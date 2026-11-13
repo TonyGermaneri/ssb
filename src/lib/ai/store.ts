@@ -13,12 +13,15 @@ import { runAgent, type AgentEvent } from './agent'
 import { SYSTEM_PROMPT } from './prompt'
 import { createSession, listModels } from './providers'
 import { createTools } from './tools'
-import { performTake, readPcmWav, resolveAudioAgent, shapeTake, type AudioAgentConfig } from './audio'
+import { readPcmWav, shapeClip } from './audio'
+import { soundAgentFrom } from './soundTools'
+import { soundModelFrom, type SoundModelInfo } from './soundModels'
+import { generateWithStop, soundModelsAvailable, type SoundCheck, type SoundStatus } from './soundHost'
 import {
   addUsage,
   AiError,
   defaultAiSettings,
-  defaultAudioSettings,
+  defaultSoundSettings,
   emptyUsage,
   PROVIDERS,
   type AiSettings,
@@ -65,11 +68,14 @@ interface StoredSettings {
 function loadSettings(): StoredSettings {
   try {
     const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? 'null') as StoredSettings | null
-    if (raw?.current)
+    if (raw?.current) {
+      // (0.16's audio agent kept its settings under "audio": gone)
+      const { audio: _old, ...current } = raw.current as AiSettings & { audio?: unknown }
       return {
-        current: { ...defaultAiSettings(raw.current.provider), ...raw.current, audio: { ...defaultAudioSettings(), ...(raw.current.audio ?? {}) } },
+        current: { ...defaultAiSettings(current.provider), ...current, sound: { ...defaultSoundSettings(), ...(current.sound ?? {}) } },
         profiles: raw.profiles ?? {},
       }
+    }
   } catch {
     /* storage blocked or broken: defaults */
   }
@@ -100,10 +106,83 @@ export const useAi = defineStore('ai', () => {
     Object.assign(settings, { provider: p, endpoint: saved?.endpoint ?? PROVIDERS[p].endpoint, apiKey: saved?.apiKey ?? '', model: saved?.model ?? PROVIDERS[p].model })
   }
   const configured = computed(() => !!settings.model && !!settings.endpoint && (!PROVIDERS[settings.provider].needsKey || !!settings.apiKey))
-  /** the audio agent make_audio briefs: its own key, else the OpenAI provider's (null: neither) */
-  const audioAgent = (): AudioAgentConfig | null => resolveAudioAgent({ current: settings, profiles })
-  const audioReady = computed(() => !!audioAgent())
-  const toolsFor = () => createTools(board, { confirmDeletes: settings.confirmDeletes, audio: audioAgent })
+  // ── the sound models (the SSB app or plugin runs them: soundHost.ts; none in a browser tab) ──
+  const soundAvailable = soundModelsAvailable()
+  const soundStatus = ref<SoundStatus | null>(null)
+  const soundError = ref('')
+  const soundAgent = soundAgentFrom(() => settings.sound, {
+    // the agent loaded a model: the settings' pick follows it
+    onLoaded: (m) => {
+      if (soundModelFrom(settings.sound.model)?.id !== m.id) settings.sound.model = m.custom ? settings.sound.model : m.id
+      void pollSound()
+    },
+    onStatus: (st) => {
+      soundStatus.value = st
+      soundError.value = ''
+    },
+  })
+  /** the model picked in the combobox (null: what's typed isn't a model) */
+  const soundPick = computed<SoundModelInfo | null>(() => soundModelFrom(settings.sound.model))
+  const toolsFor = () => createTools(board, { confirmDeletes: settings.confirmDeletes, ...(soundAvailable ? { sound: soundAgent } : {}) })
+  async function pollSound() {
+    if (!soundAvailable) return
+    try {
+      soundStatus.value = await soundAgent.host().status()
+    } catch (e) {
+      soundStatus.value = null
+      soundError.value = e instanceof Error ? e.message : String(e)
+    }
+  }
+  /** keep the host's state fresh while someone's looking (twice a second while it works, else every 3 s) */
+  let soundWatchers = 0
+  let soundTimer: ReturnType<typeof setTimeout> | undefined
+  function soundTick() {
+    clearTimeout(soundTimer)
+    if (!soundWatchers || !soundAvailable) return
+    void pollSound().finally(() => {
+      if (soundWatchers) soundTimer = setTimeout(soundTick, soundStatus.value?.task ? 500 : 3000)
+    })
+  }
+  function watchSound(on: boolean) {
+    soundWatchers = Math.max(0, soundWatchers + (on ? 1 : -1))
+    if (on && soundWatchers === 1) soundTick()
+  }
+  /** whether the picked model is downloaded, and what's left to download */
+  const soundCheck = ref<SoundCheck | null>(null)
+  async function checkSound() {
+    const m = soundPick.value
+    soundCheck.value = null
+    if (!m || !soundAvailable) return
+    try {
+      const [c] = await soundAgent.host().check([m])
+      if (m.id === soundPick.value?.id) soundCheck.value = c ?? null
+    } catch {
+      soundCheck.value = null
+    }
+  }
+  watch([() => soundPick.value?.id, () => soundStatus.value?.task?.kind, () => soundStatus.value?.loaded?.id], () => void checkSound(), { immediate: true })
+  async function soundAction(f: () => Promise<void>) {
+    try {
+      await f()
+      soundError.value = ''
+    } catch (e) {
+      soundError.value = e instanceof Error ? e.message : String(e)
+    }
+    await pollSound()
+    soundTick()
+  }
+  const loadSound = () =>
+    soundAction(async () => {
+      if (!soundPick.value) throw new AiError('Pick a model, or give the Hugging Face URL of a GGUF file', 'request')
+      await soundAgent.host().load(soundPick.value)
+    })
+  const unloadSound = () => soundAction(() => soundAgent.host().unload())
+  const cancelSound = () => soundAction(() => soundAgent.host().cancel())
+  const removeSound = () =>
+    soundAction(async () => {
+      if (soundPick.value) await soundAgent.host().remove(soundPick.value)
+      await checkSound()
+    })
 
   // ── models ──
   const models = ref<string[]>([])
@@ -372,19 +451,21 @@ export const useAi = defineStore('ai', () => {
     return `${r.model} answered: ${(r.text || r.thinking).trim().slice(0, 60) || '(empty)'}`
   }
 
-  /** one short take with the audio agent's settings: it works (and how it sounds), or why not */
-  async function testAudio(): Promise<{ text: string; channels: Float32Array[]; rate: number }> {
-    const cfg = audioAgent()
-    if (!cfg) throw new AiError('No OpenAI key: add one here, or as the OpenAI provider’s key', 'auth')
-    const take = await performTake(cfg, { script: 'Super Sound Board.', delivery: 'warm and clear, like a radio station ident.' })
-    const pcm = readPcmWav(take.wav)
-    if (!pcm) throw new AiError('The take could not be read', 'other')
-    const shaped = shapeTake(pcm.channels, pcm.rate, { maxSeconds: 10 })
-    return { text: `${take.model} · ${take.voice}: “${take.transcript}” (${shaped.seconds.toFixed(1)} s)`, channels: [shaped.data], rate: shaped.rate }
+  /** a short clip from the loaded sound model: it works (and how it sounds), or why not */
+  async function testSound(prompt: string): Promise<{ text: string; channels: Float32Array[]; rate: number }> {
+    const m = soundPick.value
+    if (!m) throw new AiError('Pick a model first', 'request')
+    const clip = await generateWithStop(soundAgent.host(), m, { prompt, seconds: 3, steps: Math.min(m.defaultSteps, 24) })
+    const pcm = readPcmWav(clip.wav)
+    if (!pcm) throw new AiError('The clip could not be read', 'other')
+    const shaped = shapeClip(pcm.channels, pcm.rate, { maxSeconds: 4, keepChannels: true })
+    if (shaped.silent) throw new AiError('The clip came back silent', 'other')
+    return { text: `${m.label}: ${shaped.seconds.toFixed(1)} s in ${clip.elapsed} s (${Math.min(m.defaultSteps, 24)} steps, seed ${clip.seed})`, channels: shaped.channels, rate: shaped.rate }
   }
 
   return {
-    settings, switchProvider, configured, audioReady, testAudio, models, modelsError, fetchModels,
+    settings, switchProvider, configured, models, modelsError, fetchModels,
+    soundAvailable, soundStatus, soundError, soundPick, soundCheck, watchSound, pollSound, loadSound, unloadSound, cancelSound, removeSound, testSound,
     list, current, newConversation, open, remove, toggleStar, rename,
     pins, pinnable, togglePin, running, confirming, send, stop, testConnection,
   }
