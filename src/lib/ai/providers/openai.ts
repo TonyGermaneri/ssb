@@ -404,7 +404,7 @@ export function recoverToolCalls(text: string, tools: ToolSpec[]): { name: strin
 const imagePart = (im: AiImage): Part => ({ type: 'image_url', image_url: { url: `data:${im.mediaType};base64,${im.data}` } })
 
 /** a request to the server, its failures as something to show */
-async function request(fetchImpl: typeof fetch, s: AiSettings, path: string, init: RequestInit): Promise<Response> {
+export async function request(fetchImpl: typeof fetch, s: Pick<AiSettings, 'provider' | 'endpoint' | 'apiKey'>, path: string, init: RequestInit): Promise<Response> {
   const url = s.endpoint.replace(/\/+$/, '') + path
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (s.apiKey) headers.authorization = `Bearer ${s.apiKey}`

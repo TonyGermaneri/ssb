@@ -13,10 +13,12 @@ import { runAgent, type AgentEvent } from './agent'
 import { SYSTEM_PROMPT } from './prompt'
 import { createSession, listModels } from './providers'
 import { createTools } from './tools'
+import { performTake, readPcmWav, resolveAudioAgent, shapeTake, type AudioAgentConfig } from './audio'
 import {
   addUsage,
   AiError,
   defaultAiSettings,
+  defaultAudioSettings,
   emptyUsage,
   PROVIDERS,
   type AiSettings,
@@ -31,7 +33,7 @@ import {
 export type Item =
   | { kind: 'user'; text: string; msg: number }
   | { kind: 'assistant'; text: string; thinking: string; streaming: boolean; model?: string; usage?: Usage }
-  | { kind: 'tool'; id: string; name: string; input: string; status: 'running' | 'done' | 'error'; output?: string; images?: string[] }
+  | { kind: 'tool'; id: string; name: string; input: string; status: 'running' | 'done' | 'error'; output?: string; images?: string[]; sound?: string }
   | { kind: 'note'; text: string; level: 'info' | 'error' }
 
 export interface Conversation {
@@ -63,7 +65,11 @@ interface StoredSettings {
 function loadSettings(): StoredSettings {
   try {
     const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? 'null') as StoredSettings | null
-    if (raw?.current) return { current: { ...defaultAiSettings(raw.current.provider), ...raw.current }, profiles: raw.profiles ?? {} }
+    if (raw?.current)
+      return {
+        current: { ...defaultAiSettings(raw.current.provider), ...raw.current, audio: { ...defaultAudioSettings(), ...(raw.current.audio ?? {}) } },
+        profiles: raw.profiles ?? {},
+      }
   } catch {
     /* storage blocked or broken: defaults */
   }
@@ -94,6 +100,10 @@ export const useAi = defineStore('ai', () => {
     Object.assign(settings, { provider: p, endpoint: saved?.endpoint ?? PROVIDERS[p].endpoint, apiKey: saved?.apiKey ?? '', model: saved?.model ?? PROVIDERS[p].model })
   }
   const configured = computed(() => !!settings.model && !!settings.endpoint && (!PROVIDERS[settings.provider].needsKey || !!settings.apiKey))
+  /** the audio agent make_audio briefs: its own key, else the OpenAI provider's (null: neither) */
+  const audioAgent = (): AudioAgentConfig | null => resolveAudioAgent({ current: settings, profiles })
+  const audioReady = computed(() => !!audioAgent())
+  const toolsFor = () => createTools(board, { confirmDeletes: settings.confirmDeletes, audio: audioAgent })
 
   // ── models ──
   const models = ref<string[]>([])
@@ -217,7 +227,7 @@ export const useAi = defineStore('ai', () => {
     if (session) return session
     // a conversation stays with the provider and model it began with (caches are per model; each keeps its own format)
     const s = c.transcript ? { ...settings, ...(profiles[c.provider] ?? {}), provider: c.provider, model: c.model } : { ...settings }
-    session = markRaw(createSession(s, SYSTEM_PROMPT, createTools(board, { confirmDeletes: settings.confirmDeletes }), { saved: c.transcript ?? undefined, cacheKey: c.id }))
+    session = markRaw(createSession(s, SYSTEM_PROMPT, toolsFor(), { saved: c.transcript ?? undefined, cacheKey: c.id }))
     return session
   }
 
@@ -315,6 +325,7 @@ export const useAi = defineStore('ai', () => {
           t.status = e.output.isError ? 'error' : 'done'
           t.output = e.output.text
           t.images = e.output.images?.map((im) => im.data)
+          if (e.output.soundId) t.sound = e.output.soundId
           saveSoon()
           return
         }
@@ -323,7 +334,7 @@ export const useAi = defineStore('ai', () => {
     try {
       const out = await runAgent(
         s,
-        createTools(board, { confirmDeletes: settings.confirmDeletes }),
+        toolsFor(),
         { text: prompt },
         {
           onEvent,
@@ -361,8 +372,19 @@ export const useAi = defineStore('ai', () => {
     return `${r.model} answered: ${(r.text || r.thinking).trim().slice(0, 60) || '(empty)'}`
   }
 
+  /** one short take with the audio agent's settings: it works (and how it sounds), or why not */
+  async function testAudio(): Promise<{ text: string; channels: Float32Array[]; rate: number }> {
+    const cfg = audioAgent()
+    if (!cfg) throw new AiError('No OpenAI key: add one here, or as the OpenAI provider’s key', 'auth')
+    const take = await performTake(cfg, { script: 'Super Sound Board.', delivery: 'warm and clear, like a radio station ident.' })
+    const pcm = readPcmWav(take.wav)
+    if (!pcm) throw new AiError('The take could not be read', 'other')
+    const shaped = shapeTake(pcm.channels, pcm.rate, { maxSeconds: 10 })
+    return { text: `${take.model} · ${take.voice}: “${take.transcript}” (${shaped.seconds.toFixed(1)} s)`, channels: [shaped.data], rate: shaped.rate }
+  }
+
   return {
-    settings, switchProvider, configured, models, modelsError, fetchModels,
+    settings, switchProvider, configured, audioReady, testAudio, models, modelsError, fetchModels,
     list, current, newConversation, open, remove, toggleStar, rename,
     pins, pinnable, togglePin, running, confirming, send, stop, testConnection,
   }

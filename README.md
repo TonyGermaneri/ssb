@@ -195,6 +195,7 @@ tools:
 | `create_patch` / `update_patch` | makes or changes a patch: everything checked against the knobs' real ranges first (unknown names refused with suggestions, numbers clamped and reported), one undo step, and the patch selected so you can play it |
 | `delete_patch` | asks you first (a setting) |
 | `render_patch` | plays a note offline and silently, and hands the model its measurements (level, pitch, brightness, envelope times, harmonics, noise, clipping) and two pictures: the waveform with a zoom on a few cycles, and a spectrogram |
+| `make_audio` | briefs the **audio agent** to record a take, which becomes a sample on the board (below) |
 
 - **Providers** (⚙): **Anthropic** (Claude; an API key), **OpenAI** (an API key), or **LM Studio** on this computer
   (no key; turn its server's CORS on, and load a model that does tool calling — with vision, for the pictures). Each
@@ -212,6 +213,17 @@ tools:
   (gpt-5.5, gpt-6…) use tools with **REASONING** set, their reasoning summary shown, and nothing stored on OpenAI's
   side; a setting the model doesn't take (temperature on a reasoning model) is left out rather than failing the
   request. Local models that write a tool call into their text (Qwen3.5 does, in its thinking) still get it run.
+
+**Audio agent** (⚙ ▸ AUDIO AGENT): a second model the patch designer briefs to perform and record a take — OpenAI's
+**gpt-audio-1.5** to begin with. It's a voice: speech in any delivery, sung or hummed notes and vowels, whispers,
+breaths, shouts and vocal chops, beatbox. The designer writes the brief as a **script** (exactly what's voiced) and
+**delivery** notes (how: voice, emotion, pace, the pitch and length of a held note), picks one of its voices, and the
+take comes back trimmed, faded and normalised as a new sample tagged `ai`. A take that holds a note gets that note as
+its root (and fine tune), and in its name, so it plays in tune from the keys; then the designer builds on it (a looped
+or granular vocal pad, a layer with waves) and renders it like any patch. **▷** on a take in the conversation plays it
+(in the plugin, out of the DAW's track). It uses its own OpenAI key or, left blank, the OpenAI provider's; **TEST**
+records a short take and plays it. Audio out costs roughly 8¢ a minute of take. Over MCP, `make_audio` uses the same
+settings.
 
 **MCP server** (⚙ ▸ MCP SERVER, off until you turn it on; the app and the plugin, not a browser tab): the same tools
 for an agent outside SSB — Claude Code, Claude Desktop, Cursor, anything that speaks MCP — working on the board SSB

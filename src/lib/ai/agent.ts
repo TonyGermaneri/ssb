@@ -4,6 +4,8 @@ import { addUsage, AiError, emptyUsage, type AiEvent, type AiImage, type ChatSes
 export interface ToolReply {
   text: string
   images?: AiImage[]
+  /** a sound it put on the board (the audio agent's take), for the dialog to offer playing */
+  soundId?: string
 }
 
 /** a tool the agent may call: its spec, how it runs, and whether it needs the user's yes first */
@@ -93,7 +95,7 @@ async function runTool(tools: AgentTool[], call: ToolCall, hooks: AgentHooks, si
   }
   try {
     const reply = await tool.run(call.input as never, signal)
-    return { ...base, text: reply.text, images: reply.images }
+    return { ...base, text: reply.text, images: reply.images, soundId: reply.soundId }
   } catch (e) {
     return { ...base, text: `Failed: ${e instanceof Error ? e.message : String(e)}`, isError: true }
   }

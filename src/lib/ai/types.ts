@@ -7,6 +7,28 @@
 
 export type ProviderKind = 'anthropic' | 'openai' | 'lmstudio'
 
+export type AudioProviderKind = 'openai'
+
+/** gpt-audio-1.5's built-in voices (marin and cedar are OpenAI's newest) */
+export const OPENAI_VOICES = ['marin', 'cedar', 'alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse'] as const
+
+export const AUDIO_PROVIDERS: Record<AudioProviderKind, { label: string; model: string; endpoint: string; voices: readonly string[] }> = {
+  openai: { label: 'OpenAI', model: 'gpt-audio-1.5', endpoint: 'https://api.openai.com/v1', voices: OPENAI_VOICES },
+}
+
+/** the audio agent's settings (part of the AI settings, kept in this browser's storage with the rest) */
+export interface AudioSettings {
+  provider: AudioProviderKind
+  model: string
+  /** the voice when the brief names none */
+  voice: string
+  /** its own key; '' = the OpenAI provider's */
+  apiKey: string
+  /** '' = the OpenAI provider's endpoint */
+  endpoint: string
+}
+export const defaultAudioSettings = (): AudioSettings => ({ provider: 'openai', model: AUDIO_PROVIDERS.openai.model, voice: 'marin', apiKey: '', endpoint: '' })
+
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 export interface AiSettings {
@@ -31,6 +53,8 @@ export interface AiSettings {
   reasoningEffort: '' | 'low' | 'medium' | 'high'
   /** ask before the agent deletes a patch */
   confirmDeletes: boolean
+  /** the audio agent make_audio briefs (audio.ts) */
+  audio: AudioSettings
 }
 
 export const PROVIDERS: Record<ProviderKind, { label: string; endpoint: string; model: string; needsKey: boolean; hint: string }> = {
@@ -70,6 +94,7 @@ export const defaultAiSettings = (provider: ProviderKind = 'anthropic'): AiSetti
   temperature: null,
   reasoningEffort: '',
   confirmDeletes: true,
+  audio: defaultAudioSettings(),
 })
 
 /** a JSON Schema, as tools describe their input (the subset schema.ts validates) */
@@ -115,6 +140,8 @@ export interface ToolOutput {
   text: string
   images?: AiImage[]
   isError?: boolean
+  /** a sound the tool put on the board (not sent to the model) */
+  soundId?: string
 }
 
 export interface Usage {

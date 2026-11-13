@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useAi, type Item } from '../lib/ai/store'
-import { PROVIDERS, type Effort, type ProviderKind } from '../lib/ai/types'
+import { AUDIO_PROVIDERS, PROVIDERS, type Effort, type ProviderKind } from '../lib/ai/types'
+import { useBoard } from '../stores/board'
+import { preview } from '../audio/engine'
 import { mcpSaved, mcpStatus } from '../lib/ai/mcpStatus'
 import { newMcpToken, setMcp, setMcpPort } from '../lib/ai/mcpHost'
 import { inNative } from '../native/bridge'
@@ -12,6 +14,7 @@ import { inNative } from '../native/bridge'
  */
 const open = defineModel<boolean>({ required: true })
 const ai = useAi()
+const board = useBoard()
 const showSettings = ref(!ai.configured)
 const draft = ref('')
 const listEl = ref<HTMLElement>()
@@ -66,6 +69,7 @@ const STARTERS = [
   'Make a punchy FM bass for techno; keep it mono with a short glide.',
   'Look at the selected patch: what does it sound like, and how could it be better?',
   'Find three bell-like waves and build a glassy keys patch from them.',
+  'Record a soft hummed note with the audio agent and make a breathy vocal pad from it.',
 ]
 function startRename(id: string, title: string) {
   renaming.value = id
@@ -84,6 +88,34 @@ async function test() {
   }
 }
 const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+// ── the audio agent (make_audio) ──
+const showAudioKey = ref(false)
+const testingAudio = ref('')
+const audioKeyState = computed(() =>
+  ai.settings.audio.apiKey ? 'Its own key.' : ai.audioReady ? 'Using the OpenAI provider’s key.' : 'No OpenAI key yet: add one here, or as the OpenAI provider’s key.',
+)
+/** a take, played where the board plays (in the plugin: the DAW's track) */
+function playTake(channels: Float32Array[], rate: number) {
+  const buf = new AudioBuffer({ numberOfChannels: 1, length: channels[0].length, sampleRate: rate })
+  buf.getChannelData(0).set(channels[0])
+  preview(buf, 1, Math.max(0.1, buf.duration - 0.1))
+}
+async function testAudio() {
+  testingAudio.value = 'Recording a take…'
+  try {
+    const t = await ai.testAudio()
+    testingAudio.value = `✓ ${t.text}`
+    playTake(t.channels, t.rate)
+  } catch (e) {
+    testingAudio.value = `✗ ${e instanceof Error ? e.message : String(e)}`
+  }
+}
+/** ▷ on a take in the conversation: the board's sound, played once (again: stops it) */
+function playSound(id: string) {
+  board.press(id)
+  setTimeout(() => board.release(id), 150)
+}
 
 // ── the MCP server: the same tools, for agents outside SSB ──
 const mcp = ref(mcpSaved())
@@ -235,6 +267,33 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
             Keys stay in this computer's browser storage: never in the board, its exports, or a plugin's saved session. Conversations keep the provider and model they began with.
           </p>
 
+          <h4 class="mcp-head">AUDIO AGENT</h4>
+          <p class="hint">
+            A voice model the agent can brief to record a take (speech, a sung or hummed note, whispers, shouts, beatbox), which becomes a sample on the
+            board for its patches. OpenAI's {{ AUDIO_PROVIDERS.openai.model }}: roughly 8¢ per minute of audio it records.
+          </p>
+          <div class="grid">
+            <label>
+              MODEL
+              <input v-model.trim="ai.settings.audio.model" spellcheck="false" :placeholder="AUDIO_PROVIDERS.openai.model" />
+            </label>
+            <label>
+              VOICE
+              <select v-model="ai.settings.audio.voice"><option v-for="v in AUDIO_PROVIDERS.openai.voices" :key="v" :value="v">{{ v }}</option></select>
+            </label>
+          </div>
+          <label>
+            OPENAI KEY (BLANK: THE OPENAI PROVIDER'S)
+            <span class="row">
+              <input v-model.trim="ai.settings.audio.apiKey" :type="showAudioKey ? 'text' : 'password'" spellcheck="false" autocomplete="off" placeholder="kept on this computer only" />
+              <button class="hw-btn icon" :title="showAudioKey ? 'Hide' : 'Show'" @click="showAudioKey = !showAudioKey"><v-icon size="14" :icon="showAudioKey ? 'mdi-eye-off' : 'mdi-eye'" /></button>
+            </span>
+          </label>
+          <div class="row">
+            <button class="hw-btn" :disabled="!ai.audioReady" title="Record a short take and play it" @click="testAudio">TEST</button>
+            <span class="test" :class="{ err: testingAudio.startsWith('✗') || !ai.audioReady }">{{ testingAudio || audioKeyState }}</span>
+          </div>
+
           <h4 class="mcp-head">MCP SERVER</h4>
           <p class="hint">
             Lets an agent outside SSB (Claude Code, Claude Desktop, Cursor…) use these same tools on this board: over HTTP on this computer, or through
@@ -279,7 +338,7 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
         <section v-else class="chat">
           <div ref="listEl" class="messages selectable">
             <div v-if="!items.length" class="welcome">
-              <p>Describe a sound, or ask about a patch. The agent can find waves, read, make, change and delete patches, and render notes to look at their waveform and spectrogram.</p>
+              <p>Describe a sound, or ask about a patch. The agent can find waves, read, make, change and delete patches, render notes to look at their waveform and spectrogram, and brief an audio agent to record voice takes (with an OpenAI key).</p>
               <button v-for="s in STARTERS" :key="s" class="starter" :disabled="!ai.configured" @click="send(s)">{{ s }}</button>
               <p v-if="!ai.configured" class="err">Set up a provider first (⚙).</p>
             </div>
@@ -315,6 +374,10 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
                 <pre v-if="it.input" class="io">{{ it.input }}</pre>
                 <pre v-if="it.output" class="io out">{{ it.output }}</pre>
               </details>
+              <div v-if="it.kind === 'tool' && it.sound && board.byId(it.sound)" class="take">
+                <button class="hw-btn" title="Play the take (again: stop)" @click="playSound(it.sound)"><v-icon size="13" icon="mdi-play" /> {{ board.byId(it.sound)?.settings.name }}</button>
+                <span>on the board, in SAMPLES</span>
+              </div>
               <div v-if="it.kind === 'tool' && it.images?.length" class="images">
                 <img v-for="(im, k) in it.images" :key="k" :src="`data:image/png;base64,${im}`" alt="render" title="Click to enlarge" @click="zoom = im" />
               </div>
@@ -834,6 +897,18 @@ textarea {
 }
 .io.out {
   color: var(--ink);
+}
+.take {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  color: var(--text-faint);
+}
+.take .hw-btn {
+  gap: 4px;
 }
 .images {
   display: flex;

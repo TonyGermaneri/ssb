@@ -11,6 +11,7 @@ import { handleMcp } from './mcp'
 import { freshToken, mcpSaved, mcpStatus, saveMcp } from './mcpStatus'
 import { MCP_INSTRUCTIONS } from './prompt'
 import { createTools } from './tools'
+import { storedAudioAgent } from './audio'
 
 interface NativeStatus {
   running: boolean
@@ -54,7 +55,8 @@ function confirmDeletes(): boolean {
 async function answer(body: string) {
   const board = await boardReady()
   return handleMcp(body, {
-    tools: createTools(board, { confirmDeletes: confirmDeletes() }),
+    // make_audio uses the audio agent as the AI settings have it (the user's OpenAI key, if they gave one)
+    tools: createTools(board, { confirmDeletes: confirmDeletes(), audio: storedAudioAgent }),
     instructions: MCP_INSTRUCTIONS,
     version,
     approve: (question, tool) =>

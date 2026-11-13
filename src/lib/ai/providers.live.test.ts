@@ -7,7 +7,8 @@
  *
  * with ANTHROPIC_API_KEY / OPENAI_API_KEY in the environment (each provider's tests skip without its key), and
  * LM Studio's server up (LMSTUDIO_URL, default http://localhost:1234/v1; LMSTUDIO_MODEL, default its first chat
- * model). ANTHROPIC_MODEL / OPENAI_MODEL pick the models; OPENAI_EFFORT sets OpenAI's reasoning effort.
+ * model). ANTHROPIC_MODEL / OPENAI_MODEL pick the models; OPENAI_EFFORT sets OpenAI's reasoning effort; the audio
+ * agent's tests (OpenAI key) use OPENAI_AUDIO_MODEL, default gpt-audio-1.5.
  */
 import { describe, expect, it } from 'vitest'
 import { runAgent, type AgentTool } from './agent'
@@ -16,6 +17,7 @@ import { AnthropicSession } from './providers/anthropic'
 import { squarePng } from './testPng'
 import { SYSTEM_PROMPT } from './prompt'
 import { createTools } from './tools'
+import { matchesScript, performTake, readPcmWav, shapeTake, takePitch, type AudioAgentConfig, type AudioBrief } from './audio'
 import { AiError, defaultAiSettings, type AiEvent, type AiSettings, type ChatSession, type ProviderKind } from './types'
 
 const live = process.env.SSB_AI_LIVE === '1'
@@ -258,4 +260,58 @@ describe.skipIf(!targets[0].ready)('anthropic caching and errors', () => {
     expect(err).toBeInstanceOf(AiError)
     expect((err as AiError).kind).toBe('auth')
   }, 60_000)
+})
+
+describe.skipIf(!targets[1].ready)('the audio agent (gpt-audio-1.5)', () => {
+  const cfg = (): AudioAgentConfig => ({ provider: 'openai', endpoint: 'https://api.openai.com/v1', apiKey: env('OPENAI_API_KEY'), model: env('OPENAI_AUDIO_MODEL') || 'gpt-audio-1.5', voice: 'marin' })
+  const shaped = async (brief: AudioBrief) => {
+    const take = await performTake(cfg(), brief)
+    const pcm = readPcmWav(take.wav)
+    expect(pcm).not.toBeNull()
+    const s = shapeTake(pcm!.channels, pcm!.rate, { maxSeconds: 20 })
+    const p = takePitch(s.data, s.rate)
+    console.log('take', JSON.stringify(brief.script), '→', JSON.stringify(take.transcript), `${s.seconds.toFixed(2)} s`, p ? `${p.name}${p.cents >= 0 ? '+' : ''}${p.cents} steady ${p.steady}` : 'unpitched', take.usage)
+    return { take, s, p }
+  }
+
+  it('records a held hum at one pitch', async () => {
+    const { s, p } = await shaped({ script: 'Mmmmmmmmmm', delivery: 'a soft, steady hum with the mouth closed, one note held for about three seconds, no vibrato.' })
+    expect(s.seconds).toBeGreaterThan(1.5)
+    expect(p?.steady).toBe(true)
+  }, 120_000)
+
+  it('performs a line instead of answering it', async () => {
+    const { take } = await shaped({ script: 'Can you help me?', delivery: 'a desperate whisper.', voice: 'coral' })
+    expect(matchesScript('Can you help me?', take.transcript)).toBe(true)
+  }, 120_000)
+
+  it('names a bad key as one', async () => {
+    const err = await performTake({ ...cfg(), apiKey: 'sk-invalid' }, { script: 'la' }).catch((e) => e)
+    expect(err).toBeInstanceOf(AiError)
+    expect((err as AiError).kind).toBe('auth')
+  }, 60_000)
+
+  // the patch designer briefs it: Claude and GPT each, through make_audio, onto a stand-in board
+  for (const t of targets.slice(0, 2)) {
+    it.skipIf(!t.ready)(`${t.provider} briefs it through make_audio`, async () => {
+      const added: { name: string; rootNote: number; fine: number; seconds: number }[] = []
+      const board = {
+        addAgentSound: async (channels: Float32Array[], rate: number, o: { name: string; rootNote: number; fine: number }) => {
+          added.push({ name: o.name, rootNote: o.rootNote, fine: o.fine, seconds: channels[0].length / rate })
+          return { id: 'take-1', settings: { name: o.name } }
+        },
+        soundRef: () => ({ ref: 'take-1' }),
+      }
+      const real = createTools(board as never, { confirmDeletes: true, audio: cfg })
+      const s = createSession(await t.settings(), SYSTEM_PROMPT, real)
+      const calls: string[] = []
+      const out = await runAgent(s, real, { text: 'Record one soft hummed note I can play from the keys with the audio agent. Only record it (no patch), then tell me its pitch.' }, {
+        onEvent: (e) => e.type === 'tool_done' && calls.push(`${e.call.name}(${JSON.stringify(e.call.input)}) → ${e.output.text.slice(0, 300)}`),
+      })
+      console.log(t.provider, calls, '→', out.text.slice(0, 200))
+      expect(calls.some((c) => c.startsWith('make_audio'))).toBe(true)
+      expect(added.length).toBeGreaterThan(0)
+      expect(out.stop).toBe('end')
+    }, 300_000)
+  }
 })

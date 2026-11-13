@@ -398,6 +398,24 @@ export const useBoard = defineStore('board', () => {
   }
 
   /**
+   * A take the AI's audio agent recorded, as a new sample sound at the end of the list (tagged "ai" and its own
+   * tags), playing at its recorded pitch from `rootNote` (+ `fine` cents). Not selected: the agent puts it in patches.
+   */
+  async function addAgentSound(channels: Float32Array[], rate: number, o: { name: string; tags: string[]; rootNote: number; fine: number }): Promise<Sound> {
+    const audioId = uid()
+    const blob = encodeWav(channels, rate)
+    await loadAudio(audioId, blob)
+    await set(audioKey(audioId), blob)
+    const settings = defaultSettings(o.name)
+    settings.tag = addTags('', ['ai', ...o.tags])
+    settings.rootNote = o.rootNote
+    settings.fine = o.fine
+    const sound: Sound = { id: uid(), audioId, fileName: `${o.name.replace(/[^\w -]+/g, '').trim() || 'TAKE'}.wav`, settings }
+    addSound(sound)
+    return sounds.value[sounds.value.length - 1]
+  }
+
+  /**
    * Load dropped / picked files: audio files become pads, .sfz files become multi-sample instruments (their samples
    * are looked up among the other files), and .zip files are either a board export or a sample pack to unpack.
    */
@@ -2724,7 +2742,7 @@ export const useBoard = defineStore('board', () => {
     patchEdited, isEdited, isBuiltIn, savePatch, revertPatch,
     pressPatch, releasePatch, patchIdOfLayer, soundRef, resolveSoundRef, addAgentPatch, replacePatch, renderOffline,
     tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
-    addFiles, addCapture, load, press, release, panic, noteOn, noteOff,
+    addFiles, addCapture, addAgentSound, load, press, release, panic, noteOn, noteOff,
     select, selectStep, togglePanel, cycleMode, cycleFilter, toggleGrain, addTable, akwfWaves, resetSettings, duplicate, remove, removeSounds, move,
     mpeRoutesFor,
     exportBoard, exportPlan, exportSelection, importBoard, enableMidi, learnMidi,
