@@ -119,6 +119,11 @@ Clicking a VCO in the header opens its tab; a sound dragged over a tab opens it,
   sits in that slot, and pressing it again takes it out; the previous sound is replaced). With no patch selected this
   starts one.
 - **REMOVE** empties a slot.
+- **Prompt a wave** (the app and the plugin, with a sound model downloaded): the field under a slot's bar asks the
+  sound model picked in ⚙ ▸ SOUND MODEL for a clip from a few words (*a warm sustained cello note, C3*; *glass
+  harmonica, airy*), and the clip becomes that slot's sound: trimmed, faded and normalised, tuned from its pitch when it
+  holds a note, added to the board tagged `vco`. No conversation, and nothing downloads from here (a model not yet
+  downloaded says so; ⚙ fetches it); ■ stops it. With no patch selected this starts one.
 - **VCO 1** is the main voice. VCOs 2–3 have **MIX / MOD** (heard, or a silent modulator only), **TRACK / FIXED**
   (follow the played key keeping TRANS / FINE, or always play NOTE) and **LEVEL**.
 - **Tuning** (the **ET** chip, on every VCO): equal temperament, or **adaptive just intonation**, which retunes that

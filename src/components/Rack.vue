@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, shallowReactive } from 'vue'
+import { computed, reactive, ref, shallowReactive } from 'vue'
 import { activeVoices } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { rememberElementScroll } from '../lib/scrollMemory'
@@ -8,6 +8,8 @@ import { PATCH_SLOTS, TUNING_MODES, type PatchSlot, type Sound, type TuningMode 
 import ControlPanel from './ControlPanel.vue'
 import PlayView from './PlayView.vue'
 import Knob from './Knob.vue'
+import { useAi } from '../lib/ai/store'
+import { errorMessage } from '../lib/ai/types'
 
 /**
  * The selected patch's three VCO slots as tabs, one showing at a time across the width: the one place a patch is
@@ -54,6 +56,36 @@ const tabTitle = (x: PatchSlot | null, i: number) =>
 // each slot's panel scrolls on its own; where, is kept with a plugin instance's view
 const bodies = shallowReactive<(HTMLElement | null)[]>([null, null, null])
 for (const i of [0, 1, 2]) rememberElementScroll(() => `rack:${i}`, () => bodies[i])
+
+// ── the VCO wave prompt (soundTools.promptSlotWave): a few words → the loaded model's clip → this slot's sound ──
+const ai = useAi()
+const prompts = reactive(['', '', ''])
+const promptBusy = reactive([false, false, false])
+const promptNote = reactive(['', '', ''])
+const promptErr = reactive([false, false, false])
+const promptAborts: (AbortController | null)[] = [null, null, null]
+async function promptWave(i: number) {
+  const text = prompts[i]!.trim()
+  if (!text || promptBusy[i]) return
+  promptBusy[i] = true
+  promptErr[i] = false
+  promptNote[i] = ''
+  const ctl = new AbortController()
+  promptAborts[i] = ctl
+  try {
+    const made = await ai.promptSlotWave(i, text, ctl.signal)
+    promptNote[i] = `${made.name} · ${made.seconds.toFixed(1)} s · ${made.model.label}${made.pitch?.steady ? ` · in tune at ${made.pitch.name}` : ''}`
+  } catch (e) {
+    if (!ctl.signal.aborted) {
+      promptErr[i] = true
+      promptNote[i] = errorMessage(e)
+    }
+  } finally {
+    promptBusy[i] = false
+    promptAborts[i] = null
+  }
+}
+const stopPrompt = (i: number) => promptAborts[i]?.abort()
 
 // ── drop sounds into slots ──
 const dropTarget = ref(-1)
@@ -228,6 +260,29 @@ function onDrop(e: DragEvent, i: number) {
             <v-icon size="14" icon="mdi-close" /> <span class="word">REMOVE</span>
           </button>
         </div>
+        <!-- The VCO wave prompt: the sound model picked in the AI settings makes a clip from a few words, and it
+             becomes this slot's sound (no conversation, no download from here). In the app and the plugin. -->
+        <form
+          v-if="ai.soundAvailable"
+          class="prompt"
+          :title="`Prompt the sound model (${ai.soundPick?.label ?? 'the AI settings\' pick'}) for this VCO's wave: the clip it makes becomes the slot's sound, tuned from its pitch`"
+          @submit.prevent="promptWave(i)"
+        >
+          <v-icon size="14" icon="mdi-creation" />
+          <input
+            v-model="prompts[i]"
+            class="prompt-text"
+            spellcheck="false"
+            :placeholder="x ? 'PROMPT A NEW WAVE FOR THIS VCO…' : 'PROMPT A WAVE FOR THIS VCO…'"
+            :disabled="promptBusy[i]"
+            @keydown.stop
+          />
+          <button class="hw-btn" type="submit" :disabled="promptBusy[i] || !prompts[i]!.trim()">{{ promptBusy[i] ? 'MAKING…' : 'PROMPT' }}</button>
+          <button v-if="promptBusy[i]" class="hw-btn icon" type="button" title="Stop the sound model" @click="stopPrompt(i)">
+            <v-icon size="14" icon="mdi-stop" />
+          </button>
+          <span v-if="promptNote[i]" class="prompt-note" :class="{ err: promptErr[i] }">{{ promptNote[i] }}</span>
+        </form>
         <div :ref="(el) => (bodies[i] = el as HTMLElement | null)" class="body">
           <PlayView v-if="x && layerOf(x) && playing(i)" :sound="layerOf(x)!" :slot="i" />
           <ControlPanel v-else-if="x && layerOf(x)" :sound="layerOf(x)!" :hue="hue(layerOf(x)!)" :role="i === 0 ? 'patch' : 'vco'" :patch="patch ?? undefined" wide />
@@ -244,6 +299,40 @@ function onDrop(e: DragEvent, i: number) {
 </template>
 
 <style scoped>
+.prompt {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 4px 0 2px;
+  color: var(--text-mute);
+}
+.prompt-text {
+  flex: 1 1 220px;
+  min-width: 0;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 3px;
+  font-family: 'VT323', monospace;
+  font-size: 16px;
+  color: var(--c-primary);
+  background: var(--lcd-bg);
+  border: 1px solid #000;
+  outline: none;
+}
+.prompt-text::placeholder {
+  color: var(--text-mute);
+}
+.prompt-note {
+  flex: 1 1 100%;
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  color: var(--text-mute);
+}
+.prompt-note.err {
+  color: rgb(var(--v-theme-error));
+}
 .mpe-chip {
   flex: none;
   padding: 0 6px;

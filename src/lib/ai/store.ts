@@ -14,7 +14,7 @@ import { SYSTEM_PROMPT } from './prompt'
 import { createSession, listModels } from './providers'
 import { createTools } from './tools'
 import { readPcmWav, shapeClip } from './audio'
-import { soundAgentFrom } from './soundTools'
+import { promptSlotWave as promptSlot, soundAgentFrom } from './soundTools'
 import { soundModelFrom, type SoundModelInfo } from './soundModels'
 import { generateWithStop, soundModelsAvailable, type SoundCheck, type SoundStatus } from './soundHost'
 import {
@@ -124,6 +124,15 @@ export const useAi = defineStore('ai', () => {
   })
   /** the model picked in the combobox (null: what's typed isn't a model) */
   const soundPick = computed<SoundModelInfo | null>(() => soundModelFrom(settings.sound.model))
+  /** The VCO wave prompt: the picked model's clip from `prompt` into patch slot `slot` (soundTools.promptSlotWave). */
+  async function promptSlotWave(slot: number, prompt: string, signal?: AbortSignal) {
+    if (!soundAvailable) throw new Error('needs the SSB app or plugin: a browser tab can\'t run a model')
+    try {
+      return await promptSlot(board, soundAgent, slot, prompt, signal)
+    } finally {
+      void pollSound()
+    }
+  }
   const toolsFor = () => createTools(board, { confirmDeletes: settings.confirmDeletes, ...(soundAvailable ? { sound: soundAgent } : {}) })
   async function pollSound() {
     if (!soundAvailable) return
@@ -467,6 +476,7 @@ export const useAi = defineStore('ai', () => {
   return {
     settings, switchProvider, configured, models, modelsError, fetchModels,
     soundAvailable, soundStatus, soundError, soundPick, soundCheck, watchSound, pollSound, loadSound, unloadSound, cancelSound, removeSound, testSound,
+    promptSlotWave,
     list, current, newConversation, open, remove, toggleStar, rename,
     pins, pinnable, togglePin, running, confirming, send, stop, testConnection,
   }

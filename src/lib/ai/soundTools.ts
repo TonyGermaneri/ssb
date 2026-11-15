@@ -5,6 +5,7 @@
  * and briefs the loaded one with a caption to generate a clip, which lands on the board as a new sample.
  */
 import type { useBoard } from '../../stores/board'
+import type { Sound } from '../../types'
 import type { AgentTool, ToolReply } from './agent'
 import { clipPitch, readPcmWav, shapeClip } from './audio'
 import { DEFAULT_SOUND_MODEL, downloadBytes, fmtBytes, SOUND_MODELS, soundModelFrom, type SoundModelInfo } from './soundModels'
@@ -39,26 +40,128 @@ const describe = (m: SoundModelInfo) => ({
   default_steps: m.defaultSteps,
 })
 
+/** a model by name for the agent (the settings' pick when none is named) */
+function resolveModel(agent: SoundAgent, model: string | undefined): SoundModelInfo {
+  if (!model) {
+    const s = agent.selected()
+    if (!s) throw new Error('no sound model is chosen: call sound_models, then load_sound_model with one')
+    return s
+  }
+  const m = soundModelFrom(model)
+  if (!m) throw new Error(`"${model}" isn't a sound model: give one of sound_models' ids, or the Hugging Face URL of a GGUF`)
+  return m
+}
+
+/** a model the host names, as a catalog model (a custom one: the settings' pick, when it's that) */
+function namedModel(agent: SoundAgent, id: string): SoundModelInfo | null {
+  const sel = agent.selected()
+  return SOUND_MODELS.find((m) => m.id === id) ?? (sel?.id === id ? sel : null)
+}
+
+/** the model make_sound uses when none is named: the loaded one, else the one on its way (a reload, after a
+ * stopped generation), else none */
+function loadedModel(agent: SoundAgent, st: SoundStatus): SoundModelInfo | null {
+  return st.loaded ? namedModel(agent, st.loaded.id) : st.task?.loads ? namedModel(agent, st.task.model) : null
+}
+
+async function ensureLoaded(agent: SoundAgent, m: SoundModelInfo, signal?: AbortSignal) {
+  const host = agent.host()
+  const st = await host.status()
+  if (!st.available) throw new Error('this build of SSB has no sound model helper')
+  if (st.loaded?.id === m.id && !st.task) return { switched: false, from: null as string | null }
+  if (st.task?.kind === 'generate') throw new Error('the sound model is busy generating; try again when it is done')
+  await loadAndWait(host, m, agent.onStatus, signal)
+  agent.onLoaded?.(m)
+  return { switched: true, from: st.loaded?.id ?? null }
+}
+
+/** What make_sound (and the VCO wave prompt) asks of a sound model. */
+export interface MakeSoundInput {
+  prompt: string
+  negative_prompt?: string
+  seconds?: number
+  model?: string
+  steps?: number
+  guidance?: number
+  seed?: number
+  name?: string
+  tags?: string
+  root_note?: number
+}
+
+/** A clip a sound model made, on the board as a sound. */
+export interface MadeSound {
+  snd: Sound
+  name: string
+  seconds: number
+  stereo: boolean
+  pitch: ReturnType<typeof clipPitch>
+  rootNote: number
+  fine: number
+  model: SoundModelInfo
+  switched: boolean
+  seed: number
+  elapsed: number
+  notes: string[]
+}
+
+/**
+ * One clip from a caption onto the board: the model loaded (or the one named), the clip generated, trimmed, faded and
+ * normalised, tuned from a steady pitch, added as a sound tagged "generated" and the model's tag.  `requireDownloaded`
+ * refuses a model that would have to download first (the VCO wave prompt never starts gigabytes; the AI settings do).
+ */
+export async function makeSound(
+  board: Board, agent: SoundAgent, input: MakeSoundInput, signal?: AbortSignal, opts: { requireDownloaded?: boolean } = {},
+): Promise<MadeSound> {
+  const host = agent.host()
+  const st = await host.status()
+  const m = input.model ? resolveModel(agent, input.model) : (loadedModel(agent, st) ?? resolveModel(agent, undefined))
+  if (opts.requireDownloaded && st.available && st.loaded?.id !== m.id && !(st.task?.loads && st.task.model === m.id)) {
+    const [c] = await host.check([m])
+    if (!c?.downloaded) throw new Error(`${m.label} isn't downloaded yet: AI settings › SOUND MODEL downloads it`)
+  }
+  const { switched } = await ensureLoaded(agent, m, signal)
+  const seconds = Math.min(input.seconds ?? 5, m.maxSeconds)
+  const clip = await generateWithStop(host, m, { prompt: input.prompt, negative_prompt: input.negative_prompt, seconds, steps: input.steps, guidance: input.guidance, seed: input.seed }, signal)
+  const pcm = readPcmWav(clip.wav)
+  if (!pcm) throw new Error('the clip came back in a form that could not be read (not a PCM WAV)')
+  const shaped = shapeClip(pcm.channels, pcm.rate, { maxSeconds: seconds + 0.5, keepChannels: true })
+  if (shaped.silent) throw new Error('the clip came back silent; try another caption or seed')
+  const p = clipPitch(shaped.mono, shaped.rate)
+  const tuned = input.root_note === undefined && !!p?.steady
+  const rootNote = input.root_note ?? (tuned ? Math.round(p!.midi) : 60)
+  const fine = tuned ? -p!.cents : 0
+  const base = (input.name?.trim() || input.prompt.trim().replace(/[,.;:].*$/, '').slice(0, 28).trim() || 'CLIP').toUpperCase()
+  const name = tuned ? `${base.replace(/\s*\b[A-G]#?-?\d\b/g, '').trim()} ${p!.name}`.trim() : base
+  const tags = ['generated', m.tag, ...(input.tags ?? '').split(',').map((t) => t.trim().toLowerCase())].filter(Boolean)
+  const snd = await board.addAgentSound(shaped.channels, shaped.rate, { name, tags, rootNote, fine })
+  const notes: string[] = []
+  if (shaped.peakDb < -30) notes.push(`it came back quiet (peak ${shaped.peakDb} dBFS) and was raised a lot: expect some noise`)
+  if (shaped.seconds < seconds * 0.4 && seconds > 2) notes.push(`most of it was silence: ${round(shaped.seconds)} s of ${seconds} s kept`)
+  return {
+    snd, name, seconds: shaped.seconds, stereo: shaped.channels.length === 2, pitch: p, rootNote, fine, model: m, switched,
+    seed: clip.seed, elapsed: clip.elapsed, notes,
+  }
+}
+
+/** How long a VCO wave prompt asks for: a few seconds, room for a note's attack, body and tail. */
+export const VCO_PROMPT_SECONDS = 4
+
+/**
+ * The VCO wave prompt: the sound model picked in the AI settings makes a clip from the prompt, which lands on the board
+ * as a sound and goes straight into patch slot `slot` (a patch starts when none is selected), replacing what was there.
+ * The same pipeline as make_sound, without the conversation; it never starts a download.
+ */
+export async function promptSlotWave(board: Board, agent: SoundAgent, slot: number, prompt: string, signal?: AbortSignal): Promise<MadeSound> {
+  const text = prompt.trim()
+  if (!text) throw new Error('say what the wave should be')
+  const made = await makeSound(board, agent, { prompt: text, seconds: VCO_PROMPT_SECONDS, tags: 'vco' }, signal, { requireDownloaded: true })
+  board.assignSlot(slot, made.snd.id)
+  return made
+}
+
 export function createSoundTools(board: Board, agent: SoundAgent): AgentTool[] {
-  const resolve = (model: string | undefined): SoundModelInfo => {
-    if (!model) {
-      const s = agent.selected()
-      if (!s) throw new Error('no sound model is chosen: call sound_models, then load_sound_model with one')
-      return s
-    }
-    const m = soundModelFrom(model)
-    if (!m) throw new Error(`"${model}" isn't a sound model: give one of sound_models' ids, or the Hugging Face URL of a GGUF`)
-    return m
-  }
-  /** a model the host names, as a catalog model (a custom one: the settings' pick, when it's that) */
-  const named = (id: string): SoundModelInfo | null => {
-    const sel = agent.selected()
-    return SOUND_MODELS.find((m) => m.id === id) ?? (sel?.id === id ? sel : null)
-  }
-  /** the model make_sound uses when none is named: the loaded one, else the one on its way (a reload, after a
-   * stopped generation), else none */
-  const loadedModel = (st: SoundStatus): SoundModelInfo | null =>
-    st.loaded ? named(st.loaded.id) : st.task?.loads ? named(st.task.model) : null
+  const resolve = (model: string | undefined) => resolveModel(agent, model)
 
   /** the question to ask before loading `m`, when that means a download (null: it's here, or already loaded) */
   async function downloadQuestion(m: SoundModelInfo): Promise<string | null> {
@@ -76,16 +179,6 @@ export function createSoundTools(board: Board, agent: SoundAgent): AgentTool[] {
     }
   }
 
-  async function ensureLoaded(m: SoundModelInfo, signal?: AbortSignal) {
-    const host = agent.host()
-    const st = await host.status()
-    if (!st.available) throw new Error('this build of SSB has no sound model helper')
-    if (st.loaded?.id === m.id && !st.task) return { switched: false, from: null as string | null }
-    if (st.task?.kind === 'generate') throw new Error('the sound model is busy generating; try again when it is done')
-    await loadAndWait(host, m, agent.onStatus, signal)
-    agent.onLoaded?.(m)
-    return { switched: true, from: st.loaded?.id ?? null }
-  }
 
   return [
     {
@@ -142,7 +235,7 @@ export function createSoundTools(board: Board, agent: SoundAgent): AgentTool[] {
       run: async (input: { model: string }, signal?: AbortSignal): Promise<ToolReply> => {
         const m = resolve(input.model)
         const started = Date.now()
-        const r = await ensureLoaded(m, signal)
+        const r = await ensureLoaded(agent, m, signal)
         return {
           text: json({
             loaded: m.id,
@@ -191,49 +284,31 @@ export function createSoundTools(board: Board, agent: SoundAgent): AgentTool[] {
       confirm: async (input: { model?: string }) => {
         try {
           const st = await agent.host().status()
-          const m = input.model ? soundModelFrom(input.model) : (loadedModel(st) ?? agent.selected())
+          const m = input.model ? soundModelFrom(input.model) : (loadedModel(agent, st) ?? agent.selected())
           return m ? downloadQuestion(m) : null
         } catch {
           return null
         }
       },
       run: async (
-        input: { prompt: string; negative_prompt?: string; seconds?: number; model?: string; steps?: number; guidance?: number; seed?: number; name?: string; tags?: string; root_note?: number },
+        input: MakeSoundInput,
         signal?: AbortSignal,
       ): Promise<ToolReply> => {
-        const host = agent.host()
-        const m = input.model ? resolve(input.model) : (loadedModel(await host.status()) ?? resolve(undefined))
-        const { switched } = await ensureLoaded(m, signal)
-        const seconds = Math.min(input.seconds ?? 5, m.maxSeconds)
-        const clip = await generateWithStop(host, m, { prompt: input.prompt, negative_prompt: input.negative_prompt, seconds, steps: input.steps, guidance: input.guidance, seed: input.seed }, signal)
-        const pcm = readPcmWav(clip.wav)
-        if (!pcm) throw new Error('the clip came back in a form that could not be read (not a PCM WAV)')
-        const shaped = shapeClip(pcm.channels, pcm.rate, { maxSeconds: seconds + 0.5, keepChannels: true })
-        if (shaped.silent) throw new Error('the clip came back silent; try another caption or seed')
-        const p = clipPitch(shaped.mono, shaped.rate)
-        const tuned = input.root_note === undefined && !!p?.steady
-        const rootNote = input.root_note ?? (tuned ? Math.round(p!.midi) : 60)
-        const fine = tuned ? -p!.cents : 0
-        const base = (input.name?.trim() || input.prompt.trim().replace(/[,.;:].*$/, '').slice(0, 28).trim() || 'CLIP').toUpperCase()
-        const name = tuned ? `${base.replace(/\s*\b[A-G]#?-?\d\b/g, '').trim()} ${p!.name}`.trim() : base
-        const tags = ['generated', m.tag, ...(input.tags ?? '').split(',').map((t) => t.trim().toLowerCase())].filter(Boolean)
-        const snd = await board.addAgentSound(shaped.channels, shaped.rate, { name, tags, rootNote, fine })
-        const notes: string[] = []
-        if (shaped.peakDb < -30) notes.push(`it came back quiet (peak ${shaped.peakDb} dBFS) and was raised a lot: expect some noise`)
-        if (shaped.seconds < seconds * 0.4 && seconds > 2) notes.push(`most of it was silence: ${round(shaped.seconds)} s of ${seconds} s kept`)
+        const made = await makeSound(board, agent, input, signal)
+        const { snd, name, rootNote, fine, pitch: p, notes, model: m } = made
         return {
           text: json({
             sound: board.soundRef(snd.id)?.ref ?? snd.id,
             name,
-            seconds: round(shaped.seconds),
-            channels: shaped.channels.length === 2 ? 'stereo' : 'mono',
+            seconds: round(made.seconds),
+            channels: made.stereo ? 'stereo' : 'mono',
             pitch: p ? { note: p.name, cents: p.cents, hz: p.hz, steady: p.steady, voiced_share: p.voiced } : 'none: unpitched (noise, impact, texture)',
             rootNote,
             fine,
             model: m.id,
-            ...(switched ? { loaded_model_first: true } : {}),
-            seed: clip.seed,
-            generated_in_seconds: clip.elapsed,
+            ...(made.switched ? { loaded_model_first: true } : {}),
+            seed: made.seed,
+            generated_in_seconds: made.elapsed,
             ...(notes.length ? { notes } : {}),
           }),
           soundId: snd.id,

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { clipPitch, readPcmWav, shapeClip } from './audio'
 import { SOUND_MODELS, soundModelFrom, type SoundModelInfo } from './soundModels'
 import { loadAndWait, requestFor, type SoundHostApi, type SoundStatus } from './soundHost'
-import { soundAgentFrom } from './soundTools'
+import { promptSlotWave, soundAgentFrom, VCO_PROMPT_SECONDS } from './soundTools'
 import { createTools } from './tools'
 import { encodeWav } from '../wav'
 
@@ -208,6 +208,7 @@ describe('the sound tools', () => {
         return { id: 'snd-1', settings: { name: o.name } }
       }),
       soundRef: () => ({ ref: 'snd-1' }),
+      assignSlot: vi.fn(),
     }
     const settings = { model, hfToken }
     const loaded: string[] = []
@@ -216,7 +217,7 @@ describe('the sound tools', () => {
     const tool = (name: string) => tools.find((t) => t.name === name)!
     const run = (name: string, input: object) => (tool(name).run as (i: object, s?: AbortSignal) => Promise<{ text: string; soundId?: string }>)(input)
     const confirm = (name: string, input: object) => (tool(name).confirm as (i: object) => Promise<string | null>)(input)
-    return { tools, run, confirm, added, loaded }
+    return { tools, run, confirm, added, loaded, board, agent }
   }
 
   it('are there only with a sound agent (none in a browser tab)', () => {
@@ -270,6 +271,30 @@ describe('the sound tools', () => {
   it('a build without the helper says so', async () => {
     const { run } = setup(fakeHost({ available: false }))
     await expect(run('make_sound', { prompt: 'x' })).rejects.toThrow(/no sound model helper/)
+  })
+  it('the VCO wave prompt makes a clip with the picked model and puts it in the slot, in tune; it never starts a download', async () => {
+    const f = fakeHost({ loaded: 'stable-audio-3-small-music-q8', downloaded: true })
+    const { board, agent, added } = setup(f)
+    const made = await promptSlotWave(board as never, agent, 2, 'a soft sustained synth note')
+    expect(board.assignSlot).toHaveBeenCalledWith(2, 'snd-1')
+    expect(made).toMatchObject({ rootNote: 56, name: 'A SOFT SUSTAINED SYNTH NOTE G#3', stereo: true, switched: false })
+    expect(made.pitch?.steady).toBe(true)
+    expect(added[0]!.o.tags).toEqual(['generated', 'stable-audio', 'vco'])
+    expect(f.calls.find((c) => c.op === 'generate')?.arg).toMatchObject({ text: 'a soft sustained synth note', options: { duration_sec: VCO_PROMPT_SECONDS } })
+    // a model not downloaded yet: it says where to get it, and starts nothing
+    const fresh = fakeHost()
+    const cold = setup(fresh)
+    await expect(promptSlotWave(cold.board as never, cold.agent, 0, 'door slam')).rejects.toThrow(/isn't downloaded yet: AI settings › SOUND MODEL/)
+    expect(fresh.calls.some((c) => c.op === 'load' || c.op === 'generate')).toBe(false)
+    expect(cold.board.assignSlot).not.toHaveBeenCalled()
+    // downloaded but not loaded: it loads (seconds), then makes the clip
+    const warm = fakeHost({ downloaded: true })
+    const w = setup(warm)
+    expect((await promptSlotWave(w.board as never, w.agent, 1, 'a glass clink')).switched).toBe(true)
+    expect(warm.calls.map((c) => c.op)).toEqual(['load', 'generate'])
+    expect(w.board.assignSlot).toHaveBeenCalledWith(1, 'snd-1')
+    // no words, no clip
+    await expect(promptSlotWave(board as never, agent, 0, '   ')).rejects.toThrow(/say what the wave should be/)
   })
   it('unload_sound_model frees it', async () => {
     const { run } = setup(fakeHost({ loaded: 'moss-soundeffect-v2-q8' }))
