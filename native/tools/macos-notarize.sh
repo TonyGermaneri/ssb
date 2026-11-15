@@ -20,7 +20,18 @@
 #
 # Written for bash 3.2 — see the note in macos-sign.sh.
 
-set -euo pipefail
+set -eEuo pipefail
+
+# On GitHub Actions a job's log is shown only to a signed-in viewer, while its annotations are
+# public (the REST API serves them to anyone). v0.17.0's notarisation failed with nothing but
+# "exit code 1" to show for it, so whatever stops this script is said in an annotation as well.
+annotate() {
+    [ "${GITHUB_ACTIONS:-}" = "true" ] || return 0
+    local message="${2:0:8000}"
+    printf '::error title=%s::%s\n' "$1" "$(printf '%s' "$message" |
+        awk '{ gsub(/%/, "%25"); gsub(/\r/, "%0D"); printf "%s%s", (NR > 1 ? "%0A" : ""), $0 }')"
+}
+trap 'status=$?; annotate "macos-notarize.sh" "line $LINENO: $BASH_COMMAND (exit $status)"' ERR
 
 plugins="${1:-}"
 outdir="${2:-dist}"
@@ -105,7 +116,30 @@ ditto -c -k --keepParent --sequesterRsrc "${bundles[@]}" "$archive" 2>/dev/null 
 }
 
 echo
-xcrun notarytool submit "$archive" ${notary_args[@]+"${notary_args[@]}"} --wait --timeout 30m
+# Anything but "Accepted" stops here, in Apple's words: notarytool's own output (an expired agreement
+# or a refused key comes back at once, before any upload) and, when Apple processed the archive and
+# rejected it, the submission's log, whose issues name each file and why.
+submit_log="$work/submit.log"
+submitted=0
+xcrun notarytool submit "$archive" ${notary_args[@]+"${notary_args[@]}"} --wait --timeout 30m 2>&1 \
+    | tee "$submit_log" || submitted=$?
+if [ "$submitted" -ne 0 ] || ! grep -q 'status: Accepted' "$submit_log"; then
+    details="notarytool submit (exit $submitted):
+$(tail -n 25 "$submit_log")"
+    id="$(awk '$1 == "id:" && length($2) == 36 { print $2; exit }' "$submit_log")"
+    if [ -n "$id" ] &&
+       xcrun notarytool log "$id" ${notary_args[@]+"${notary_args[@]}"} "$work/notary-log.json" >/dev/null 2>&1; then
+        echo
+        echo "Apple's log for $id:"
+        cat "$work/notary-log.json"
+        details="$details
+
+Apple's log for $id:
+$(cat "$work/notary-log.json")"
+    fi
+    annotate "Notarise" "$details"
+    exit 1
+fi
 
 # --------------------------------------------------------------------------------- staple
 #
@@ -123,6 +157,8 @@ staple() {
     done
     echo "FAILED"
     printf '%s\n' "$out" | sed 's/^/    /' >&2
+    annotate "Staple" "stapler staple $(basename "$bundle"):
+$out"
     return 1
 }
 echo

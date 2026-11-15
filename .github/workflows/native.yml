@@ -405,9 +405,21 @@ jobs:
           cmake -B native/build -S native -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSSB_BUILD_TOOLS=OFF \
             -DJUCE_WEBVIEW2_PACKAGE_LOCATION="$WEBVIEW2_DIR"
 
+      # A job's log needs a signed-in viewer and its annotations don't, so a failed build repeats its
+      # error lines as one (MSBuild prints each twice: once in place, once in its summary).
       - name: Build
         shell: bash
-        run: cmake --build native/build --config RelWithDebInfo
+        run: |
+          set +e
+          cmake --build native/build --config RelWithDebInfo 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          set -e
+          [ "$status" -eq 0 ] && exit 0
+          errors=$(grep -iE 'error|failed' build.log | grep -viE 'warning|^ *0 error' |
+            awk '!seen[$0]++ && n++ < 40') || true
+          echo "::error title=Windows build::$(printf '%s' "$errors" |
+            awk '{ gsub(/%/, "%25"); gsub(/\r/, "%0D"); printf "%s%s", (NR > 1 ? "%0A" : ""), $0 }')"
+          exit "$status"
 
       - name: Tests
         shell: bash

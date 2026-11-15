@@ -38,6 +38,13 @@ else()
 endif()
 
 set(_exe "audiocpp_server${CMAKE_EXECUTABLE_SUFFIX}")
+# audio.cpp sets CMAKE_RUNTIME_OUTPUT_DIRECTORY to bin/, which a multi-config generator (Visual Studio,
+# the Windows default; Xcode) turns into bin/<config>/; the build below is always Release
+get_property(_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+set(_bin "bin")
+if(_multi_config)
+    set(_bin "bin/Release")
+endif()
 set(_slices "")
 set(_deps "")
 foreach(_arch IN LISTS _archs)
@@ -70,10 +77,10 @@ foreach(_arch IN LISTS _archs)
             -DAUDIOCPP_DEPLOYMENT_BUILD=ON   # model specs compiled in: a safetensors checkpoint (Stable Audio Open 1.0) needs one
         BUILD_COMMAND "${CMAKE_COMMAND}" --build <BINARY_DIR> --target audiocpp_server --config Release
         INSTALL_COMMAND ""
-        BUILD_BYPRODUCTS "<BINARY_DIR>/bin/${_exe}"
+        BUILD_BYPRODUCTS "<BINARY_DIR>/${_bin}/${_exe}"
         USES_TERMINAL_BUILD TRUE)
     ExternalProject_Get_Property(audiocpp_${_arch} BINARY_DIR)
-    list(APPEND _slices "${BINARY_DIR}/bin/${_exe}")
+    list(APPEND _slices "${BINARY_DIR}/${_bin}/${_exe}")
     list(APPEND _deps audiocpp_${_arch})
 endforeach()
 
