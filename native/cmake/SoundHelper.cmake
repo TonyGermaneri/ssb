@@ -24,8 +24,14 @@ include(ExternalProject)
 #   RoPE positions and its T5's relative-position buckets into their graphs once, when built; the graph allocator
 #   reuses an input's memory once the graph has consumed it, so every run after the first (every diffusion step but
 #   the first, every request's prompt but the first) read garbage there and the clips came out as noise
+# - audiocpp-stable-audio-t5-eos.patch: its T5-base text encoder was trained with </s> closing every prompt (as
+#   Hugging Face's tokenizer adds it); audio.cpp left it out, and many prompts then came out as broadband noise with
+#   the same left and right channel (Stability's own pipeline does the same without it). T5Gemma (the small models)
+#   has no such token and is unchanged
 find_package(Patch REQUIRED)
-set(_patches "${CMAKE_CURRENT_LIST_DIR}/patches/audiocpp-stable-audio-foundation-inputs.patch")
+set(_patches
+    "${CMAKE_CURRENT_LIST_DIR}/patches/audiocpp-stable-audio-foundation-inputs.patch"
+    "${CMAKE_CURRENT_LIST_DIR}/patches/audiocpp-stable-audio-t5-eos.patch")
 set(_patch_command "")
 foreach(_p IN LISTS _patches)
     list(APPEND _patch_command COMMAND "${Patch_EXECUTABLE}" -p1 -i "${_p}")

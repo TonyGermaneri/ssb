@@ -1,0 +1,40 @@
+--- a/include/engine/models/stable_audio/assets.h
++++ b/include/engine/models/stable_audio/assets.h
+@@ -75,6 +75,8 @@
+     int64_t t5_intermediate_size = 2048;
+     int64_t t5_vocab_size = 256000;
+     int64_t t5_pad_token_id = 0;
++    // appended after the prompt's pieces when >= 0 (T5-base, as its Hugging Face tokenizer does); T5Gemma: none
++    int64_t t5_eos_token_id = -1;
+     int64_t t5_sliding_window = 4096;
+     float t5_rope_theta = 10000.0F;
+     float t5_rms_norm_eps = 1.0e-6F;
+--- a/src/models/stable_audio/assets.cpp
++++ b/src/models/stable_audio/assets.cpp
+@@ -163,6 +163,7 @@
+     config.t5_vocab_size = json::require_i64(root, "vocab_size");
+     config.t5_rms_norm_eps = json::require_f32(root, "layer_norm_epsilon");
+     config.t5_pad_token_id = json::require_i64(root, "pad_token_id");
++    config.t5_eos_token_id = json::optional_i64(root, "eos_token_id", 1);
+ }
+ 
+ }  // namespace
+--- a/src/models/stable_audio/conditioner.cpp
++++ b/src/models/stable_audio/conditioner.cpp
+@@ -51,9 +51,14 @@
+     out.attention_mask.assign(static_cast<size_t>(batch * tokens), 0);
+     for (int64_t b = 0; b < batch; ++b) {
+         auto ids = engine::tokenizers::tokenize_sentencepiece(t5_pieces_, prompts[static_cast<size_t>(b)]);
+-        if (static_cast<int64_t>(ids.size()) > tokens) {
+-            ids.resize(static_cast<size_t>(tokens));
++        const int64_t eos = assets_->config.t5_eos_token_id;
++        const int64_t room = eos >= 0 ? tokens - 1 : tokens;
++        if (static_cast<int64_t>(ids.size()) > room) {
++            ids.resize(static_cast<size_t>(room));
+         }
++        if (eos >= 0) {
++            ids.push_back(static_cast<int32_t>(eos));   // T5-base was trained with </s> closing every prompt
++        }
+         for (size_t i = 0; i < ids.size(); ++i) {
+             out.input_ids[static_cast<size_t>(b * tokens) + i] = ids[i];
+             out.attention_mask[static_cast<size_t>(b * tokens) + i] = 1;
