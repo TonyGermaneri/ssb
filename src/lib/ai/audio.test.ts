@@ -144,7 +144,7 @@ describe('sound models', () => {
   it('asks audio.cpp with each family\'s own option names, the length clamped to the model', () => {
     const moss = soundModelFrom('moss')!
     expect(requestFor(moss, { prompt: 'rain', seconds: 99, negative_prompt: 'music' }, 5)).toEqual({ text: 'rain', seed: 5, options: { duration_sec: 30, num_steps: 50, guidance_scale: 4, negative_prompt: 'music' } })
-    expect(requestFor(soundModelFrom('stable audio open')!, { prompt: 'loop', seconds: 2.04, steps: 20 }, 1).options).toEqual({ duration_sec: 2, num_inference_steps: 20, guidance_scale: 7, sampler_mode: 'dpmpp-3m-sde' })
+    expect(requestFor(soundModelFrom('stable audio open')!, { prompt: 'loop', seconds: 2.04, steps: 20 }, 1).options).toEqual({ duration_sec: 2, num_inference_steps: 20, guidance_scale: 7, sampler_mode: 'dpmpp-3m-sde', duration_padding_sec: 48, apg_scale: 0, sigma_min: 0.3, sigma_max: 500 })
     expect(requestFor(soundModelFrom('stable audio 3 small music')!, { prompt: 'x' }, 1).options).toMatchObject({ num_inference_steps: 8, guidance_scale: 1, duration_sec: 5 })
   })
 })

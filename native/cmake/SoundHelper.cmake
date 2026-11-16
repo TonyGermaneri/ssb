@@ -19,6 +19,19 @@ endif()
 
 include(ExternalProject)
 
+# fixes carried on the pinned source until audio.cpp has them:
+# - audiocpp-stable-audio-foundation-inputs.patch: Stable Audio Open 1.0 (audio.cpp's "Foundation" path) wrote its DiT's
+#   RoPE positions and its T5's relative-position buckets into their graphs once, when built; the graph allocator
+#   reuses an input's memory once the graph has consumed it, so every run after the first (every diffusion step but
+#   the first, every request's prompt but the first) read garbage there and the clips came out as noise
+find_package(Patch REQUIRED)
+set(_patches "${CMAKE_CURRENT_LIST_DIR}/patches/audiocpp-stable-audio-foundation-inputs.patch")
+set(_patch_command "")
+foreach(_p IN LISTS _patches)
+    list(APPEND _patch_command COMMAND "${Patch_EXECUTABLE}" -p1 -i "${_p}")
+endforeach()
+list(REMOVE_AT _patch_command 0)   # ExternalProject takes the first command bare
+
 if(APPLE)
     set(_backend -DENGINE_ENABLE_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON)
     set(_archs ${CMAKE_OSX_ARCHITECTURES})
@@ -58,6 +71,7 @@ foreach(_arch IN LISTS _archs)
         DOWNLOAD_NAME "audio.cpp-${SSB_AUDIOCPP_COMMIT}.tar.gz"
         DOWNLOAD_DIR "${CMAKE_BINARY_DIR}/_downloads"
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        PATCH_COMMAND ${_patch_command}
         PREFIX "${CMAKE_BINARY_DIR}/audiocpp/${_arch}"
         CMAKE_ARGS
             -DCMAKE_BUILD_TYPE=Release

@@ -1,0 +1,31 @@
+--- a/src/models/stable_audio/foundation/conditioner.cpp
++++ b/src/models/stable_audio/foundation/conditioner.cpp
+@@ -283,6 +283,8 @@
+         }
+         core::write_tensor_i32(input_ids_, padded_ids);
+         core::write_tensor_f32(attention_mask_, make_additive_attention_mask(tokens, max_batch_, config.t5_attention_heads));
++        // like the mask: the graph allocator reuses an input's memory once it is consumed
++        core::write_tensor_i32(relative_buckets_, relative_buckets(tokens.tokens));
+         core::set_backend_threads(backend_, threads_);
+         engine::debug::timing_log_scalar(
+             "stable_audio.foundation.t5.input_upload_ms",
+--- a/src/models/stable_audio/foundation/rf_dit.cpp
++++ b/src/models/stable_audio/foundation/rf_dit.cpp
+@@ -563,6 +563,8 @@
+                 core::write_tensor_f32(alpha_, alpha_values);
+             }
+             const auto compute_start = Clock::now();
++            // the graph allocator reuses an input's memory once it is consumed: the positions go in before every run
++            core::write_tensor_i32(positions_tensor_, positions_);
+             const ggml_status status = engine::core::compute_backend_graph(backend_, graph_, nullptr, "stable_audio.foundation.rf_dit");
+             if (status != GGML_STATUS_SUCCESS) {
+                 throw std::runtime_error("Stable Audio Foundation RF DiT graph compute failed");
+@@ -659,6 +661,8 @@
+             core::write_tensor_f32(alpha_, std::vector<float>(static_cast<size_t>(batch_), alpha));
+         }
+         const auto compute_start = Clock::now();
++        // the graph allocator reuses an input's memory once it is consumed: the positions go in before every run
++        core::write_tensor_i32(positions_tensor_, positions_);
+         const ggml_status status = engine::core::compute_backend_graph(backend_, graph_, nullptr, "stable_audio.foundation.rf_dit");
+         if (status != GGML_STATUS_SUCCESS) {
+             throw std::runtime_error("Stable Audio Foundation RF DiT graph compute failed");

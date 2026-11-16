@@ -147,7 +147,15 @@ export const SOUND_MODELS: SoundModelInfo[] = [
     stepsOption: 'num_inference_steps',
     defaultSteps: 100,
     defaultGuidance: 7,
-    extraOptions: { sampler_mode: 'dpmpp-3m-sde' },
+    // audio.cpp runs SAO 1.0 (its "Foundation" path) with Stable Audio 3's recipe unless told otherwise, and that
+    // garbles it. Stability's own recipe instead:
+    // - the whole 47.55 s canvas, trimmed afterwards: audio.cpp sizes the canvas to the clip plus duration_padding_sec
+    //   (6 s by default), but SAO 1.0 only ever learned the full window -- a short canvas comes out as noise.
+    //   Padding past the window gives the whole of it; truncate_output_to_duration still trims to duration_sec.
+    // - plain classifier-free guidance: apg_scale defaults to 1 (SA3's adaptive projected guidance)
+    // - DPM++ 3M SDE over sigma 0.3..500 (stable-audio-tools' README); audio.cpp's default sampler (pingpong) is
+    //   for SA3's rectified flow and goes non-finite with this v-diffusion model
+    extraOptions: { sampler_mode: 'dpmpp-3m-sde', duration_padding_sec: 48, apg_scale: 0, sigma_min: 0.3, sigma_max: 500 },
   },
 ]
 
