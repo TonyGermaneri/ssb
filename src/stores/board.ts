@@ -37,7 +37,7 @@ import {
   TRIGGER_MODES,
   carrierSlot, headerOf, migratePatch, mpeRoutes, newSlot, PATCH_SLOTS, patchLayers, soundAudioIds, type TuningMode, type ListView,
   type MasterState, type ModRoute, type Patch, type PatchLayer, type PatchSlot, type Preset, type Sound, type SoundSettings,
-  type VcoSlot, type Zone,
+  type VcoSlot, type Zone, vcoHeard,
 } from '../types'
 
 /**
@@ -51,7 +51,7 @@ const LEGACY_BOARD = 'ssb:board:'
 /** a plugin instance's own settings, saved with the host session */
 const INSTANCE_FIELDS = [
   'play', 'mono', 'glide', 'octave', 'volume', 'muted', 'selectedId', 'patchId', 'mpe', 'mpeBendRange',
-  'midiAuto', 'midiBase', 'bpm', 'clockSource', 'fx', 'mod',
+  'midiAuto', 'midiBase', 'bpm', 'clockSource', 'fx', 'mod', 'vcoMute', 'vcoSolo',
 ] as const
 /**
  * How a plugin instance's editor looked, saved with the host session beside INSTANCE_FIELDS (with InstanceView): a
@@ -59,7 +59,7 @@ const INSTANCE_FIELDS = [
  */
 const VIEW_FIELDS = [
   'tab', 'view', 'patchView', 'gridPanel', 'showPatches', 'showSamples', 'paneSplit', 'listWidth', 'folded',
-  'headerFolded', 'rack', 'waveView', 'scope', 'isoView', 'favSounds', 'favPatches', 'scale', 'vcoPlay', 'rackTab',
+  'headerFolded', 'rack', 'waveView', 'scope', 'isoView', 'favSounds', 'favPatches', 'scale', 'rackPlay', 'rackTab',
 ] as const
 /** tells the other tabs / instances the library was saved, so they reload it */
 const libraryChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('ssb-library') : null
@@ -313,6 +313,15 @@ export const useBoard = defineStore('board', () => {
     return l ? layerSound(l.layer) : undefined
   }
   const selectedPatch = computed(() => patchById(master.patchId))
+  /**
+   * A sound is heard by the rack's mute / solo (types.ts vcoHeard): a layer of the selected patch, as its VCO; anything
+   * else (a pad, another patch's layer) always is.
+   */
+  function layerHeard(id: string): boolean {
+    const p = selectedPatch.value
+    const i = p ? p.slots.findIndex((x) => x?.layer.id === id) : -1
+    return i < 0 || vcoHeard(master, i)
+  }
   const patchMain = computed(() => {
     const c = selectedPatch.value && carrierSlot(selectedPatch.value)
     return c ? layerSound(c.layer) ?? null : null
@@ -755,6 +764,9 @@ export const useBoard = defineStore('board', () => {
       const st = JSON.parse(json) as { master?: Partial<MasterState>; view?: Partial<InstanceView>; edit?: { id: string; body: string } }
       const m = st.master ?? {}
       for (const k of INSTANCE_ALL) if (k in m) (master as Record<string, unknown>)[k] = clone(m[k])
+      // a session from before the PLAY view held all three VCOs: any slot's Play view on opens it
+      const old = m as { vcoPlay?: unknown }
+      if (!('rackPlay' in m) && Array.isArray(old.vcoPlay)) master.rackPlay = old.vcoPlay.some(Boolean)
       // the patch as the session left it: its unsaved edits, still unsaved
       if (st.edit?.id === master.patchId) applyDraft(st.edit)
       // a session saved before the view was kept opens as the editor always did
@@ -1128,7 +1140,7 @@ export const useBoard = defineStore('board', () => {
             group: sound.id,
             level: slot.level,
             detune: slot.fine,
-            silent: !slot.audible,
+            silent: !slot.audible || !layerHeard(osc.id),
             tuning: slots ? voiceTuning(slots, i, played, slot.track ? null : vNote) : undefined,
           },
           vFrom,
@@ -1139,7 +1151,9 @@ export const useBoard = defineStore('board', () => {
       })
     }
     const tuning = slots ? voiceTuning(slots, slots.findIndex((x) => x?.layer.id === sound.id), played, null) : base.tuning
-    return [...startOwn(sound, note, velocity, { ...base, modTaps: taps, tuning }, fromNote), ...vcoVoices]
+    // (muted or soloed away, the voice still runs, into the silent bus, as a MOD-only VCO does)
+    const silent = base.silent || !layerHeard(sound.id)
+    return [...startOwn(sound, note, velocity, { ...base, modTaps: taps, tuning, silent }, fromNote), ...vcoVoices]
   }
 
   /**
@@ -1201,7 +1215,7 @@ export const useBoard = defineStore('board', () => {
       const semis = semisFor(sound, z, note)
       // release voices never get a note-off, so they must not loop
       const zone = { ...zonePlay(z, note, velocity, -(z.rtDecay ?? 0) * held), loop: null }
-      engine.startVoice(sound, { velocity, note: semis, midiNote: note, zone })
+      engine.startVoice(sound, { velocity, note: semis, midiNote: note, zone, silent: !layerHeard(sound.id) })
     }
   }
 
@@ -1541,6 +1555,11 @@ export const useBoard = defineStore('board', () => {
   }
 
   function selectPatch(id: string | null) {
+    // the rack's mute / solo are for auditioning the patch in it: another patch starts with every VCO heard
+    if (id !== master.patchId) {
+      master.vcoMute = [false, false, false]
+      master.vcoSolo = [false, false, false]
+    }
     master.patchId = id
     const p = selectedPatch.value
     if (p) loadHeader(p)
@@ -2735,7 +2754,7 @@ export const useBoard = defineStore('board', () => {
     patches, patchTagFilter, patchTags, visiblePatches, patchFacets, togglePatchTag,
     tagsOf, toggleTagOf, hideTagOf, clearTagsOf,
     tagHidden, patchTagHidden,
-    selectedPatch, patchMain, playable, patchNumber, resolveSound, layerSound, patchLayerIds, vcoLinks, tunedSlots, patchById,
+    selectedPatch, patchMain, playable, patchNumber, resolveSound, layerSound, patchLayerIds, vcoLinks, tunedSlots, patchById, layerHeard,
     semantic, similarTo, showSimilar, showMatching, clearSimilar, soundScores, patchScores, shownSounds, shownPatches,
     candidate, candidateInfo, describePatch, rerollCandidate, saveCandidate, discardCandidate,
     installFactory, addFactoryPatch, selectPatch, editPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, removePatches, assignSlot, slotsOf, toggleSlot, toggleFav,

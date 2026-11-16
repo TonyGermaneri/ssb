@@ -4,7 +4,7 @@ import { activeVoices } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { rememberElementScroll } from '../lib/scrollMemory'
 import { fmtCents, fmtPct, fmtSemis, midiNoteName, padHue } from '../lib/format'
-import { PATCH_SLOTS, TUNING_MODES, type PatchSlot, type Sound, type TuningMode } from '../types'
+import { PATCH_SLOTS, TUNING_MODES, vcoHeard, type PatchSlot, type Sound, type TuningMode } from '../types'
 import ControlPanel from './ControlPanel.vue'
 import PlayView from './PlayView.vue'
 import Knob from './Knob.vue'
@@ -14,7 +14,8 @@ import { errorMessage } from '../lib/ai/types'
 /**
  * The selected patch's three VCO slots as tabs, one showing at a time across the width: the one place a patch is
  * edited. A tab lights while its VCO sounds; a sound dragged over a tab opens it, and dropped there goes into that slot
- * (as into an empty slot's panel, or pressing 1 / 2 / 3 on a sound). Fills its pane (left of the lists, or the window).
+ * (as into an empty slot's panel, or pressing 1 / 2 / 3 on a sound). Each tab has a mixer's M / S, and after them the
+ * PLAY tab shows all three VCOs' Play views side by side. Fills its pane (left of the lists, or the window).
  */
 const board = useBoard()
 const REORDER_TYPE = 'application/x-ssb-sound'
@@ -36,26 +37,43 @@ const TUNING: Record<TuningMode, { chip: string; label: string; hint: string }> 
 const TUNING_TITLE =
   'Tuning. ET is equal temperament; AJI (adaptive just intonation) retunes this VCO to each chord you hold, staying close to ET. Each VCO has its own'
 
-// PLAY: a slot shows its Play view (the clip big and four XY pads) instead of its knobs; kept with the instance's view
-const playing = (i: number) => !!board.master.vcoPlay?.[i]
-function togglePlay(i: number) {
-  const next = [...(board.master.vcoPlay ?? [false, false, false])]
-  next[i] = !next[i]
-  board.master.vcoPlay = next
-}
+// PLAY: the rack's own view, every VCO's Play view (the clip big and four XY pads) side by side in place of a tab's
+// knobs; kept with the instance's view
+const playView = computed({
+  get: () => !!board.master.rackPlay,
+  set: (on: boolean) => (board.master.rackPlay = on),
+})
 
-// the VCO tab showing (kept with a plugin instance's view)
+// the VCO tab showing (kept with a plugin instance's view); choosing one leaves the PLAY view
 const tab = computed({
   get: () => Math.min(PATCH_SLOTS - 1, Math.max(0, board.master.rackTab ?? 0)),
-  set: (i: number) => (board.master.rackTab = i),
+  set: (i: number) => {
+    board.master.rackTab = i
+    board.master.rackPlay = false
+  },
 })
+
+// M / S: a mixer's mute and solo per VCO (types.ts vcoHeard); the instance's, not saved in the patch
+const muted = (i: number) => !!board.master.vcoMute?.[i]
+const soloed = (i: number) => !!board.master.vcoSolo?.[i]
+const heard = (i: number) => vcoHeard(board.master, i)
+function toggleMix(kind: 'vcoMute' | 'vcoSolo', i: number) {
+  const next = [0, 1, 2].map((j) => !!board.master[kind]?.[j])
+  next[i] = !next[i]
+  board.master[kind] = next
+}
+const muteTitle = (i: number) => (muted(i) ? `VCO ${i + 1} muted — click to hear it` : `Mute VCO ${i + 1} (it still feeds the mod matrix)`)
+const soloTitle = (i: number) =>
+  soloed(i) ? `VCO ${i + 1} soloed — click to unsolo` : `Solo VCO ${i + 1}: while any VCO is soloed, only the soloed ones are heard (mute still wins)`
 const sounding = computed(() => new Set(activeVoices.value.map((v) => v.soundId)))
 const tabTitle = (x: PatchSlot | null, i: number) =>
-  `VCO ${i + 1}${i === 0 ? ' (the main voice)' : ''}: ${x ? sourceName(x) + (i > 0 && !x.audible ? ' — mod only' : '') : 'empty — drop a sound here'}`
+  `VCO ${i + 1}${i === 0 ? ' (the main voice)' : ''}: ${x ? sourceName(x) + (i > 0 && !x.audible ? ' — mod only' : '') + (heard(i) ? '' : muted(i) ? ' — muted' : ' — silent while another is soloed') : 'empty — drop a sound here'}`
 
 // each slot's panel scrolls on its own; where, is kept with a plugin instance's view
 const bodies = shallowReactive<(HTMLElement | null)[]>([null, null, null])
 for (const i of [0, 1, 2]) rememberElementScroll(() => `rack:${i}`, () => bodies[i])
+const playBody = ref<HTMLElement | null>(null)
+rememberElementScroll(() => 'rack:play', () => playBody.value)
 
 // ── the VCO wave prompt (soundTools.promptSlotWave): a few words → the loaded model's clip → this slot's sound ──
 const ai = useAi()
@@ -94,7 +112,8 @@ function onDragOver(e: DragEvent, i: number) {
   e.preventDefault()
   e.dataTransfer.dropEffect = 'copy'
   dropTarget.value = i
-  tab.value = i // (a tab dragged over opens)
+  // (a tab dragged over opens; in the PLAY view the slots are all showing)
+  if (!playView.value) tab.value = i
 }
 function onDrop(e: DragEvent, i: number) {
   dropTarget.value = -1
@@ -178,27 +197,63 @@ function onDrop(e: DragEvent, i: number) {
     </div>
 
     <div class="vtabs" role="tablist" aria-label="VCOs">
-      <button
+      <div
         v-for="(x, i) in slots"
         :key="i"
         class="vtab"
-        role="tab"
-        :aria-selected="tab === i"
-        :class="{ on: tab === i, empty: !x, live: !!x && sounding.has(x.layer.id), target: dropTarget === i }"
-        :title="tabTitle(x, i)"
-        @click="tab = i"
+        :class="{ on: !playView && tab === i, empty: !x, live: !!x && sounding.has(x.layer.id), target: dropTarget === i, unheard: !heard(i) }"
         @dragover="(e) => onDragOver(e, i)"
         @dragleave="dropTarget = -1"
         @drop="(e) => onDrop(e, i)"
       >
-        <i class="led" />
-        <b>{{ i + 1 }}</b>
-        <span class="nm">{{ x ? sourceName(x) : 'EMPTY' }}</span>
-        <em v-if="x && i > 0 && !x.audible">MOD</em>
-        <em v-else-if="x && playing(i)" class="play">PLAY</em>
+        <button class="pick" role="tab" :aria-selected="!playView && tab === i" :title="tabTitle(x, i)" @click="tab = i">
+          <i class="led" />
+          <b>{{ i + 1 }}</b>
+          <span class="nm">{{ x ? sourceName(x) : 'EMPTY' }}</span>
+          <em v-if="x && i > 0 && !x.audible">MOD</em>
+        </button>
+        <button class="ms mute" :class="{ on: muted(i) }" :aria-pressed="muted(i)" :title="muteTitle(i)" @click="toggleMix('vcoMute', i)">M</button>
+        <button class="ms solo" :class="{ on: soloed(i) }" :aria-pressed="soloed(i)" :title="soloTitle(i)" @click="toggleMix('vcoSolo', i)">S</button>
+      </div>
+      <button
+        class="vtab ptab"
+        role="tab"
+        :aria-selected="playView"
+        :class="{ on: playView }"
+        title="PLAY: all three VCOs' Play views side by side, each played from its clip and four XY pads (grain, LFO, filter · reverb, pitch · ring), SpaceCraft-style"
+        @click="playView = true"
+      >
+        PLAY
       </button>
     </div>
-    <div class="slots">
+    <!-- PLAY: the three VCOs' Play views together, a column each (stacked when the rack is narrow) -->
+    <div v-if="playView" ref="playBody" class="plays">
+      <div class="pgrid">
+      <div
+        v-for="(x, i) in slots"
+        :key="i"
+        class="pslot"
+        :class="{ empty: !x, target: dropTarget === i, unheard: !heard(i) }"
+        @dragover="(e) => onDragOver(e, i)"
+        @dragleave="dropTarget = -1"
+        @drop="(e) => onDrop(e, i)"
+      >
+        <div class="phead">
+          <b>{{ i + 1 }}</b>
+          <span class="src" :title="tabTitle(x, i)">{{ x ? sourceName(x) : 'empty' }}</span>
+          <em v-if="!heard(i)">{{ muted(i) ? 'MUTED' : 'SOLO OFF' }}</em>
+          <em v-else-if="x && i > 0 && !x.audible">MOD</em>
+        </div>
+        <PlayView v-if="x && layerOf(x)" :sound="layerOf(x)!" :slot="i" />
+        <div v-else class="drop">
+          <v-icon size="28" icon="mdi-tray-arrow-down" />
+          <div>DRAG A SOUND HERE</div>
+          <small>or press <b>{{ i + 1 }}</b> on a sound</small>
+        </div>
+      </div>
+      </div>
+    </div>
+    <div v-else class="slots">
       <template v-for="(x, i) in slots" :key="i">
       <div
         v-if="i === tab"
@@ -233,9 +288,8 @@ function onDrop(e: DragEvent, i: number) {
           <button
             v-if="x"
             class="chip"
-            :class="{ on: playing(i) }"
-            :title="playing(i) ? 'PLAY view: the clip big and four XY pads — click for the knobs' : 'PLAY view: play this VCO from its clip and four XY pads (grain, LFO, filter · reverb, pitch · ring), SpaceCraft-style'"
-            @click="togglePlay(i)"
+            title="PLAY view: all three VCOs side by side, each played from its clip and four XY pads (grain, LFO, filter · reverb, pitch · ring), SpaceCraft-style"
+            @click="playView = true"
           >
             PLAY
           </button>
@@ -284,8 +338,7 @@ function onDrop(e: DragEvent, i: number) {
           <span v-if="promptNote[i]" class="prompt-note" :class="{ err: promptErr[i] }">{{ promptNote[i] }}</span>
         </form>
         <div :ref="(el) => (bodies[i] = el as HTMLElement | null)" class="body">
-          <PlayView v-if="x && layerOf(x) && playing(i)" :sound="layerOf(x)!" :slot="i" />
-          <ControlPanel v-else-if="x && layerOf(x)" :sound="layerOf(x)!" :hue="hue(layerOf(x)!)" :role="i === 0 ? 'patch' : 'vco'" :patch="patch ?? undefined" wide />
+          <ControlPanel v-if="x && layerOf(x)" :sound="layerOf(x)!" :hue="hue(layerOf(x)!)" :role="i === 0 ? 'patch' : 'vco'" :patch="patch ?? undefined" wide />
           <div v-else class="drop">
             <v-icon size="28" icon="mdi-tray-arrow-down" />
             <div>DRAG A SOUND HERE</div>
@@ -437,13 +490,13 @@ function onDrop(e: DragEvent, i: number) {
   padding: 0 4px;
 }
 .vtab {
-  flex: 0 1 220px;
+  flex: 0 1 260px;
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 3px;
   height: 26px;
-  padding: 0 10px;
+  padding: 0 5px 0 0;
   border-radius: 6px 6px 0 0;
   font-family: 'VT323', monospace;
   font-size: 16px;
@@ -455,6 +508,62 @@ function onDrop(e: DragEvent, i: number) {
 }
 .vtab:hover {
   color: var(--text);
+}
+/* the tab's name picks it; M / S beside it */
+.vtab .pick {
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 10px;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+}
+.ms {
+  flex: none;
+  width: 17px;
+  height: 16px;
+  border-radius: 2px;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 8px;
+  font-weight: 900;
+  line-height: 14px;
+  color: var(--ink-mute);
+  background: #111;
+  border: 1px solid #000;
+}
+.ms:hover {
+  color: var(--text);
+}
+.ms.mute.on {
+  color: #111;
+  background: var(--c-danger);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--c-danger) 60%, transparent);
+}
+.ms.solo.on {
+  color: #111;
+  background: var(--c-accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--c-accent) 60%, transparent);
+}
+/* muted, or soloed away: the name dims */
+.vtab.unheard .nm,
+.pslot.unheard .phead .src {
+  opacity: 0.45;
+}
+/* PLAY: the rack's own view, after the VCO tabs */
+.vtab.ptab {
+  flex: none;
+  padding: 0 12px;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+}
+.vtab.ptab.on {
+  color: var(--c-accent);
 }
 .vtab b {
   font-family: 'Orbitron', sans-serif;
@@ -472,9 +581,6 @@ function onDrop(e: DragEvent, i: number) {
   font-style: normal;
   font-size: 12px;
   color: var(--text-mute);
-}
-.vtab em.play {
-  color: var(--c-accent);
 }
 .vtab.empty .nm {
   color: var(--text-faint);
@@ -519,9 +625,71 @@ function onDrop(e: DragEvent, i: number) {
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(0, 0, 0, 0.18);
 }
-.slot.empty {
+/* PLAY: a column per VCO; stacked, one under another, when the rack is too narrow for three */
+.plays {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  padding: 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.18);
+  container-type: inline-size;
+}
+.pgrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  gap: 6px;
+}
+@container (max-width: 720px) {
+  .pgrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.pslot {
+  min-width: 0;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.18);
+}
+.pslot :deep(.play) {
+  border-radius: 0 0 6px 6px;
+}
+.phead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  border-radius: 5px 5px 0 0;
+  background: rgba(0, 0, 0, 0.5);
+}
+.phead b {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 10px;
+  font-weight: 900;
+  color: var(--c-primary);
+}
+.phead em {
+  margin-left: auto;
+  font-style: normal;
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.pslot .drop {
+  height: 160px;
+}
+.slot.empty,
+.pslot.empty {
   border: 2px dashed color-mix(in srgb, var(--c-primary) 30%, transparent);
 }
+.pslot.target,
 .slot.target {
   border: 2px solid var(--c-secondary);
   box-shadow: 0 0 14px color-mix(in srgb, var(--c-secondary) 45%, transparent);

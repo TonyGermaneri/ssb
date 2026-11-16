@@ -46,18 +46,21 @@ function soundJson(board: Board, sound: Sound) {
     if (zones === undefined) zoneJson.set(sound.zones, (zones = JSON.parse(JSON.stringify(sound.zones))))
   }
   const main = board.tunedSlots(sound)?.find((x) => x?.layer.id === sound.id)
+  // the rack's mute / solo (board.layerHeard): a VCO it silences is sent as MOD only (its link) and at no volume (as a
+  // main voice, which has no link), so it goes on feeding the matrix -- its tap is taken before the volume
+  const heard = board.layerHeard(sound.id)
   return {
     id: sound.id,
     audioId: sound.audioId,
     // a patch's MPE bindings join the layer's routes while MPE is on (board.mpeRoutesFor; none otherwise)
-    s: { ...rest, mod: matrix(withMpe(mod, board.mpeRoutesFor(sound.id))) },
+    s: { ...rest, volume: heard ? rest.volume : 0, mod: matrix(withMpe(mod, board.mpeRoutesFor(sound.id))) },
     zones,
     ccDefaults: sound.ccDefaults,
     links: board.vcoLinks(sound).map(({ index, osc, slot }) => ({
       index,
       soundId: osc.id,
       level: slot.level,
-      audible: slot.audible,
+      audible: slot.audible && board.layerHeard(osc.id),
       track: slot.track,
       transpose: slot.transpose,
       fine: slot.fine,

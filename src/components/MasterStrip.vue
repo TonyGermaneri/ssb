@@ -60,6 +60,23 @@ function toggleView(id: ViewPart) {
   if (id !== 'rack' && m[id]) m.tab = id === 'showPatches' ? 'patches' : 'sounds'
 }
 
+/**
+ * The patch LCD: a click shows the patches solo (the patch browser alone, full width: no rack, no samples); a click
+ * while they are brings back the view before (or, with none remembered, the rack beside them).
+ */
+const patchesSolo = computed(() => board.master.showPatches && !board.master.showSamples && !board.master.rack)
+let beforeSolo: Pick<typeof board.master, ViewPart> | null = null
+function togglePatchesSolo() {
+  const m = board.master
+  if (patchesSolo.value) {
+    Object.assign(m, beforeSolo ?? { rack: true, showPatches: true, showSamples: false })
+    beforeSolo = null
+    return
+  }
+  beforeSolo = { rack: m.rack, showPatches: m.showPatches, showSamples: m.showSamples }
+  Object.assign(m, { rack: false, showPatches: true, showSamples: false, tab: 'patches' })
+}
+
 /** new patch from the sound being edited (or the first sound) */
 function newPatch() {
   const src = board.selected ?? board.sounds[0]
@@ -139,13 +156,15 @@ function onImport(e: Event) {
       <button class="hw-btn icon" title="Previous patch" @click="board.selectPatchStep(-1)">
         <v-icon size="18" icon="mdi-chevron-left" />
       </button>
-      <div
-        class="lcd"
-        :title="board.selectedPatch ? `Patch: ${board.selectedPatch.name}${board.isBuiltIn(board.selectedPatch) ? ' (built in)' : ''}${board.patchEdited ? ' · edited, not saved' : ''}` : 'No patch selected'"
+      <button
+        class="lcd patch-lcd"
+        :class="{ on: patchesSolo }"
+        :title="`${board.selectedPatch ? `Patch: ${board.selectedPatch.name}${board.isBuiltIn(board.selectedPatch) ? ' (built in)' : ''}${board.patchEdited ? ' · edited, not saved' : ''}` : 'No patch selected'} — ${patchesSolo ? 'click to go back to the view before' : 'click to browse the patches, alone, full width'}`"
+        @click="togglePatchesSolo"
       >
         {{ patchLabel }}
         <i v-if="board.patchEdited" class="edited-led" />
-      </div>
+      </button>
       <button class="hw-btn icon" title="Next patch" @click="board.selectPatchStep(1)">
         <v-icon size="18" icon="mdi-chevron-right" />
       </button>
@@ -521,11 +540,26 @@ function onImport(e: Event) {
   pointer-events: none;
 }
 .lcd {
-  width: 104px;
+  /* the patch's name: twice the 104 px it once had */
+  width: 208px;
   flex: none;
   color: var(--c-secondary);
   text-shadow: 0 0 6px color-mix(in srgb, var(--c-secondary) 80%, transparent);
   text-overflow: ellipsis;
+}
+/* (a button: a click browses the patches) */
+.patch-lcd {
+  justify-content: flex-start;
+  white-space: nowrap;
+  text-align: left;
+  border: 0;
+  cursor: pointer;
+}
+.patch-lcd:hover,
+.patch-lcd.on {
+  box-shadow:
+    inset 0 1px 4px rgba(0, 0, 0, 0.95),
+    0 0 0 1px color-mix(in srgb, var(--c-secondary) 45%, transparent);
 }
 .bpm-knob {
   position: relative;

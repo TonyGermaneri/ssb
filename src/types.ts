@@ -621,8 +621,11 @@ export interface MasterState {
   scope: ScopeKnobs
   /** the ISO view's camera, degrees: turned about the floor (yaw) and looking down (pitch); dragged in the view */
   isoView: IsoView
-  /** which rack slots (VCO 1-3) show the Play view instead of their panel */
-  vcoPlay: boolean[]
+  /** the rack shows the PLAY view: VCO 1-3's Play views side by side, in place of the tabs' panels */
+  rackPlay: boolean
+  /** the rack's mute / solo, per VCO (1-3) of the selected patch: the instance's, not the patch's (vcoHeard) */
+  vcoMute: boolean[]
+  vcoSolo: boolean[]
   /** the rack's VCO tab showing (0..2) */
   rackTab: number
   /** seconds to slide between notes */
@@ -689,7 +692,9 @@ export const defaultMaster = (): MasterState => ({
   waveView: 'scope',
   scope: defaultScopeKnobs(),
   isoView: { ...ISO_VIEW },
-  vcoPlay: [false, false, false],
+  rackPlay: false,
+  vcoMute: [false, false, false],
+  vcoSolo: [false, false, false],
   rackTab: 0,
   glide: 0,
   octave: 0,
@@ -721,6 +726,16 @@ export const defaultMaster = (): MasterState => ({
   mod: defaultMatrix(),
 })
 
+/**
+ * Whether VCO `i` (0-2) of the selected patch is heard, by the rack's mute / solo (a mixer's): a muted one never is
+ * (mute wins over solo); while any is soloed, only the soloed ones are. Not heard, a VCO still runs: it goes on feeding
+ * the mod matrix, as a MOD-only slot does.
+ */
+export function vcoHeard(m: Pick<MasterState, 'vcoMute' | 'vcoSolo'>, i: number): boolean {
+  if (m.vcoMute?.[i]) return false
+  return !m.vcoSolo?.some(Boolean) || !!m.vcoSolo[i]
+}
+
 export function migrateMaster(raw?: Partial<MasterState>): MasterState {
   const m = { ...defaultMaster(), ...raw, fx: { ...defaultGlobalFx(), ...raw?.fx }, mod: migrateMatrix(raw?.mod) }
   // a board from before the live views opens on the vintage scope, their new default
@@ -737,7 +752,12 @@ export function migrateMaster(raw?: Partial<MasterState>): MasterState {
   if (!m.rack && !m.showPatches && !m.showSamples) m.showSamples = true
   m.paneSplit = Math.min(0.85, Math.max(0.15, Number(m.paneSplit) || 0.5))
   delete (m as { list?: boolean }).list
-  m.vcoPlay = [0, 1, 2].map((i) => !!raw?.vcoPlay?.[i])
+  // before the PLAY view held all three: a Play view per slot (vcoPlay), any of them on opens it
+  const before = raw as { vcoPlay?: boolean[] } | undefined
+  m.rackPlay = !!raw?.rackPlay || (raw?.rackPlay === undefined && !!before?.vcoPlay?.some(Boolean))
+  delete (m as { vcoPlay?: boolean[] }).vcoPlay
+  m.vcoMute = [0, 1, 2].map((i) => !!raw?.vcoMute?.[i])
+  m.vcoSolo = [0, 1, 2].map((i) => !!raw?.vcoSolo?.[i])
   m.rackTab = Math.min(2, Math.max(0, Math.round(Number(raw?.rackTab) || 0)))
   return m
 }
