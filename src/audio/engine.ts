@@ -49,6 +49,8 @@ interface RenderTarget {
   voices: Set<Voice>
 }
 let target: RenderTarget | null = null
+/** Whether an offline render is being built (startVoice builds into it, not the live engine). */
+export const rendering = () => target !== null
 
 /** Decoded audio by audioId. Not reactive — AudioBuffers are big. */
 export const buffers = new Map<string, AudioBuffer>()

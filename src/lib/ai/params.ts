@@ -4,6 +4,7 @@
  * the model writes against it. Ranges are the panels' knob ranges.
  */
 import { DIVISIONS, FILTER_TYPES, LFO_SHAPES, MOD_DESTS, MOD_SOURCES, MPE_SURFACES, TRIGGER_MODES, TUNING_MODES } from '../../types'
+import { SCALES } from '../play/seq'
 
 export interface Param {
   key: string
@@ -39,6 +40,9 @@ export const SOUND_SECTIONS: { title: string; params: Param[] }[] = [
     params: [
       n('pitch', -24, 24, 'st', 'transpose in semitones (in grain sync patches it moves the formant)'),
       n('fine', -100, 100, 'cents', 'fine tune'),
+      n('tuneCoarse', -12, 12, 'st', 'the sample\'s own tuning, under pitch (corrects a sample in another key)'),
+      n('tuneFine', -100, 100, 'cents', 'the sample\'s own fine tuning, under fine'),
+      n('stereoPhase', 0, 30, 'ms', 'the right channel this much later than the left: widens a mono sample'),
       n('speed', 0.25, 4, 'x', 'playback speed (STRETCH: independent of pitch)'),
       e('timeMode', ['tape', 'stretch'], 'tape: pitch and speed change together; stretch: granular time-stretch'),
     ],
@@ -140,6 +144,21 @@ export const SOUND_SECTIONS: { title: string; params: Param[] }[] = [
       n('grainNoteRnd', 0, 12, 'st', 'each note’s pitch randomly ±'),
       n('grainLength', 0.01, 1, '', 'how much of each grain sounds (its window squeezed in), then silence: short = separate, arpeggio-like grains'),
       b('grainBackwards', 'every grain reads the sample backwards from where it starts (LOOP: every segment reversed)'),
+      b('grainSync', 'grain rate is a tempo division (grainBeats) instead of free grainFreq'),
+      n('grainBeats', 0, 8, 'beats', 'with grainSync: beats a grain (0.25 = 16ths); 0 keeps grainFreq free'),
+    ],
+  },
+  {
+    title: 'SEQUENCER (SpaceCraft notes grid; needs grain on)',
+    params: [
+      b('seq', 'the keys put notes in a grid and one grain stream takes turns through them: chords when grains overlap (high grainFreq, grainLength 1), arpeggios when they are short and separate'),
+      e('seqScale', SCALES.map((x) => x.id), 'the grid\'s scale; MIDI white keys step through it from the patch root (chromatic: every key)'),
+      b('seqEnv', 'each grid note fades in over seqAttack and out over seqRelease'),
+      n('seqAttack', 0.002, 8, 's', 'grid note attack (with seqEnv)'),
+      n('seqRelease', 0.002, 8, 's', 'grid note release (with seqEnv)'),
+      b('seqSingle', 'one grid note at a time (monophonic)'),
+      b('mpeGrain', 'MPE sideways bend moves grain position instead of pitch'),
+      b('pitchScale', 'the Play view\'s pitch pad snaps to seqScale'),
     ],
   },
   {
@@ -157,6 +176,7 @@ export const SOUND_SECTIONS: { title: string; params: Param[] }[] = [
       n('delayMix', 0, 1, '', 'wet level'),
       n('reverbSize', 0.1, 6, 's', 'impulse length'),
       n('reverbDecay', 0.5, 10, '', 'decay curve'),
+      n('reverbDamp', 0, 1, '', 'the tail darkens as it decays'),
       n('reverbMix', 0, 1, '', 'wet level'),
     ],
   },

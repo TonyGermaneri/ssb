@@ -317,3 +317,51 @@ export function drawPerformOverlay(
   }
   crosshair(g, w, h, o.at, o.colors, o.dpr)
 }
+
+// ── GRAIN under SYNC: its bands as rows, the one the crosshair's in lit; the top band (free) left open ──
+export function drawSyncBands(g: G, w: number, h: number, o: { bands: number; top: number; at: Point; colors: Colors; dpr: number }) {
+  const bandH = (o.top * h) / o.bands
+  const lit = o.at.y < o.top ? Math.min(o.bands - 1, Math.floor((o.at.y / o.top) * o.bands)) : -1
+  g.lineWidth = Math.max(1, 0.5 * o.dpr)
+  for (let i = 0; i < o.bands; i++) {
+    const y0 = h - (i + 1) * bandH
+    if (i === lit) {
+      g.fillStyle = alpha(o.colors.line, 0.18)
+      g.fillRect(0, y0, w, bandH)
+    }
+    g.strokeStyle = alpha(o.colors.line, 0.25)
+    g.beginPath()
+    g.moveTo(0, Math.round(y0) + 0.5)
+    g.lineTo(w, Math.round(y0) + 0.5)
+    g.stroke()
+  }
+}
+
+// ── ENVELOPE: each grid note's level -- rising over its attack (up / down), falling over its release (left / right) ──
+export function drawEnv(g: G, w: number, h: number, o: { at: Point; colors: Colors; dpr: number }) {
+  const pad = 6 * o.dpr
+  const top = pad + 4 * o.dpr
+  const base = h - pad
+  const rise = (w * 0.45 - pad) * Math.max(0.02, o.at.y)
+  const fall = (w * 0.45 - pad) * Math.max(0.02, o.at.x)
+  const x0 = pad
+  const x1 = x0 + rise
+  const x3 = w - pad
+  const x2 = x3 - fall
+  g.fillStyle = alpha(o.colors.line, 0.12)
+  g.strokeStyle = o.colors.line
+  g.lineWidth = Math.max(1.5, 1.5 * o.dpr)
+  g.beginPath()
+  g.moveTo(x0, base)
+  g.lineTo(x1, top)
+  g.lineTo(x2, top)
+  g.lineTo(x3, base)
+  g.closePath()
+  g.fill()
+  g.beginPath()
+  g.moveTo(x0, base)
+  g.lineTo(x1, top)
+  g.lineTo(x2, top)
+  g.lineTo(x3, base)
+  g.stroke()
+}

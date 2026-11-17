@@ -2173,3 +2173,201 @@ TEST ("engine: a UNIPOLAR LFO into pitch only bends up")
     CHECK (bLow < 435.0);               // both ways
     CHECK_NEAR (uHigh, bHigh, 3.0);     // the same top
 }
+
+// ------------------------------------------------------------------------ SpaceCraft's sequencer and options
+
+namespace
+{
+/** A patch whose VCO 2 ("v") has SEQ on: a 440 Hz sine (A4 its own key) as grains of `hz`; the patch's root C4. */
+std::unique_ptr<Rig> seqPatch (std::function<void (ssb::Settings&)> tweak, float hz = 20)
+{
+    auto rig = std::make_unique<Rig>();
+    auto& main = rig->add ("main", sine (440, 3), [] (auto& s) { s.rootNote = 60; s.volume = 0; });
+    rig->add ("v", sine (440, 3), [&] (auto& s)
+    {
+        s.rootNote = 69;
+        cloud (s, hz);
+        s.seq = true;
+        s.release = 0.01f;
+        if (tweak) tweak (s);
+    });
+    ssb::Link link;
+    link.index = 1;
+    link.soundId = "v";
+    main.links.push_back (link);
+    rig->set ("play", true);
+    rig->set ("playable", "main");
+    rig->commit();
+    return rig;
+}
+} // namespace
+
+TEST ("engine: SEQ -- the grid's pads take turns, a grain each, at their own pitches, while the patch is chosen")
+{
+    auto rig = seqPatch ([] (auto& s) { s.seqGrid = { 0.0f, 12.0f }; });
+    rig->render (1.0);   // no key down: the pads play on their own
+    CHECK (rig->rms (0.2, 0.9) > 0.05);
+    std::vector<ssb::GrainView> grains;
+    rig->engine.readGrains (grains, 1000);
+    CHECK (grains.size() > 20);
+    int low = 0, high = 0, alternating = 0;
+    for (size_t i = 0; i < grains.size(); ++i)
+    {
+        const bool up = std::abs (grains[i].rate - 2.0f) < 0.01f;
+        CHECK (up || std::abs (grains[i].rate - 1.0f) < 0.01f);   // the sample's own key, or an octave up
+        (up ? high : low) += 1;
+        if (i > 0 && (std::abs (grains[i - 1].rate - 2.0f) < 0.01f) != up) ++alternating;
+    }
+    CHECK (std::abs (low - high) <= 2);                   // shared equally
+    CHECK (alternating >= (int) grains.size() / 3);       // and in turn (each side takes the next)
+}
+
+TEST ("engine: SEQ -- a key goes into the grid while it's down: white keys step through the scale from the root")
+{
+    auto rig = seqPatch ([] (auto& s) { s.seqSteps = { { 0, 2, 3, 5, 7, 8, 10 } }; s.seqStepCount = 7; });   // MINOR
+    // E4 is the third white key up from C4: the scale's third step, a minor third (3 semitones) above A4
+    rig->render (1.2, { on (0.0, 64), off (0.6, 64) });
+    CHECK (rig->rms (0.1, 0.5) > 0.05);
+    CHECK (rig->rms (0.8, 1.2) < 1e-4);                   // its grid empty, the stream let go
+    std::vector<ssb::GrainView> grains;
+    rig->engine.readGrains (grains, 1000);
+    CHECK (! grains.empty());
+    for (const auto& g : grains)
+        CHECK_NEAR (g.rate, std::pow (2.0, 3.0 / 12.0), 1e-3);
+    CHECK (rig->engine.activeVoices() == 0);              // the key's note and the stream both gone
+}
+
+TEST ("engine: SEQ -- CHROMATIC keys play their distance from the root; SINGLE NOTE replaces the note before")
+{
+    auto rig = seqPatch ([] (auto& s) { s.seqChromatic = true; s.seqSingle = true; });
+    rig->render (1.0, { on (0.0, 61), on (0.4, 67) });   // a semitone, then a fifth (61 still held)
+    std::vector<ssb::GrainView> grains;
+    rig->engine.readGrains (grains, 1000);
+    int early = 0, late = 0;
+    for (const auto& g : grains)
+    {
+        if (g.when < 0.38) { CHECK_NEAR (g.rate, std::pow (2.0, 1.0 / 12.0), 1e-3); ++early; }
+        if (g.when > 0.42) { CHECK_NEAR (g.rate, std::pow (2.0, 7.0 / 12.0), 1e-3); ++late; }
+    }
+    CHECK (early > 4);
+    CHECK (late > 4);
+}
+
+TEST ("engine: SEQ ENVELOPE ON -- a grid note fades in over ATTACK, its grains growing louder")
+{
+    auto rig = seqPatch ([] (auto& s) { s.seqGrid = { 0.0f }; s.seqEnv = true; s.seqAttack = 0.5f; });
+    rig->render (1.0);
+    std::vector<ssb::GrainView> grains;
+    rig->engine.readGrains (grains, 1000);
+    float first = 1, late = 0;
+    for (const auto& g : grains)
+    {
+        if (g.when < 0.1) first = std::min (first, g.gain);
+        if (g.when > 0.6) late = std::max (late, g.gain);
+    }
+    CHECK (first < 0.25f);
+    CHECK_NEAR (late, 1.0, 0.01);
+}
+
+TEST ("engine: SEQ needs grains: with GRAIN off the VCO plays its keys as it always did")
+{
+    auto rig = seqPatch ([] (auto& s) { s.grain = false; });
+    rig->render (0.5, { on (0.0, 60) });
+    CHECK_NEAR (rig->hz (0.1, 0.45), 440.0, 2.0);
+}
+
+TEST ("engine: COARSE / FINE TUNE retune the sample under PITCH / FINE")
+{
+    Rig rig;
+    rig.add ("a", sine (440, 1), [] (auto& s) { s.tuneCoarse = 12; s.tuneFine = -100; s.pitch = 1; });
+    rig.commit();
+    rig.press ("a");
+    rig.render (0.5);
+    CHECK_NEAR (rig.hz (0.05, 0.45), 880.0, 3.0);   // +12 -1 +1 semitones
+}
+
+TEST ("engine: SYNC makes GRAIN a tempo division (its top band stays free)")
+{
+    Rig rig;
+    rig.host.bpm = 120;
+    rig.add ("a", dc (0.5f, 3), [] (auto& s) { cloud (s, 10); s.grainSync = true; s.grainBeats = 1; });
+    rig.add ("b", dc (0.5f, 3), [] (auto& s) { cloud (s, 10); s.grainSync = true; s.grainBeats = 0; });
+    rig.commit();
+    rig.press ("a");
+    rig.render (1.2);
+    std::vector<ssb::GrainView> grains;
+    rig.engine.readGrains (grains, 1000);
+    CHECK (! grains.empty());
+    for (const auto& g : grains)
+        CHECK_NEAR (g.dur, 0.5, 1e-3);    // a beat at 120 bpm: 2 Hz
+    rig.engine.post (ssb::Command::make (ssb::Command::Type::panic));
+    rig.render (0.1);
+    rig.engine.readGrains (grains, 1000);
+    rig.press ("b");
+    rig.render (0.5);
+    grains.clear();
+    rig.engine.readGrains (grains, 1000);
+    CHECK (! grains.empty());
+    for (const auto& g : grains)
+        CHECK_NEAR (g.dur, 0.1, 1e-3);    // the top band: GRAIN's 10 Hz
+}
+
+TEST ("engine: STEREO PHASE delays the right channel by its milliseconds")
+{
+    Rig rig;
+    rig.add ("a", sine (300, 1), [] (auto& s) { s.stereoPhase = 10; });
+    rig.commit();
+    rig.press ("a");
+    rig.render (0.5);
+    const auto lag = (size_t) (0.010 * rate);
+    double err = 0, sig = 0;
+    for (size_t i = (size_t) (0.1 * rate); i < (size_t) (0.4 * rate); ++i)
+    {
+        err += std::abs (rig.right[i] - rig.left[i - lag]);
+        sig += std::abs (rig.left[i]);
+    }
+    CHECK (sig > 100);
+    CHECK (err / sig < 0.01);
+}
+
+TEST ("engine: reverb DAMP darkens the impulse's tail, and is part of what impulses are shared under")
+{
+    const auto bright = ssb::dsp::makeImpulse (rate, 2, 3, 0);
+    const auto dark = ssb::dsp::makeImpulse (rate, 2, 3, 1);
+    const auto hf = [] (const std::vector<float>& x, size_t from, size_t to)
+    {
+        double d = 0, e = 0;
+        for (size_t i = from + 1; i < to; ++i) { d += (x[i] - x[i - 1]) * (x[i] - x[i - 1]); e += x[i] * x[i]; }
+        return d / std::max (1e-12, e);   // the share of its energy that's high
+    };
+    const auto n = bright[0].size();
+    CHECK (hf (dark[0], n / 2, n * 3 / 4) < 0.3 * hf (bright[0], n / 2, n * 3 / 4));   // a third of the way: ~5x darker
+    CHECK (hf (dark[0], n * 9 / 10, n) < 0.1 * hf (bright[0], n * 9 / 10, n));            // near the end ~16x (a one-pole keeps its coefficient's share)
+    CHECK (hf (dark[0], 0, n / 50) > 0.5 * hf (bright[0], 0, n / 50));                   // while it starts bright
+    CHECK (ssb::dsp::impulseKey (2, 3, 0) != ssb::dsp::impulseKey (2, 3, 1));
+    CHECK (ssb::dsp::impulseKey (2, 3) == ssb::dsp::impulseKey (2, 3, 0));
+}
+
+TEST ("engine: the sequencer and SpaceCraft's options come from the page's JSON")
+{
+    const auto s = ssb::settingsFromJson (juce::JSON::parse (R"({"grain": true, "grainFreq": 8, "grainSync": true, "grainBeats": 0.5,
+        "seq": true, "seqScale": "minorPent", "seqGrid": [0, -12, 7], "seqEnv": true, "seqAttack": 0.2, "seqRelease": 1.5,
+        "seqSingle": true, "mpeGrain": true, "tuneCoarse": 40, "tuneFine": -20, "stereoPhase": 12, "reverbDamp": 0.5})"));
+    CHECK (s.grainSync);
+    CHECK_NEAR (s.grainBeats, 0.5, 1e-6);
+    CHECK (s.seq && s.seqEnv && s.seqSingle && s.mpeGrain);
+    CHECK (s.seqStepCount == 5);
+    CHECK (s.seqSteps[1] == 3 && s.seqSteps[4] == 10);
+    CHECK (! s.seqChromatic);
+    CHECK (s.seqGrid.size() == 3 && s.seqGrid[1] == -12.0f);
+    CHECK_NEAR (s.seqAttack, 0.2, 1e-6);
+    CHECK_NEAR (s.seqRelease, 1.5, 1e-6);
+    CHECK_NEAR (s.tuneCoarse, 12.0, 1e-6);   // in range
+    CHECK_NEAR (s.tuneFine, -20.0, 1e-6);
+    CHECK_NEAR (s.stereoPhase, 12.0, 1e-6);
+    CHECK_NEAR (s.reverbDamp, 0.5, 1e-6);
+    const auto d = ssb::settingsFromJson (juce::JSON::parse (R"({"seqScale": "chromatic"})"));
+    CHECK (d.seqChromatic && d.seqStepCount == 12);
+    CHECK (! d.seq);
+    CHECK (ssb::settingsFromJson (juce::JSON::parse (R"({"seqScale": "nonsense"})")).seqStepCount == 7);   // MAJOR
+}

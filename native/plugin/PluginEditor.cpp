@@ -233,7 +233,8 @@ SsbEditor::SsbEditor (SsbProcessor& p)
               const auto& c = args[0];
               const auto type = c.getProperty ("type", {}).toString();
               const T t = type == "press" ? T::press : type == "release" ? T::release : type == "noteOn" ? T::noteOn
-                        : type == "noteOff" ? T::noteOff : type == "cc" ? T::cc : type == "midi" ? T::midi : T::panic;
+                        : type == "noteOff" ? T::noteOff : type == "cc" ? T::cc : type == "midi" ? T::midi
+                        : type == "seqClear" ? T::seqClear : T::panic;
               auto cmd = ssb::Command::make (t, c.getProperty ("id", {}).toString().toStdString(),
                                              (float) (double) c.getProperty ("velocity", 1.0));
               cmd.note = (uint8_t) juce::jlimit (0, 127, (int) c.getProperty ("note", 60));

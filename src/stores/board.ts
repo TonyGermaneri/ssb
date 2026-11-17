@@ -13,6 +13,8 @@ import { ClockTracker } from '../lib/midiClock'
 import { THEMES, themeById } from '../theme/themes'
 import { AdaptiveTuner } from '../audio/adaptiveTuning'
 import { MpeZones } from '../audio/mpe'
+import { seqSounding, type SeqNote } from '../audio/grainMath'
+import { keyToGrid } from '../lib/play/seq'
 import type { Voice, VoiceOptions, VoiceTuning, ZonePlay } from '../audio/voice'
 import type { SoundRef } from '../lib/ai/patchSpec'
 import { basename, dirname, type PathFile } from '../lib/dropFiles'
@@ -1128,6 +1130,12 @@ export const useBoard = defineStore('board', () => {
     if (!asVco) {
       vcoLinks(sound).forEach(({ index: i, osc, slot }) => {
         if (osc.id === sound.id) return
+        // SEQ: the note goes into the VCO's grid, which its one grain stream plays
+        if (seqLive(osc)) {
+          const st = seqStream(osc, { group: sound.id, level: slot.level, detune: slot.fine, silent: !slot.audible || !layerHeard(osc.id) })
+          vcoVoices.push(seqKeyOn(st, keyToGrid(osc.settings.seqScale, note, sound.settings.rootNote) + slot.transpose, velocity, base.midiNote))
+          return
+        }
         // TRACK follows the played key (so the VCO keeps its interval to the patch); FIXED always plays its note
         const vNote = (slot.track ? note - sound.settings.rootNote + osc.settings.rootNote : slot.fixedNote) + slot.transpose
         const vFrom = slot.track && fromNote !== null ? fromNote - sound.settings.rootNote + osc.settings.rootNote + slot.transpose : null
@@ -1153,6 +1161,10 @@ export const useBoard = defineStore('board', () => {
     const tuning = slots ? voiceTuning(slots, slots.findIndex((x) => x?.layer.id === sound.id), played, null) : base.tuning
     // (muted or soloed away, the voice still runs, into the silent bus, as a MOD-only VCO does)
     const silent = base.silent || !layerHeard(sound.id)
+    if (!asVco && seqLive(sound)) {
+      const st = seqStream(sound, { group: base.group, level: base.level ?? 1, detune: base.detune ?? 0, silent })
+      return [seqKeyOn(st, keyToGrid(sound.settings.seqScale, note, sound.settings.rootNote), velocity, base.midiNote), ...vcoVoices]
+    }
     return [...startOwn(sound, note, velocity, { ...base, modTaps: taps, tuning, silent }, fromNote), ...vcoVoices]
   }
 
@@ -1344,6 +1356,149 @@ export const useBoard = defineStore('board', () => {
     }
   }
 
+  // ── the sequencer (lib/play/seq.ts): a VCO's grid, and the one grain stream that takes turns through its notes ──
+  // (the plugin's engine keeps its own: Engine.cpp; there the page only edits the grid's pads, a setting)
+  /** a VCO plays its grid while SEQ is on and it plays grains (the grid's notes are its grains'), live (not offline) */
+  const seqLive = (s: Sound) => !!s.settings.seq && !!s.settings.grain && !engine.external && !engine.rendering()
+  interface SeqStream {
+    sound: Sound
+    group?: string
+    level: number
+    detune: number
+    silent: boolean
+    /** the grain voice playing it, while anything sounds */
+    voice: Voice | null
+    /** the grid's notes, in the order they went in (keys' and pads' alike), until each has faded */
+    notes: SeqNote[]
+    /** the pads that are on (settings.seqGrid), by semitone */
+    pads: Map<number, SeqNote>
+    timer?: ReturnType<typeof setTimeout>
+  }
+  const seqStreams = new Map<string, SeqStream>()
+  /** ENVELOPE ON's attack and release; off, notes come and go at once */
+  const seqTimes = (s: SoundSettings) => (s.seqEnv ? { attack: s.seqAttack, release: s.seqRelease } : { attack: 0, release: 0 })
+  function seqStream(sound: Sound, o: { group?: string; level: number; detune: number; silent: boolean }): SeqStream {
+    let st = seqStreams.get(sound.id)
+    if (!st) seqStreams.set(sound.id, (st = { sound, ...o, voice: null, notes: [], pads: new Map() }))
+    else Object.assign(st, { sound }, st.voice?.playing ? {} : o)
+    return st
+  }
+  /** The grid changed: the stream starts if it wasn't playing, hears the notes, and stops once the last has faded. */
+  function seqChanged(st: SeqStream) {
+    const now = engine.voiceTime()
+    const { release } = seqTimes(st.sound.settings)
+    st.notes = st.notes.filter((n) => n.off === Infinity || now < n.off + release)
+    if (seqSounding(st.notes, now, release) && !st.voice?.playing) {
+      engine.resume()
+      st.voice = engine.startVoice(st.sound, {
+        note: semisFor(st.sound, undefined, st.sound.settings.rootNote),
+        velocity: 1,
+        group: st.group,
+        level: st.level,
+        detune: st.detune,
+        silent: st.silent,
+      })
+    }
+    st.voice?.setSeq(st.notes.map((n) => ({ ...n })))
+    clearTimeout(st.timer)
+    if (st.notes.some((n) => n.off === Infinity)) return
+    const end = Math.max(now, ...st.notes.map((n) => n.off + release))
+    st.timer = setTimeout(() => {
+      if (seqSounding(st.notes, engine.voiceTime(), seqTimes(st.sound.settings).release)) return seqChanged(st)
+      st.voice?.release()
+      st.voice = null
+      st.notes = []
+    }, (end - now) * 1000 + 30)
+  }
+  /**
+   * A key's note into a grid: what the board keeps for it (released as a voice would be: note-off, the pedal, HOLD).
+   * SINGLE NOTE: it takes over from the keys' notes before it.
+   */
+  function seqKeyOn(st: SeqStream, semis: number, velocity: number, midiNote?: number): Voice {
+    const now = engine.voiceTime()
+    const s = st.sound.settings
+    const pads = new Set(st.pads.values())
+    if (s.seqSingle) for (const n of st.notes) if (n.off === Infinity && !pads.has(n)) n.off = now
+    const note: SeqNote = { semis, gain: 1 - s.velAmount + s.velAmount * velocity, on: now, off: Infinity }
+    st.notes.push(note)
+    seqChanged(st)
+    const release = () => {
+      if (note.off !== Infinity) return
+      note.off = engine.voiceTime()
+      seqChanged(st)
+    }
+    // (what the board asks of a voice it holds for a key: here, only to let the note go)
+    return { soundId: st.sound.id, midiNote, get held() { return note.off === Infinity }, get playing() { return note.off === Infinity }, tap: null, release, stop: release, glideTo() {}, retune() {} } as unknown as Voice
+  }
+  /** The grid's pads (settings.seqGrid) as notes: a pad turned on goes in at the end, one turned off comes out. */
+  function seqPads(st: SeqStream) {
+    const now = engine.voiceTime()
+    const want = new Set(st.sound.settings.seqGrid ?? [])
+    let changed = false
+    for (const [semis, n] of st.pads) {
+      if (want.has(semis)) continue
+      n.off = now
+      st.pads.delete(semis)
+      changed = true
+    }
+    for (const semis of st.sound.settings.seqGrid ?? []) {
+      if (st.pads.has(semis)) continue
+      const n: SeqNote = { semis, gain: 1, on: now, off: Infinity }
+      st.pads.set(semis, n)
+      st.notes.push(n)
+      changed = true
+    }
+    if (changed) seqChanged(st)
+  }
+  /** Every grid note out (the sequencer's ALL NOTES OFF, and SEQ turned off): they fade as released keys do. */
+  function seqAllOff(st: SeqStream) {
+    const now = engine.voiceTime()
+    for (const n of st.notes) if (n.off === Infinity) n.off = now
+    st.pads.clear()
+    seqChanged(st)
+  }
+  /** The selected patch's layers with SEQ on keep their pads sounding; the rest of the streams let go. */
+  function seqSync() {
+    const sound = playable.value
+    const live = new Set<string>()
+    if (sound) {
+      const layers: { osc: Sound; o: Parameters<typeof seqStream>[1] }[] = vcoLinks(sound).map(({ osc, slot }) => ({
+        osc,
+        o: { group: sound.id, level: slot.level, detune: slot.fine, silent: !slot.audible || !layerHeard(osc.id) },
+      }))
+      layers.push({ osc: sound, o: { level: 1, detune: 0, silent: !layerHeard(sound.id) } })
+      for (const { osc, o } of layers) {
+        if (!seqLive(osc)) continue
+        live.add(osc.id)
+        seqPads(seqStream(osc, o))
+      }
+    }
+    for (const [id, st] of seqStreams) {
+      if (live.has(id)) continue
+      seqAllOff(st)
+      seqStreams.delete(id)
+    }
+  }
+  watch(
+    () => {
+      const sound = playable.value
+      if (!sound) return ''
+      return [sound, ...vcoLinks(sound).map((x) => x.osc)]
+        .map((x) => `${x.id}:${x.settings.seq}:${x.settings.grain}:${(x.settings.seqGrid ?? []).join(',')}:${layerHeard(x.id)}`)
+        .join('|')
+    },
+    () => seqSync(),
+  )
+  /** The sequencer's ALL NOTES OFF: the VCO's pads off and its keys' notes out. */
+  function seqClear(layerId: string) {
+    const sound = resolveSound(layerId)
+    if (!sound) return
+    if (sound.settings.seqGrid?.length) sound.settings.seqGrid = []
+    const st = seqStreams.get(layerId)
+    if (st) seqAllOff(st)
+    if (engine.external) toEngine({ type: 'seqClear', id: layerId })
+  }
+
   // ── keyboard play (MIDI / computer keys → selected patch) ─────────────
   const polyVoices = new Map<string, Voice[]>()
   let monoVoices: Voice[] = []
@@ -1412,7 +1567,7 @@ export const useBoard = defineStore('board', () => {
     if (master.mono && !isMember(channel)) {
       // legato: slide the held voice (single-sample pads; SFZ zones change sample, so they retrigger)
       const [only] = monoVoices
-      if (monoVoices.length === 1 && only.held && only.soundId === sound.id && !sound.zones?.length) {
+      if (monoVoices.length === 1 && only.held && only.soundId === sound.id && !sound.zones?.length && !seqLive(sound)) {
         only.glideTo(semisFor(sound, undefined, note), glide, note)
         retune()
         engine.publish()
@@ -1466,7 +1621,7 @@ export const useBoard = defineStore('board', () => {
         // fall back to the previous held note, legato
         const from = lastNote
         lastNote = top
-        if (monoVoices.length === 1 && !sound.zones?.length) {
+        if (monoVoices.length === 1 && !sound.zones?.length && !seqLive(sound)) {
           monoVoices[0].glideTo(semisFor(sound, undefined, top), master.glide, top)
           retune()
           engine.publish()
@@ -2761,7 +2916,7 @@ export const useBoard = defineStore('board', () => {
     patchEdited, isEdited, isBuiltIn, savePatch, revertPatch,
     pressPatch, releasePatch, patchIdOfLayer, soundRef, resolveSoundRef, addAgentPatch, replacePatch, renderOffline,
     tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
-    addFiles, addCapture, addAgentSound, load, press, release, panic, noteOn, noteOff,
+    addFiles, addCapture, addAgentSound, load, press, release, panic, noteOn, noteOff, seqClear,
     select, selectStep, togglePanel, cycleMode, cycleFilter, toggleGrain, addTable, akwfWaves, resetSettings, duplicate, remove, removeSounds, move,
     mpeRoutesFor,
     exportBoard, exportPlan, exportSelection, importBoard, enableMidi, learnMidi,

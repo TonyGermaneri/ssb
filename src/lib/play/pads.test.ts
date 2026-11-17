@@ -108,3 +108,40 @@ describe('Play pads', () => {
     expect(back.segments[0][0].y).toBeCloseTo(0.25, 2)
   })
 })
+
+describe('SpaceCraft options on the pads', () => {
+  it('GRAIN under SYNC: the rows below the top are tempo divisions, the top band free', async () => {
+    const { grainSyncWrite, grainSyncPoint, GRAIN_SYNC_BANDS, SYNC_TOP } = await import('./pads')
+    const slow = grainSyncWrite({ x: 1, y: 0.01 }, 120)
+    expect(slow.grainBeats).toBe(GRAIN_SYNC_BANDS[0])
+    expect(slow.grainFreq).toBeCloseTo(120 / 60 / 8)
+    const beat = grainSyncWrite({ x: 1, y: ((3 + 0.5) / GRAIN_SYNC_BANDS.length) * SYNC_TOP }, 120)
+    expect(beat.grainBeats).toBe(1)
+    expect(beat.grainFreq).toBe(2)
+    const free = grainSyncWrite({ x: 1, y: 0.99 }, 120)
+    expect(free.grainBeats).toBe(0)
+    expect(free.grainFreq).toBeGreaterThan(120 / 60 * 32)
+    const s = { ...defaultSettings(), grainSync: true, ...beat }
+    expect(grainSyncWrite(grainSyncPoint(s, 120), 120).grainBeats).toBe(1)
+    const f = { ...defaultSettings(), grainSync: true, ...free }
+    expect(grainSyncWrite(grainSyncPoint(f, 120), 120).grainFreq).toBeCloseTo(free.grainFreq, 0)
+  })
+
+  it('PITCH · RING\'s SCALE snaps the pitch to the scale', async () => {
+    const { pitchWrite } = await import('./pads')
+    const p = { x: 0.5, y: 0.5 + 3 * Math.log2(Math.pow(2, 1.4 / 12)) } // 1.4 semitones up, in the middle
+    expect(pitchWrite(p).pitch + pitchWrite(p).fine / 100).toBeCloseTo(1.4, 1)
+    expect(pitchWrite(p, 'major')).toMatchObject({ pitch: 2, fine: 0 })
+    expect(pitchWrite(p, 'minor')).toMatchObject({ pitch: 2, fine: 0 })
+    expect(pitchWrite(p, 'chromatic')).toMatchObject({ pitch: 1, fine: 0 })
+  })
+
+  it('ENVELOPE: up / down the attack, left / right the release, both ways round', async () => {
+    const { envPoint, envWrite } = await import('./pads')
+    const w = envWrite({ x: 0.75, y: 0.25 })
+    expect(w.seqRelease).toBeGreaterThan(w.seqAttack)
+    const back = envPoint({ ...defaultSettings(), ...w })
+    expect(back.x).toBeCloseTo(0.75, 3)
+    expect(back.y).toBeCloseTo(0.25, 3)
+  })
+})

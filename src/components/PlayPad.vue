@@ -144,9 +144,11 @@ canvas {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 8px;
+  /* (safe: a tall panel in a small pad scrolls from its top, not cut off above it) */
+  justify-content: safe center;
+  gap: 5px;
+  padding: 6px;
+  overflow: auto;
   background: color-mix(in srgb, var(--lcd-bg) 85%, transparent);
 }
 .settings :deep(button.opt),
@@ -168,6 +170,24 @@ canvas {
   margin-top: 4px;
   min-width: 60px;
   opacity: 0.8;
+}
+.settings :deep(.row) {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+}
+.settings :deep(.row button.opt) {
+  min-width: 0;
+  padding: 1px 8px;
+  font-size: 15px;
+}
+.settings :deep(.knobs) {
+  display: flex;
+  gap: 4px;
+}
+.settings :deep(.knobs .label) {
+  color: color-mix(in srgb, var(--line) 75%, transparent);
 }
 .settings :deep(.head) {
   font-family: 'Orbitron', sans-serif;

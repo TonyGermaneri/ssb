@@ -18,8 +18,8 @@ export function clipBounds(s: SoundSettings, duration: number): ClipBounds {
   return { clipIn, clipOut, clipLen: clipOut - clipIn }
 }
 
-/** Playback-rate multiplier from the PITCH + FINE knobs. */
-export const knobRate = (s: SoundSettings) => semisToRate(s.pitch + s.fine / 100)
+/** PITCH / FINE, with the sample's own tuning (COARSE / FINE TUNE) under them, as a playback rate */
+export const knobRate = (s: SoundSettings) => semisToRate(s.pitch + s.fine / 100 + (s.tuneCoarse ?? 0) + (s.tuneFine ?? 0) / 100)
 
 /**
  * Wall-clock seconds for one pass through the clip.

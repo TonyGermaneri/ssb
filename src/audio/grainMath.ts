@@ -76,6 +76,8 @@ export interface GrainConfig {
   t0: number
   /** no grain starts after this */
   end: number
+  /** a VCO's sequencer stream: each grain plays the next of the grid's notes, at its level (absent: the voice's note) */
+  seq?: { notes: SeqNote[]; attack: number; release: number } | null
 }
 
 /** A grain as it started, for the waveform. pos / len in seconds of the sample; when / dur in context time. */
@@ -354,4 +356,60 @@ export function hann(i: number, n: number): number {
   if (n < 2) return 1
   const x = (i + 0.5) / n
   return 0.5 - 0.5 * Math.cos(2 * Math.PI * Math.min(1, Math.max(0, x)))
+}
+
+// ───────────────────────────────────────────────────────────────────────── the sequencer
+
+/**
+ * A note in a VCO's sequencer grid (lib/play/seq.ts), as its grain stream sees it: semitones from the sample's own key,
+ * its level (velocity), and when it went in and came out (engine seconds; Infinity while it's in).
+ */
+export interface SeqNote {
+  semis: number
+  gain: number
+  on: number
+  off: number
+}
+
+/**
+ * A grid note's level at time `t`: ENVELOPE ON fades it in over `attack` and, once it's out, from wherever it got to
+ * down over `release` (seconds; 0 for either is instant: ENVELOPE OFF). 0 before it went in and once it has faded.
+ */
+export function seqLevel(n: SeqNote, t: number, attack: number, release: number): number {
+  if (t < n.on) return 0
+  const rise = (u: number) => (attack > 0 ? Math.min(1, Math.max(0, (u - n.on) / attack)) : 1)
+  if (t < n.off) return rise(t)
+  if (!(release > 0)) return 0
+  return rise(n.off) * Math.max(0, 1 - (t - n.off) / release)
+}
+
+/**
+ * The note the next grain plays: the grid's sounding notes take turns in the order they went in, `k` counting the
+ * grains so far. Its pitch and level (velocity × envelope), or null when nothing sounds.
+ */
+export function seqPick(notes: readonly SeqNote[], t: number, k: number, attack: number, release: number): { semis: number; gain: number } | null {
+  let count = 0
+  for (const n of notes) if (seqLevel(n, t, attack, release) > 0) count++
+  if (!count) return null
+  let i = k % count
+  for (const n of notes) {
+    const level = seqLevel(n, t, attack, release)
+    if (level <= 0) continue
+    if (i-- === 0) return { semis: n.semis, gain: n.gain * level }
+  }
+  return null
+}
+
+/** Whether any grid note still sounds (or is yet to come) at `t`: the stream keeps firing grains until none does. */
+export function seqSounding(notes: readonly SeqNote[], t: number, release: number): boolean {
+  return notes.some((n) => t < n.off || t < n.off + Math.max(0, release))
+}
+
+/** MPE GRAIN: a note's full sideways bend moves where its grains fire by this share of the clip, each way. */
+export const MPE_GRAIN_SPAN = 0.5
+
+/** GRAIN in Hz now: SYNC's tempo division at `bpm` (its top band, beats 0, stays free), else the knob. */
+export function grainFreqNow(s: { grainFreq: number; grainSync?: boolean; grainBeats?: number }, bpm: number): number {
+  const beats = s.grainSync ? (s.grainBeats ?? 0) : 0
+  return beats > 0 ? Math.min(GRAIN_FREQ_MAX, Math.max(GRAIN_FREQ_FLOOR, bpm / 60 / beats)) : s.grainFreq
 }

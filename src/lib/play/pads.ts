@@ -8,10 +8,14 @@
  * - LFO: the layer's LFO 2 sweeping POS forward of where it's set (a unipolar route): x = how far, y = how fast.
  * - FILTER · REVERB: y = reverb; x = the filter: centre bypassed, left a low-pass closing, right a high-pass opening.
  * - PITCH · RING: a pitch multiplier that is fine (±2 semitones) in the middle and coarse (×2 up, through stopped, to
- *   ×2 backwards) at the edges; the right edge brings in the ring modulator, its carrier rising with y.
+ *   ×2 backwards) at the edges; the right edge brings in the ring modulator, its carrier rising with y. SCALE snaps the
+ *   pitch to the sequencer's scale.
+ * - GRAIN under SYNC: the rows below the top are tempo divisions (bands); the top band stays free, for smooth fast grains.
+ * - ENVELOPE (the sequencer's, ENVELOPE ON): y = each note's attack, x = its release, both log.
  */
 import { DIVISIONS, type ModRoute, type SoundSettings } from '../../types'
 import { GRAIN_FREQ_MAX, grainFreqMin } from '../../audio/grainMath'
+import { snapToScale } from './seq'
 
 export interface Point {
   x: number
@@ -45,6 +49,37 @@ export function grainWrite(p: Point, sampleSeconds: number) {
   const { lo, hi } = grainRange(sampleSeconds)
   return { grainFreq: round4(logFrom(p.y, lo, hi)), grainLength: round4(LENGTH_MIN + clamp01(p.x) * (1 - LENGTH_MIN)) }
 }
+
+/** SYNC's bands, slow (bottom) to fast: beats a grain, from two bars to a 32nd-note triplet's neighbour */
+export const GRAIN_SYNC_BANDS = [8, 4, 2, 1, 1 / 2, 1 / 3, 1 / 4, 1 / 6, 1 / 8, 1 / 12, 1 / 16, 1 / 24, 1 / 32]
+/** where SYNC's top band starts: above it GRAIN is free (SpaceCraft: fine control of fast grains, for smooth blends) */
+export const SYNC_TOP = 0.88
+const syncFastest = (bpm: number) => bpm / 60 / GRAIN_SYNC_BANDS.at(-1)!
+/** GRAIN under SYNC: a band's division (its Hz at `bpm` too, for the knob), or in the top band free Hz. */
+export function grainSyncWrite(p: Point, bpm: number) {
+  const grainLength = round4(LENGTH_MIN + clamp01(p.x) * (1 - LENGTH_MIN))
+  const y = clamp01(p.y)
+  if (y >= SYNC_TOP) {
+    const t = (y - SYNC_TOP) / (1 - SYNC_TOP)
+    return { grainBeats: 0, grainFreq: round4(logFrom(t, Math.min(GRAIN_FREQ_MAX, syncFastest(bpm)), GRAIN_FREQ_MAX)), grainLength }
+  }
+  const band = Math.min(GRAIN_SYNC_BANDS.length - 1, Math.floor((y / SYNC_TOP) * GRAIN_SYNC_BANDS.length))
+  const beats = GRAIN_SYNC_BANDS[band]
+  return { grainBeats: beats, grainFreq: round4(bpm / 60 / beats), grainLength }
+}
+export function grainSyncPoint(s: SoundSettings, bpm: number): Point {
+  const x = clamp01(((s.grainLength ?? 1) - LENGTH_MIN) / (1 - LENGTH_MIN))
+  const band = (s.grainBeats ?? 0) > 0 ? GRAIN_SYNC_BANDS.findIndex((b) => Math.abs(b - s.grainBeats) < 1e-6) : -1
+  if (band >= 0) return { x, y: ((band + 0.5) / GRAIN_SYNC_BANDS.length) * SYNC_TOP }
+  const fast = Math.min(GRAIN_FREQ_MAX, syncFastest(bpm))
+  return { x, y: SYNC_TOP + (1 - SYNC_TOP) * logTo(Math.max(fast, s.grainFreq), fast, GRAIN_FREQ_MAX) }
+}
+
+// ── ENVELOPE (the sequencer's) ──
+export const ENV_LO = 0.002
+export const ENV_HI = 8
+export const envPoint = (s: SoundSettings): Point => ({ x: logTo(Math.max(ENV_LO, s.seqRelease), ENV_LO, ENV_HI), y: logTo(Math.max(ENV_LO, s.seqAttack), ENV_LO, ENV_HI) })
+export const envWrite = (p: Point) => ({ seqAttack: round4(logFrom(p.y, ENV_LO, ENV_HI)), seqRelease: round4(logFrom(p.x, ENV_LO, ENV_HI)) })
 
 // ── LFO (the layer's LFO 2 → POS) ──
 /** slow (bottom) to fast (top): the tempo divisions, longest first */
@@ -131,9 +166,11 @@ export function pitchMultiplier(p: Point) {
 }
 export const RING_LO = 30
 export const RING_HI = 3840
-export function pitchWrite(p: Point) {
+export function pitchWrite(p: Point, scale: string | null = null) {
   const m = pitchMultiplier(p)
-  const semis = Math.max(-24, Math.min(24, 12 * Math.log2(Math.max(1e-4, Math.abs(m)))))
+  const raw = Math.max(-24, Math.min(24, 12 * Math.log2(Math.max(1e-4, Math.abs(m)))))
+  // SCALE: the scale's nearest note (the stopped edge, -24, stays where it is)
+  const semis = scale && raw > -24 ? Math.max(-24, Math.min(24, snapToScale(scale, raw))) : raw
   const pitch = Math.round(semis)
   return {
     pitch,

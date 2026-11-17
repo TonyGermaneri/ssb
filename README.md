@@ -128,8 +128,8 @@ Clicking a VCO in the header opens its tab; a sound dragged over a tab opens it,
   (follow the played key keeping TRANS / FINE, or always play NOTE) and **LEVEL**.
 - **Tuning** (the **ET** chip, on every VCO): equal temperament, or **adaptive just intonation**, which retunes that
   VCO to each chord you hold: pure fifths and thirds, while the keyboard stays close to equal temperament. See below.
-- **PLAY** (beside the tuning chip) turns a VCO's panel into a performance page, after SpaceCraft's: the clip big, and
-  four XY pads, in the theme's colours (each VCO its own). Drag a crosshair anywhere; double-click a pad to reset it; ⚙ has its options.
+- **PLAY** (beside the tuning chip) turns a VCO's panel into a performance page, after SpaceCraft's: the clip big, four
+  XY pads and a sequencer, in the theme's colours (each VCO its own). Drag a crosshair anywhere; double-click a pad to reset it; ⚙ has its options.
   - **The big view** is played like a pad: left / right is where in the clip the grains fire (POS), up / down how loud
     (on a wavetable, left / right moves through its waves instead: WT, and WT BLEND between them).
     The squares are the grains as they play (where each is reading), the dotted line where the LFO has moved the firing
@@ -151,6 +151,23 @@ Clicking a VCO in the header opens its tab; a sound dragged over a tab opens it,
     modulator, up / down setting its carrier with the pitch (its dots shake as it comes in). The lines are contours
     of equal pitch: thick for the original pitch, red for stopped, the one below it the original pitch backwards, the
     thin one through the crosshair what plays now.
+  - **SEQUENCER** (SpaceCraft's notes grid): a piano in rows, an octave a row (one above the sample's own key, two below),
+    the scale's notes across; the pad with the ▲ is the sample's own key. **SEQ ON** plays the VCO through its grid (and
+    turns its grains on): a pad clicked goes in and stays until it's clicked again; the keys and MIDI put their notes in
+    while they're held. The VCO's grains take turns through the notes in the order they went in, a note a grain: where
+    the grains overlap (GRAIN's top right) that's a chord, where they're short and apart (its left) an arpeggio, and
+    longer grains layer the notes as a sampler would. With a scale other than CHROMATIC, MIDI's white keys play the
+    scale's notes from the patch's root. **✕** takes every note out; **LATCH** is HOLD. SEQ OFF, the keys play the VCO as
+    voices, as they always did. Its ⚙: **ENVELOPE OFF / ON** (on: an ENVELOPE pad beside the grid, each note's attack up /
+    down and release left / right), **MULTI NOTES / SINGLE NOTE** (one note at a time: melodies from the pads), the
+    **scale** (SpaceCraft's 34), **MPE PITCH / MPE GRAIN** (a note's sideways bend bends its pitch, or moves where its
+    grains fire, over half the clip each way).
+  - Each pad's ⚙ has SpaceCraft's options too: GRAIN's **FREE / SYNC** (SYNC: its rows are tempo divisions, two bars down to
+    a 32nd, the top band left free for smooth fast grains) and **ATTACK** (a percussive grain to an even one); FILTER ·
+    REVERB's **DAMP** (the tail darkens as it decays); PITCH · RING's **FREE / SCALE** (SCALE snaps the pitch to the
+    sequencer's scale); and PERFORM's ⚙ (bottom right): **PHASE** (the right channel up to 30 ms later than the left: a
+    mono sample made wide) and **COARSE / FINE** tuning (the sample's own key, ±12 semitones and ±100 cents, under PITCH /
+    FINE, so the pitch pad's reset keeps a sample you've tuned).
   It's the same settings as the knobs (GRAIN, LENGTH, BACK, RING, filter, reverb, PITCH / FINE): PLAY again shows them.
 - Each list has one bar: its tag filter (a drop-down), a description field, **≈ SIMILAR**, card size and **CARDS** /
   **GRID**; both lists open as grids.

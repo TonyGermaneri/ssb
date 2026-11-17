@@ -2,6 +2,7 @@ import {
   GRAIN_FREQ_FLOOR, GRAIN_FREQ_MAX, type AmpMode, type GrainMode, type SpraySign, type Symmetry,
 } from './audio/grainMath'
 import { SVF_TYPES, type SvfType } from './audio/svfMath'
+import type { ScaleId } from './lib/play/seq'
 /**
  * How a sound's display draws: live, what its voices play (a 1960s phosphor SCOPE, 90s spectrum BARS, an RX-style
  * SPECTRO) or the sample itself, flat or isometric (where clip and grain are dragged).
@@ -327,6 +328,24 @@ export interface SoundSettings {
   // SpaceCraft's grain controls (the VCO Play view)
   grainLength: number // 0.01..1: a grain sounds for this share of its full length (its window squeezed in), then silence
   grainBackwards: boolean // every grain reads the sample backwards from where it starts (LOOP: every segment reversed)
+  grainSync: boolean // SYNC: GRAIN is a tempo division (grainBeats) instead of free Hz
+  grainBeats: number // beats a grain under SYNC; 0 = the top band, where GRAIN stays free (grainFreq)
+  pitchScale: boolean // PITCH · RING's SCALE: the pitch it sets snaps to the sequencer's scale
+  // SpaceCraft's sample tuning: the sample's own key, on top of PITCH / FINE (which the pitch pad plays)
+  tuneCoarse: number // semitones -12..12
+  tuneFine: number // cents -100..100
+  stereoPhase: number // ms 0..30: the right channel this much later than the left (a mono sample made wide)
+  // the sequencer (SpaceCraft's notes grid, lib/play/seq.ts): while SEQ is on, the keys, MIDI and the grid's pads
+  // all put notes in the grid, and one stream of grains takes turns through them (a chord when grains overlap, an
+  // arpeggio when they're short)
+  seq: boolean
+  seqScale: ScaleId // the grid's columns, and how MIDI's white keys map to them
+  seqGrid: number[] // the pads on: semitones from the sample's own key, in the order they were entered
+  seqEnv: boolean // ENVELOPE ON: each note fades in over seqAttack and out over seqRelease
+  seqAttack: number // seconds
+  seqRelease: number // seconds
+  seqSingle: boolean // SINGLE NOTE: a new note replaces the one before
+  mpeGrain: boolean // MPE GRAIN: a note's sideways bend moves where its grains fire instead of its pitch
   // wavetable (audio/wavetable.ts): a sample of equal single cycles, played as an oscillator from one cycle blended
   // into the next. wtSize says the sample is one (the AKWF tables, a wavetable WAV); the VCO shows WT and BLEND for it
   wtSize: number // frames a cycle (0: not a wavetable, it plays as a sample)
@@ -342,6 +361,7 @@ export interface SoundSettings {
   // reverb
   reverbSize: number // seconds of impulse
   reverbDecay: number // decay exponent
+  reverbDamp: number // 0..1: the tail darkens as it decays
   reverbMix: number // 0..1
   // eq (dB)
   eqLow: number
@@ -482,6 +502,9 @@ export const GRAIN_DEFAULTS = {
   grainScanKey: false,
   grainLength: 1,
   grainBackwards: false,
+  grainSync: false,
+  grainBeats: 0,
+  pitchScale: false,
 }
 
 export function defaultSettings(name = 'SOUND'): SoundSettings {
@@ -522,11 +545,23 @@ export function defaultSettings(name = 'SOUND'): SoundSettings {
     wtBlend: 0,
     ringMix: 0,
     ringFreq: 440,
+    tuneCoarse: 0,
+    tuneFine: 0,
+    stereoPhase: 0,
+    seq: false,
+    seqScale: 'major',
+    seqGrid: [],
+    seqEnv: false,
+    seqAttack: 0.05,
+    seqRelease: 0.4,
+    seqSingle: false,
+    mpeGrain: false,
     delayTime: 0.25,
     delayFeedback: 0.35,
     delayMix: 0,
     reverbSize: 2,
     reverbDecay: 3,
+    reverbDamp: 0,
     reverbMix: 0,
     eqLow: 0,
     eqMid: 0,

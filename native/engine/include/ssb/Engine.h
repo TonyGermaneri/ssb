@@ -26,9 +26,9 @@ namespace ssb
 /** A command from the editor (a pad clicked, a key played on the page's keyboard). */
 struct Command
 {
-    enum class Type : uint8_t { press, release, noteOn, noteOff, panic, cc, midi };
+    enum class Type : uint8_t { press, release, noteOn, noteOff, panic, cc, midi, seqClear };
     Type type { Type::panic };
-    char id[64] {};          // press / release: the sound (or patch layer) id
+    char id[64] {};          // press / release / seqClear: the sound (or patch layer) id
     float velocity { 1 };
     uint8_t note { 60 }, channel { 0 }, cc { 0 };
     float value { 0 };       // cc value 0..1

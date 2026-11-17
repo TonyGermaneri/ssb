@@ -613,31 +613,65 @@ private:
 
 // ------------------------------------------------------------------------------------ reverb IR
 
+/** impulse.ts impulseDampCoef: DAMP's low-pass, its share of the new sample `x` (0..1) of the way through the tail. */
+inline double impulseDampCoef (double damp, double x) noexcept
+{
+    return 1.0 - 0.97 * std::clamp (damp, 0.0, 1.0) * std::sqrt (std::clamp (x, 0.0, 1.0));
+}
+/** impulse.ts roundDamp: DAMP in the steps impulses are shared under. */
+inline double roundDamp (double damp) noexcept { return std::clamp (std::round (damp * 20.0) / 20.0, 0.0, 1.0); }
+
 /** getImpulse (audio/impulse.ts): stereo decaying noise, `size` seconds long with a (1 - t)^decay
-    envelope. Rounded the same way, so equal settings share one impulse. */
-inline std::vector<std::vector<float>> makeImpulse (double sampleRate, float size, float decay, uint32_t seed = 12345)
+    envelope, darkening as it goes by `damp`. Rounded the same way, so equal settings share one impulse. */
+inline std::vector<std::vector<float>> makeImpulse (double sampleRate, float size, float decay, float damp = 0,
+                                                    uint32_t seed = 12345)
 {
     const double s = std::max (0.1, std::round (size * 20.0) / 20.0);
     const double d = std::max (0.5, std::round (decay * 4.0) / 4.0);
+    const double dm = roundDamp (damp);
     const auto len = (size_t) std::floor (sampleRate * s);
     std::vector<std::vector<float>> ir (2, std::vector<float> (len));
     uint32_t rng = seed;
     for (auto& ch : ir)
+    {
+        double y = 0;
         for (size_t i = 0; i < len; ++i)
         {
             rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
             const double noise = (rng & 0xffffff) / (double) 0x800000 - 1.0;
-            ch[i] = (float) (noise * std::pow (1.0 - (double) i / (double) len, d));
+            const double x = (double) i / (double) len;
+            y = dm > 0 ? y + impulseDampCoef (dm, x) * (noise - y) : noise;
+            ch[i] = (float) (y * std::pow (1.0 - x, d));
         }
+    }
     return ir;
 }
 
-/** The (size, decay) key an impulse is shared under. */
-inline uint32_t impulseKey (float size, float decay) noexcept
+/** The (size, decay, damp) key an impulse is shared under. */
+inline uint32_t impulseKey (float size, float decay, float damp = 0) noexcept
 {
     const auto s = (uint32_t) std::max (2.0, std::round (size * 20.0));
     const auto d = (uint32_t) std::max (2.0, std::round (decay * 4.0));
-    return (s << 12) | d;
+    const auto dm = (uint32_t) std::lround (roundDamp (damp) * 20.0);
+    return (dm << 20) | (s << 12) | d;
 }
+
+/** The key's damp (impulseKey), to rebuild the impulse from it. */
+inline float impulseKeyDamp (uint32_t key) noexcept { return (float) ((key >> 20) & 31u) / 20.0f; }
+
+// ------------------------------------------------------------------------------------ the sequencer
+
+/** grainMath.ts seqLevel: a grid note's level `t` seconds into the engine, in at `on`, out at `off` (inf while in). */
+inline double seqLevel (double on, double off, double t, double attack, double release) noexcept
+{
+    if (t < on) return 0;
+    const auto rise = [&] (double u) { return attack > 0 ? std::clamp ((u - on) / attack, 0.0, 1.0) : 1.0; };
+    if (t < off) return rise (t);
+    if (! (release > 0)) return 0;
+    return rise (off) * std::max (0.0, 1.0 - (t - off) / release);
+}
+
+/** grainMath.ts MPE_GRAIN_SPAN: a note's full sideways bend moves its grains this share of the clip, each way. */
+constexpr double mpeGrainSpan = 0.5;
 
 } // namespace ssb::dsp

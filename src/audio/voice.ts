@@ -9,13 +9,15 @@ import { scheduleAttack, scheduleRelease, type Env } from './envelope'
 import { getImpulse } from './impulse'
 import { grainNode, grainsLoaded, loadGrains, tableNode, type GrainNode, type TableNode } from './grains'
 import { tableCount, tableCycleBuffer, tablePos } from './wavetable'
-import type { GrainConfig, GrainEvent } from './grainMath'
+import { grainFreqNow, MPE_GRAIN_SPAN, type GrainConfig, type GrainEvent, type SeqNote } from './grainMath'
 import {
   clipBounds, cycleSeconds, glideSemis, knobRate, playSeconds, semisToRate, tailSeconds,
   type ClipBounds, type Glide,
 } from './timing'
 
 const RAMP = 0.015 // smoothing time constant for live knob changes
+/** STEREO PHASE's most, ms */
+export const STEREO_PHASE_MAX = 30
 /** grains kept for drawing (the worklet reports a sample of them) */
 const MAX_MARKS = 240
 
@@ -128,6 +130,8 @@ const NEAREST_BIQUAD: Record<SvfType, BiquadFilterType> = {
 /** the ring modulator's MIX and carrier frequency, in range */
 const ringMix = (s: SoundSettings) => Math.min(1, Math.max(0, s.ringMix ?? 0))
 const ringFreq = (s: SoundSettings) => Math.min(5000, Math.max(20, s.ringFreq ?? 440))
+/** STEREO PHASE, in range: ms the right channel lags the left */
+const stereoPhase = (s: SoundSettings) => Math.min(STEREO_PHASE_MAX, Math.max(0, s.stereoPhase ?? 0))
 /** the grain processor's parameter for each grain destination (its right side's is this + 'R') */
 const GRAIN_PARAM: Partial<Record<ModDest, string>> = {
   grainPos: 'posMod', grainSize: 'freqMod', grainSkew: 'skewMod', grainVar: 'varMod', grainDetune: 'detuneMod', grainScan: 'scanMod',
@@ -254,6 +258,10 @@ export class Voice {
   private tableCycles = 0
   /** the grain processor (cloud / stretch), once the worklet has loaded */
   private grainVoice?: GrainNode
+  /** a VCO's sequencer stream (board.ts): the grid's notes its grains take turns through; null for any other voice */
+  private seqNotes: SeqNote[] | null = null
+  /** STEREO PHASE: the right channel delayed (made the first time it's turned up) */
+  private phaseDelay?: DelayNode
   private impulseKey = ''
   private impulseTimer?: ReturnType<typeof setTimeout>
   private disposeTimer?: ReturnType<typeof setTimeout>
@@ -549,7 +557,7 @@ export class Voice {
       kind: this.kind === 'cloud' ? 'cloud' : 'stretch',
       clipIn: this.clip.clipIn,
       clipOut: this.clip.clipOut,
-      freq: s.grainFreq,
+      freq: grainFreqNow(s, this.hub.bpm()),
       freqKey: s.grainFreqKey,
       freqRnd: s.grainFreqRnd,
       stereo: s.grainStereo,
@@ -593,7 +601,15 @@ export class Voice {
       glide: { ...this.glide },
       t0: this.t0,
       end: this.endTime,
+      // ENVELOPE ON: each note's attack and release; off, they come and go at once
+      seq: this.seqNotes && { notes: this.seqNotes, attack: s.seqEnv ? s.seqAttack : 0, release: s.seqEnv ? s.seqRelease : 0 },
     }
+  }
+
+  /** A sequencer stream's notes changed (board.ts): its grains take turns through these from now on. */
+  setSeq(notes: SeqNote[]) {
+    this.seqNotes = notes
+    this.regrain()
   }
 
   /** The grain processor starts as soon as the worklet module is there (at once, after the first notes). */
@@ -711,6 +727,9 @@ export class Voice {
     set(this.ring.gain, 1 - rm)
     if (this.ringDepth) set(this.ringDepth.gain, rm)
     if (this.ringOsc) this.ringOsc.frequency.setValueAtTime(ringFreq(s), now)
+    const phase = stereoPhase(s)
+    if (phase > 0 && !this.phaseDelay) this.startPhase()
+    if (this.phaseDelay) set(this.phaseDelay.delayTime, phase / 1000)
     if (immediate || !this.playing) return
     if (rm > 0 && !this.ringOsc) this.startRing(now)
 
@@ -739,11 +758,24 @@ export class Voice {
   }
 
   private setImpulse() {
-    const { reverbSize, reverbDecay } = this.settings
-    const key = `${reverbSize}|${reverbDecay}`
+    const { reverbSize, reverbDecay, reverbDamp } = this.settings
+    const key = `${reverbSize}|${reverbDecay}|${reverbDamp ?? 0}`
     if (key === this.impulseKey || this.disposed) return
     this.impulseKey = key
-    this.convolver.buffer = getImpulse(this.ctx, reverbSize, reverbDecay)
+    this.convolver.buffer = getImpulse(this.ctx, reverbSize, reverbDecay, reverbDamp ?? 0)
+  }
+
+  /** STEREO PHASE: the panner's right channel through a delay, the left straight on (wired the first time it's used). */
+  private startPhase() {
+    const c = this.ctx
+    const split = c.createChannelSplitter(2)
+    const merge = c.createChannelMerger(2)
+    this.phaseDelay = c.createDelay(STEREO_PHASE_MAX / 1000 + 0.01)
+    this.panner.disconnect(this.kill)
+    this.panner.connect(split)
+    split.connect(merge, 0, 0)
+    split.connect(this.phaseDelay, 1).connect(merge, 0, 1)
+    merge.connect(this.kill)
   }
 
   // ── modulation ───────────────────────────────────────────────────────────
@@ -889,8 +921,14 @@ export class Voice {
   private wireRoutes() {
     const wanted: { from: AudioNode; to: AudioNode | AudioParam; gain: number; key: string }[] = [
       { from: this.bendSrc, to: this.pitchBus, gain: this.settings.bendRange * 100, key: 'bend' },
-      { from: this.noteBendSrc, to: this.pitchBus, gain: this.hub.mpeBendRange() * 100, key: 'noteBend' },
     ]
+    // MPE GRAIN: a note's sideways bend moves where its grains fire, over half the clip each way; otherwise its pitch
+    const grainPos = this.settings.mpeGrain && this.kind === 'cloud' && this.grainVoice
+    if (grainPos) {
+      for (const name of ['posMod', 'posModR']) {
+        wanted.push({ from: this.noteBendSrc, to: this.grainVoice!.node.parameters.get(name)!, gain: MPE_GRAIN_SPAN, key: `noteBend>${name}` })
+      }
+    } else wanted.push({ from: this.noteBendSrc, to: this.pitchBus, gain: this.hub.mpeBendRange() * 100, key: 'noteBend' })
     // Volume is a multiplier, so two-sided sources (LFOs, bend) are mapped to 0..1 for it:
     // gain = 1 + amount·(x+1)/2. Negative amounts give true tremolo and never boost.
     let tremBase = 1

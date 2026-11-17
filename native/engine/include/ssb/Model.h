@@ -178,6 +178,22 @@ struct Settings
     // SpaceCraft's grain controls (the page's VCO Play view)
     float grainLength { 1 };        // 0.01..1: the share of each grain that sounds, its window squeezed in
     bool grainBackwards { false };  // grains read backwards from where they start (LOOP: every segment reversed)
+    bool grainSync { false };       // SYNC: GRAIN is a tempo division (grainBeats) instead of free Hz
+    float grainBeats { 0 };         // beats a grain under SYNC; 0 = the top band, where GRAIN stays free
+    // SpaceCraft's sample tuning, on top of PITCH / FINE
+    float tuneCoarse { 0 };         // semitones
+    float tuneFine { 0 };           // cents
+    float stereoPhase { 0 };        // ms the right channel lags the left (0..30)
+    // the sequencer (lib/play/seq.ts): the grid's notes, which one stream of grains takes turns through
+    bool seq { false };
+    std::array<int8_t, 12> seqSteps { { 0, 2, 4, 5, 7, 9, 11 } };   // the scale: semitones within an octave
+    int seqStepCount { 7 };
+    bool seqChromatic { false };    // CHROMATIC: keys play their distance from the root (no white-key mapping)
+    std::vector<float> seqGrid;     // the pads on: semitones from the sample's own key, in the order entered
+    bool seqEnv { false };          // ENVELOPE ON
+    float seqAttack { 0.05f }, seqRelease { 0.4f };   // seconds
+    bool seqSingle { false };       // SINGLE NOTE: a new key's note replaces the keys' notes before it
+    bool mpeGrain { false };        // MPE GRAIN: a note's sideways bend moves where its grains fire, not its pitch
     // wavetable (audio/wavetable.ts): cycles of wtSize frames, cycle wt blended into the next by wtBlend
     int wtSize { 0 };               // frames a cycle (0: not a wavetable)
     float wt { 0 };                 // the cycle, 0.. (wrapping)
@@ -186,6 +202,7 @@ struct Settings
     float ringMix { 0 }, ringFreq { 440 };
     float delayTime { 0.25f }, delayFeedback { 0.35f }, delayMix { 0 };
     float reverbSize { 2 }, reverbDecay { 3 }, reverbMix { 0 };
+    float reverbDamp { 0 };         // 0..1: the tail darkens as it decays
     float eqLow { 0 }, eqMid { 0 }, eqHigh { 0 };
     float rootNote { 60 }, velAmount { 1 }, bendRange { 2 };
     ModMatrix mod;
