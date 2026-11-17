@@ -49,8 +49,6 @@ interface RenderTarget {
   voices: Set<Voice>
 }
 let target: RenderTarget | null = null
-/** Whether an offline render is being built (startVoice builds into it, not the live engine). */
-export const rendering = () => target !== null
 
 /** Decoded audio by audioId. Not reactive — AudioBuffers are big. */
 export const buffers = new Map<string, AudioBuffer>()
@@ -415,6 +413,19 @@ export const isHeld = (soundId: string) => [...voices].some((v) => ofSound(v, so
 /** Note-off every voice of a sound: envelopes release, tails ring out. */
 export function releaseSound(soundId: string) {
   for (const v of voices) if (ofSound(v, soundId)) v.release()
+}
+
+/**
+ * The PROMPT GARDEN's stitch (stores/garden.ts): a sound's sounding voices carry on with `audioId`'s audio, crossfaded
+ * in at their next loop boundary (Voice.stitch); its next notes play it anyway. How many took it. (The plugin's engine
+ * stitches on its own when the sound arrives with new audio: Engine.cpp adopt.)
+ */
+export function stitch(soundId: string, audioId: string, fade = 0.08): number {
+  const buffer = getBuffer(audioId)
+  if (!buffer || external) return 0
+  let n = 0
+  for (const v of voices) if (v.soundId === soundId && v.playing && v.stitch(buffer, audioId, fade)) n++
+  return n
 }
 
 /** Hard stop (choke / restart): short fade, tails cut. */

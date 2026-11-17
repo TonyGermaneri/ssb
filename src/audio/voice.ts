@@ -9,11 +9,18 @@ import { scheduleAttack, scheduleRelease, type Env } from './envelope'
 import { getImpulse } from './impulse'
 import { grainNode, grainsLoaded, loadGrains, tableNode, type GrainNode, type TableNode } from './grains'
 import { tableCount, tableCycleBuffer, tablePos } from './wavetable'
-import { grainFreqNow, MPE_GRAIN_SPAN, type GrainConfig, type GrainEvent, type SeqNote } from './grainMath'
+import { grainFreqNow, MPE_GRAIN_SPAN, type GrainConfig, type GrainEvent } from './grainMath'
 import {
   clipBounds, cycleSeconds, glideSemis, knobRate, playSeconds, semisToRate, tailSeconds,
   type ClipBounds, type Glide,
 } from './timing'
+
+/** the garden's stitch: the longest crossfade, s (lib/garden FADE_MAX, Engine.cpp's clamp) */
+const FADE_MAX = 10
+/** an equal-power crossfade's two gain curves: one rising along a sine, one falling along a cosine */
+const XF_N = 65
+const XF_UP = Float32Array.from({ length: XF_N }, (_, i) => Math.sin(((i / (XF_N - 1)) * Math.PI) / 2))
+const XF_DOWN = Float32Array.from({ length: XF_N }, (_, i) => Math.cos(((i / (XF_N - 1)) * Math.PI) / 2))
 
 const RAMP = 0.015 // smoothing time constant for live knob changes
 /** STEREO PHASE's most, ms */
@@ -251,6 +258,10 @@ export class Voice {
   private atValue = 0
   private bendValue = 0
   private src?: AudioBufferSourceNode
+  /** the source's own gain (a sample's, a grain processor's): the garden's stitch crossfades or dips it */
+  private srcGain?: GainNode
+  /** when the clip playing started, for the playhead (the stitch starts a new one part way through the note) */
+  private clipT0 = 0
   /** the wavetable oscillator (table), once the worklet has loaded */
   private table?: TableNode
   /** the table's cycles and their length (table) */
@@ -258,8 +269,8 @@ export class Voice {
   private tableCycles = 0
   /** the grain processor (cloud / stretch), once the worklet has loaded */
   private grainVoice?: GrainNode
-  /** a VCO's sequencer stream (board.ts): the grid's notes its grains take turns through; null for any other voice */
-  private seqNotes: SeqNote[] | null = null
+  /** grain processors a stitch is fading out, each with what lets it go (now, if the voice goes first) */
+  private fading = new Set<() => void>()
   /** STEREO PHASE: the right channel delayed (made the first time it's turned up) */
   private phaseDelay?: DelayNode
   private impulseKey = ''
@@ -384,6 +395,7 @@ export class Voice {
     this.apply(true)
 
     this.t0 = opts.at !== undefined ? Math.max(opts.at, c.currentTime) : c.currentTime + 0.005
+    this.clipT0 = this.t0
     for (const k of [this.atSrc, this.bendSrc, this.velSrc, this.noteBendSrc, this.timbreSrc, this.fenvSrc, this.keySrc, this.rndSrc]) k.start(this.t0)
     // the ring modulator's carrier starts with the note, at phase 0 (as the native engine's)
     if (ringMix(s) > 0) this.startRing(this.t0)
@@ -431,7 +443,7 @@ export class Voice {
   /** Buffer position of the playhead, or null for grain clouds (those draw grain marks). */
   positionAt(t: number): number | null {
     if (this.kind === 'cloud' || this.kind === 'table') return null
-    const elapsed = Math.max(0, t - this.t0)
+    const elapsed = Math.max(0, t - this.clipT0)
     const { clipIn, clipOut, clipLen } = this.clip
     if (this.kind === 'stretch') return clipIn + ((elapsed * this.speed) % clipLen)
     const x = clipIn + elapsed * this.tapeRate(this.glide.to)
@@ -487,11 +499,98 @@ export class Voice {
       p.setValueAtTime(this.tapeRate(this.glide.from), this.t0)
       p.exponentialRampToValueAtTime(to, this.t0 + this.glide.dur)
     } else p.value = to
-    src.connect(this.env)
+    this.srcGain = this.ctx.createGain()
+    src.connect(this.srcGain).connect(this.env)
     this.pitchBus.connect(src.detune)
     src.start(this.t0, clipIn)
     src.onended = () => this.finish()
     this.src = src
+  }
+
+  /**
+   * The PROMPT GARDEN's stitch (stores/garden.ts): carry on with `buffer` in place of the clip, never stopping. A sample
+   * starts the new clip at once, from its start, the old one looping on under it, the two crossfaded over `fade` s
+   * (equal power: both heard on top of each other the whole way); grains get a second processor on the new clip, the two crossfaded over the whole `fade` (equal power:
+   * both heard on top of each other), and the old one goes. SFZ
+   * zones and wavetables don't stitch (their next notes play it). False when it couldn't.
+   */
+  stitch(buffer: AudioBuffer, audioId: string, fade = 0.08): boolean {
+    if (this.disposed || !this.playing || this.zone || this.kind === 'table' || buffer === this.buffer) return false
+    const now = this.ctx.currentTime
+    fade = Math.min(FADE_MAX, Math.max(0.005, fade))
+    const clip = clipBounds(this.settings, buffer.duration)
+    if (this.kind === 'sample') {
+      const old = this.src
+      const oldGain = this.srcGain
+      if (!old || !oldGain) return false
+      const rate = this.tapeRate(this.glide.to)
+      // at once: the new clip from its start rising while the old one, looping on where it is, falls
+      const start = now + 0.02
+      const src = this.ctx.createBufferSource()
+      src.buffer = buffer
+      src.loop = true
+      src.loopStart = clip.clipIn
+      src.loopEnd = clip.clipOut
+      src.playbackRate.value = rate
+      const gain = this.ctx.createGain()
+      gain.gain.value = 0
+      src.connect(gain).connect(this.env)
+      this.pitchBus.connect(src.detune)
+      gain.gain.setValueCurveAtTime(XF_UP, start, fade)
+      oldGain.gain.cancelScheduledValues(now)
+      oldGain.gain.setValueAtTime(1, now)
+      oldGain.gain.setValueCurveAtTime(XF_DOWN, start, fade)
+      old.onended = () => {
+        old.disconnect()
+        oldGain.disconnect()
+      }
+      old.stop(start + fade + 0.01)
+      src.start(start, clip.clipIn)
+      src.onended = () => this.finish()
+      this.src = src
+      this.srcGain = gain
+      this.clipT0 = start
+      this.buffer = buffer
+      this.audioId = audioId
+      this.clip = clip
+      return true
+    } else if (this.grainVoice && this.srcGain) {
+      // a second processor on the new clip rises as the old one falls, both heard the whole way
+      const old = this.grainVoice
+      const oldGain = this.srcGain
+      const start = now + 0.02
+      // the old one's end isn't the voice's
+      old.node.port.onmessage = null
+      this.buffer = buffer
+      this.audioId = audioId
+      this.clip = clip
+      this.startGrains()
+      if (this.grainVoice === old || !this.srcGain) return true
+      this.srcGain.gain.setValueAtTime(0, now)
+      this.srcGain.gain.setValueCurveAtTime(XF_UP, start, fade)
+      oldGain.gain.cancelScheduledValues(now)
+      oldGain.gain.setValueAtTime(1, now)
+      oldGain.gain.setValueCurveAtTime(XF_DOWN, start, fade)
+      const retire = () => {
+        old.stop()
+        try {
+          this.pitchBus.disconnect(old.node.parameters.get('detune')!)
+        } catch {
+          /* already gone */
+        }
+        old.node.disconnect()
+        oldGain.disconnect()
+        this.fading.delete(retire)
+      }
+      this.fading.add(retire)
+      setTimeout(retire, (start + fade - now) * 1000 + 60)
+      return true
+    }
+    // (grains whose processor hasn't started yet start on the new clip)
+    this.buffer = buffer
+    this.audioId = audioId
+    this.clip = clip
+    return true
   }
 
   /** WT and BLEND, as the knobs set them */
@@ -601,15 +700,7 @@ export class Voice {
       glide: { ...this.glide },
       t0: this.t0,
       end: this.endTime,
-      // ENVELOPE ON: each note's attack and release; off, they come and go at once
-      seq: this.seqNotes && { notes: this.seqNotes, attack: s.seqEnv ? s.seqAttack : 0, release: s.seqEnv ? s.seqRelease : 0 },
     }
-  }
-
-  /** A sequencer stream's notes changed (board.ts): its grains take turns through these from now on. */
-  setSeq(notes: SeqNote[]) {
-    this.seqNotes = notes
-    this.regrain()
   }
 
   /** The grain processor starts as soon as the worklet module is there (at once, after the first notes). */
@@ -630,7 +721,8 @@ export class Voice {
       },
       () => this.finish(),
     )
-    g.node.connect(this.env)
+    this.srcGain = this.ctx.createGain()
+    g.node.connect(this.srcGain).connect(this.env)
     this.pitchBus.connect(g.node.parameters.get('detune')!)
     this.grainVoice = g
     this.wireRoutes() // GRAIN POS / SIZE routes land on the processor's parameters
@@ -1149,6 +1241,7 @@ export class Voice {
       /* already stopped */
     }
     this.grainVoice?.stop()
+    for (const retire of [...this.fading]) retire()
     this.table?.stop(now + fade)
     if (this.playing) {
       this.playing = false
@@ -1182,9 +1275,11 @@ export class Voice {
     for (const n of [this.env, this.filter, this.lo, this.mid, this.hi, this.dry, this.delay, this.feedback,
       this.delayWet, this.convolver, this.reverbWet, this.out, this.panner, this.kill]) n.disconnect()
     this.src?.disconnect()
+    this.srcGain?.disconnect()
     this.table?.stop()
     this.table?.node.disconnect()
     this.grainVoice?.node.disconnect()
+    for (const retire of [...this.fading]) retire()
     this.onDispose(this)
   }
 }

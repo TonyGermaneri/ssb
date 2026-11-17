@@ -3,7 +3,6 @@ import { computed, ref } from 'vue'
 import { useBoard } from '../stores/board'
 import { padHue } from '../lib/format'
 import type { Sound } from '../types'
-import ControlPanel from './ControlPanel.vue'
 import SoundButton from './SoundButton.vue'
 
 const REORDER_TYPE = 'application/x-ssb-sound'
@@ -11,7 +10,8 @@ const props = defineProps<{ sound: Sound }>()
 const board = useBoard()
 const el = ref<HTMLElement>()
 const dropTarget = ref(false)
-const open = computed(() => board.openPanels.has(props.sound.id))
+// ☰: the SAMPLE PLAYER over the list shows this sound (App.vue SamplePlayer), never a panel in the tiles
+const open = computed(() => board.master.gridPanel && board.master.selectedId === props.sound.id)
 const hue = computed(() => padHue(props.sound.settings.tag, props.sound.settings.name, board.theme.padHues))
 
 function onDragStart(e: DragEvent) {
@@ -42,14 +42,11 @@ function onDrop(e: DragEvent) {
   <div
     ref="el"
     class="tile"
-    :class="{ 'drop-target': dropTarget, open }"
+    :class="{ 'drop-target': dropTarget }"
     @dragover="onDragOver"
     @dragleave="dropTarget = false"
     @drop="onDrop"
   >
-    <v-expand-transition>
-      <ControlPanel v-if="open" :sound="sound" :hue="hue" wide />
-    </v-expand-transition>
     <SoundButton
       :sound="sound"
       :hue="hue"
@@ -71,11 +68,6 @@ function onDrop(e: DragEvent) {
   padding: 2px;
   border-radius: 12px;
   transition: background 120ms;
-}
-/* an open panel spreads across the full row; its pad sits under the panel's left edge */
-.tile.open {
-  flex-basis: 100%;
-  align-items: flex-start;
 }
 .drop-target {
   background: color-mix(in srgb, var(--c-primary) 12%, transparent);

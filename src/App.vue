@@ -18,6 +18,7 @@ import CandidateBar from './components/CandidateBar.vue'
 import PatchCards from './components/PatchCards.vue'
 const PatchTable = defineAsyncComponent(() => import('./components/PatchTable.vue'))
 import SoundGrid from './components/SoundGrid.vue'
+import SamplePlayer from './components/SamplePlayer.vue'
 import { defineAsyncComponent } from 'vue'
 // canvas-datagrid is only loaded when grid mode is first opened
 const GridView = defineAsyncComponent(() => import('./components/GridView.vue'))
@@ -251,6 +252,7 @@ onBeforeUnmount(() => {
           </div>
           <section v-if="board.master.showSamples" class="catalog">
             <TabBar kind="sounds" />
+            <SamplePlayer />
             <main class="deck" @pointerdown="board.master.tab = 'sounds'">
               <GridView v-if="board.listViewOf('sounds') === 'grid' && board.sounds.length" />
               <SoundGrid v-else @add="fileInput?.click()" />

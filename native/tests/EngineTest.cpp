@@ -739,6 +739,147 @@ TEST ("engine: a grain cloud plays grains around GRAIN POS at the note's pitch, 
     CHECK (rig.engine.activeVoices() == 0);
 }
 
+// ---------------------------------------------------------------------------------- the PROMPT GARDEN's stitch
+
+namespace
+{
+/** Sound `id`'s audio swapped for `sample` (as the page sends it after the garden's stitch), `stitch` s crossfade. */
+void regrow (Rig& rig, const std::string& id, ssb::SamplePtr sample, float stitch, const std::string& audioId)
+{
+    auto next = std::make_shared<ssb::Sound> (*rig.sounds[id]);
+    next->audioId = audioId;
+    next->sample = sample;
+    next->stitch = stitch;
+    rig.sounds[id] = next;
+    rig.commit();
+}
+
+double maxStep (const std::vector<float>& x, double from, double to)
+{
+    double m = 0;
+    for (auto i = (size_t) (from * rate) + 1; i < (size_t) (to * rate) && i < x.size(); ++i)
+        m = std::max (m, (double) std::abs (x[i] - x[i - 1]));
+    return m;
+}
+} // namespace
+
+/** a magnitude at `hz` over [from, to) of the render (Goertzel), as an amplitude */
+static double hzLevel (const Rig& rig, double hz, double from, double to)
+{
+    const auto a = (size_t) (from * rate), b = std::min (rig.left.size(), (size_t) (to * rate));
+    const double w = 2 * ssb::dsp::pi * hz / rate, c = 2 * std::cos (w);
+    double s1 = 0, s2 = 0;
+    for (size_t i = a; i < b; ++i)
+    {
+        const double s0 = rig.left[i] + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    return 2 * std::sqrt (std::max (0.0, s1 * s1 + s2 * s2 - c * s1 * s2)) / (double) (b - a);
+}
+
+TEST ("garden: new audio comes into a sounding pad at once, the old clip under it through STITCH, never stopping")
+{
+    Rig rig;
+    // a quarter second of 440 Hz (110 whole cycles: it loops without a seam)
+    rig.add ("a", sine (440, 0.25)).stitch = 0.3f;
+    rig.commit();
+    rig.press ("a");
+    rig.render (0.1);
+    regrow (rig, "a", sine (660, 0.25), 0.3f, "b.wav");
+    rig.render (1.0);
+    // no waiting for the old clip's loop: both are there from the start of the fade, the new one alone after it
+    CHECK (hzLevel (rig, 660, 0.1, 0.2) > 0.2);
+    CHECK (hzLevel (rig, 440, 0.1, 0.2) > 0.2);
+    CHECK_NEAR (rig.hz (0.4, 0.95), 660.0, 3.0);
+    // never silent through the stitch, and no click: no step bigger than the sines' own steepest
+    for (double t = 0.0; t < 0.9; t += 0.05)
+        CHECK (rig.rms (t, t + 0.05) > 0.2);
+    CHECK (maxStep (rig.left, 0.0, 1.0) < 0.15);
+    CHECK (rig.engine.activeVoices() == 1);
+}
+
+TEST ("garden: a long STITCH overlaps many loops of the old clip and the new, then leaves only the new")
+{
+    Rig rig;
+    rig.add ("a", sine (440, 0.25)).stitch = 4.0f;
+    rig.commit();
+    rig.press ("a");
+    rig.render (0.1);
+    regrow (rig, "a", sine (660, 0.25), 4.0f, "b.wav");
+    rig.render (5.0);
+    // the fade starts at once; half way through the 4 s of it (16 loops of each) both are there, about equally
+    const double old = hzLevel (rig, 440, 2.0, 2.3), fresh = hzLevel (rig, 660, 2.0, 2.3);
+    CHECK (old > 0.15);
+    CHECK (fresh > 0.15);
+    CHECK (std::abs (old - fresh) < 0.25);
+    // early on the old one leads, and after the fade it's gone
+    CHECK (hzLevel (rig, 440, 0.3, 0.6) > hzLevel (rig, 660, 0.3, 0.6));
+    CHECK (hzLevel (rig, 440, 4.4, 4.9) < 0.02);
+    CHECK_NEAR (rig.hz (4.4, 4.9), 660.0, 3.0);
+    CHECK (maxStep (rig.left, 0.0, 5.0) < 0.15);
+}
+
+TEST ("garden: without STITCH a sounding pad finishes on the audio it started with")
+{
+    Rig rig;
+    rig.add ("a", sine (440, 0.25));
+    rig.commit();
+    rig.press ("a");
+    rig.render (0.1);
+    regrow (rig, "a", sine (660, 0.25), 0.0f, "b.wav");
+    rig.render (0.6);
+    CHECK_NEAR (rig.hz (0.1, 0.55), 440.0, 3.0);
+}
+
+TEST ("garden: grains crossfade -- the old audio and the new both heard through STITCH, then only the new")
+{
+    Rig rig;
+    rig.add ("a", sine (440, 1.0), [] (auto& s) { cloud (s, 12.5f); }).stitch = 3.0f;
+    rig.commit();
+    rig.press ("a");
+    rig.render (0.5);
+    const double before = rig.rms (0.1, 0.5);
+    regrow (rig, "a", sine (660, 1.0), 3.0f, "b.wav");
+    // the first 1.5 s of the 3 s fade: two voices, the old audio's and the new one's; the old pitch leads at first
+    rig.render (1.5);
+    CHECK (rig.engine.activeVoices() == 2);
+    CHECK_NEAR (rig.hz (0.0, 0.3), 440.0, 15.0);
+    for (double t = 0.0; t < 1.4; t += 0.2)
+        CHECK (rig.rms (t, t + 0.2) > 0.5 * before);   // equal power: never a hole
+    // the rest of it, and after: only the new, on one voice, as loud as before
+    rig.render (3.0);
+    for (double t = 0.0; t < 2.8; t += 0.2)
+        CHECK (rig.rms (t, t + 0.2) > 0.5 * before);
+    CHECK_NEAR (rig.hz (2.0, 2.9), 660.0, 15.0);
+    CHECK (rig.rms (2.0, 2.9) > 0.6 * before);
+    CHECK (rig.engine.activeVoices() == 1);
+}
+
+TEST ("garden: a note let go during a grain crossfade lets both voices go")
+{
+    Rig rig;
+    rig.add ("a", sine (440, 1.0), [] (auto& s) { cloud (s, 12.5f); s.release = 0.05f; s.mode = ssb::TriggerMode::hold; }).stitch = 3.0f;
+    rig.commit();
+    rig.press ("a");
+    rig.render (0.3);
+    regrow (rig, "a", sine (660, 1.0), 3.0f, "b.wav");
+    rig.render (1.0);
+    CHECK (rig.engine.activeVoices() == 2);
+    rig.engine.post (ssb::Command::make (ssb::Command::Type::release, "a"));
+    rig.render (1.0);
+    CHECK (rig.engine.activeVoices() == 0);
+}
+
+TEST ("garden: a sound's STITCH comes from the page, held to 0..10 s")
+{
+    const auto parse = [] (const char* json) { return ssb::soundFromJson (juce::JSON::parse (json), {})->stitch; };
+    CHECK_NEAR (parse (R"({"id": "a", "audioId": "x", "stitch": 0.08})"), 0.08, 1e-6);
+    CHECK_NEAR (parse (R"({"id": "a", "audioId": "x", "stitch": 9})"), 9.0, 1e-6);
+    CHECK_NEAR (parse (R"({"id": "a", "audioId": "x", "stitch": 14})"), 10.0, 1e-6);
+    CHECK (parse (R"({"id": "a", "audioId": "x"})") == 0.0f);
+}
+
 TEST ("engine: STRETCH plays at half speed without changing pitch")
 {
     Rig rig;
@@ -2174,107 +2315,7 @@ TEST ("engine: a UNIPOLAR LFO into pitch only bends up")
     CHECK_NEAR (uHigh, bHigh, 3.0);     // the same top
 }
 
-// ------------------------------------------------------------------------ SpaceCraft's sequencer and options
-
-namespace
-{
-/** A patch whose VCO 2 ("v") has SEQ on: a 440 Hz sine (A4 its own key) as grains of `hz`; the patch's root C4. */
-std::unique_ptr<Rig> seqPatch (std::function<void (ssb::Settings&)> tweak, float hz = 20)
-{
-    auto rig = std::make_unique<Rig>();
-    auto& main = rig->add ("main", sine (440, 3), [] (auto& s) { s.rootNote = 60; s.volume = 0; });
-    rig->add ("v", sine (440, 3), [&] (auto& s)
-    {
-        s.rootNote = 69;
-        cloud (s, hz);
-        s.seq = true;
-        s.release = 0.01f;
-        if (tweak) tweak (s);
-    });
-    ssb::Link link;
-    link.index = 1;
-    link.soundId = "v";
-    main.links.push_back (link);
-    rig->set ("play", true);
-    rig->set ("playable", "main");
-    rig->commit();
-    return rig;
-}
-} // namespace
-
-TEST ("engine: SEQ -- the grid's pads take turns, a grain each, at their own pitches, while the patch is chosen")
-{
-    auto rig = seqPatch ([] (auto& s) { s.seqGrid = { 0.0f, 12.0f }; });
-    rig->render (1.0);   // no key down: the pads play on their own
-    CHECK (rig->rms (0.2, 0.9) > 0.05);
-    std::vector<ssb::GrainView> grains;
-    rig->engine.readGrains (grains, 1000);
-    CHECK (grains.size() > 20);
-    int low = 0, high = 0, alternating = 0;
-    for (size_t i = 0; i < grains.size(); ++i)
-    {
-        const bool up = std::abs (grains[i].rate - 2.0f) < 0.01f;
-        CHECK (up || std::abs (grains[i].rate - 1.0f) < 0.01f);   // the sample's own key, or an octave up
-        (up ? high : low) += 1;
-        if (i > 0 && (std::abs (grains[i - 1].rate - 2.0f) < 0.01f) != up) ++alternating;
-    }
-    CHECK (std::abs (low - high) <= 2);                   // shared equally
-    CHECK (alternating >= (int) grains.size() / 3);       // and in turn (each side takes the next)
-}
-
-TEST ("engine: SEQ -- a key goes into the grid while it's down: white keys step through the scale from the root")
-{
-    auto rig = seqPatch ([] (auto& s) { s.seqSteps = { { 0, 2, 3, 5, 7, 8, 10 } }; s.seqStepCount = 7; });   // MINOR
-    // E4 is the third white key up from C4: the scale's third step, a minor third (3 semitones) above A4
-    rig->render (1.2, { on (0.0, 64), off (0.6, 64) });
-    CHECK (rig->rms (0.1, 0.5) > 0.05);
-    CHECK (rig->rms (0.8, 1.2) < 1e-4);                   // its grid empty, the stream let go
-    std::vector<ssb::GrainView> grains;
-    rig->engine.readGrains (grains, 1000);
-    CHECK (! grains.empty());
-    for (const auto& g : grains)
-        CHECK_NEAR (g.rate, std::pow (2.0, 3.0 / 12.0), 1e-3);
-    CHECK (rig->engine.activeVoices() == 0);              // the key's note and the stream both gone
-}
-
-TEST ("engine: SEQ -- CHROMATIC keys play their distance from the root; SINGLE NOTE replaces the note before")
-{
-    auto rig = seqPatch ([] (auto& s) { s.seqChromatic = true; s.seqSingle = true; });
-    rig->render (1.0, { on (0.0, 61), on (0.4, 67) });   // a semitone, then a fifth (61 still held)
-    std::vector<ssb::GrainView> grains;
-    rig->engine.readGrains (grains, 1000);
-    int early = 0, late = 0;
-    for (const auto& g : grains)
-    {
-        if (g.when < 0.38) { CHECK_NEAR (g.rate, std::pow (2.0, 1.0 / 12.0), 1e-3); ++early; }
-        if (g.when > 0.42) { CHECK_NEAR (g.rate, std::pow (2.0, 7.0 / 12.0), 1e-3); ++late; }
-    }
-    CHECK (early > 4);
-    CHECK (late > 4);
-}
-
-TEST ("engine: SEQ ENVELOPE ON -- a grid note fades in over ATTACK, its grains growing louder")
-{
-    auto rig = seqPatch ([] (auto& s) { s.seqGrid = { 0.0f }; s.seqEnv = true; s.seqAttack = 0.5f; });
-    rig->render (1.0);
-    std::vector<ssb::GrainView> grains;
-    rig->engine.readGrains (grains, 1000);
-    float first = 1, late = 0;
-    for (const auto& g : grains)
-    {
-        if (g.when < 0.1) first = std::min (first, g.gain);
-        if (g.when > 0.6) late = std::max (late, g.gain);
-    }
-    CHECK (first < 0.25f);
-    CHECK_NEAR (late, 1.0, 0.01);
-}
-
-TEST ("engine: SEQ needs grains: with GRAIN off the VCO plays its keys as it always did")
-{
-    auto rig = seqPatch ([] (auto& s) { s.grain = false; });
-    rig->render (0.5, { on (0.0, 60) });
-    CHECK_NEAR (rig->hz (0.1, 0.45), 440.0, 2.0);
-}
+// ------------------------------------------------------------------------ SpaceCraft's options
 
 TEST ("engine: COARSE / FINE TUNE retune the sample under PITCH / FINE")
 {
@@ -2348,26 +2389,16 @@ TEST ("engine: reverb DAMP darkens the impulse's tail, and is part of what impul
     CHECK (ssb::dsp::impulseKey (2, 3) == ssb::dsp::impulseKey (2, 3, 0));
 }
 
-TEST ("engine: the sequencer and SpaceCraft's options come from the page's JSON")
+TEST ("engine: SpaceCraft's options come from the page's JSON")
 {
     const auto s = ssb::settingsFromJson (juce::JSON::parse (R"({"grain": true, "grainFreq": 8, "grainSync": true, "grainBeats": 0.5,
-        "seq": true, "seqScale": "minorPent", "seqGrid": [0, -12, 7], "seqEnv": true, "seqAttack": 0.2, "seqRelease": 1.5,
-        "seqSingle": true, "mpeGrain": true, "tuneCoarse": 40, "tuneFine": -20, "stereoPhase": 12, "reverbDamp": 0.5})"));
+        "mpeGrain": true, "tuneCoarse": 40, "tuneFine": -20, "stereoPhase": 12, "reverbDamp": 0.5})"));
     CHECK (s.grainSync);
     CHECK_NEAR (s.grainBeats, 0.5, 1e-6);
-    CHECK (s.seq && s.seqEnv && s.seqSingle && s.mpeGrain);
-    CHECK (s.seqStepCount == 5);
-    CHECK (s.seqSteps[1] == 3 && s.seqSteps[4] == 10);
-    CHECK (! s.seqChromatic);
-    CHECK (s.seqGrid.size() == 3 && s.seqGrid[1] == -12.0f);
-    CHECK_NEAR (s.seqAttack, 0.2, 1e-6);
-    CHECK_NEAR (s.seqRelease, 1.5, 1e-6);
+    CHECK (s.mpeGrain);
     CHECK_NEAR (s.tuneCoarse, 12.0, 1e-6);   // in range
     CHECK_NEAR (s.tuneFine, -20.0, 1e-6);
     CHECK_NEAR (s.stereoPhase, 12.0, 1e-6);
     CHECK_NEAR (s.reverbDamp, 0.5, 1e-6);
-    const auto d = ssb::settingsFromJson (juce::JSON::parse (R"({"seqScale": "chromatic"})"));
-    CHECK (d.seqChromatic && d.seqStepCount == 12);
-    CHECK (! d.seq);
-    CHECK (ssb::settingsFromJson (juce::JSON::parse (R"({"seqScale": "nonsense"})")).seqStepCount == 7);   // MAJOR
+    CHECK (! ssb::settingsFromJson (juce::JSON::parse ("{}")).mpeGrain);
 }

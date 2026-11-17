@@ -10,7 +10,7 @@ defineEmits<{ add: [] }>()
 
 /*
  * Virtualised card view: pads are packed into rows (how many fit comes from the measured width and pad scale;
- * an open pad takes a row of its own for its full-width panel), and v-virtual-scroll only renders the rows on
+ * ☰ shows a pad in the SAMPLE PLAYER above the list, App.vue), and v-virtual-scroll only renders the rows on
  * screen — so thousands of pads stay a few dozen DOM nodes.
  */
 const PAD_W = 152
@@ -51,13 +51,8 @@ const rows = computed<Row[]>(() => {
     cur = []
   }
   for (const s of board.shownSounds) {
-    if (board.openPanels.has(s.id)) {
-      flush()
-      out.push({ key: `open:${s.id}`, sounds: [s], open: true })
-    } else {
-      cur.push(s)
-      if (cur.length >= perRow.value) flush()
-    }
+    cur.push(s)
+    if (cur.length >= perRow.value) flush()
   }
   flush()
   return out

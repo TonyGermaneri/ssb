@@ -4,7 +4,7 @@
  * the model writes against it. Ranges are the panels' knob ranges.
  */
 import { DIVISIONS, FILTER_TYPES, LFO_SHAPES, MOD_DESTS, MOD_SOURCES, MPE_SURFACES, TRIGGER_MODES, TUNING_MODES } from '../../types'
-import { SCALES } from '../play/seq'
+import { SCALES } from '../play/scales'
 
 export interface Param {
   key: string
@@ -146,19 +146,9 @@ export const SOUND_SECTIONS: { title: string; params: Param[] }[] = [
       b('grainBackwards', 'every grain reads the sample backwards from where it starts (LOOP: every segment reversed)'),
       b('grainSync', 'grain rate is a tempo division (grainBeats) instead of free grainFreq'),
       n('grainBeats', 0, 8, 'beats', 'with grainSync: beats a grain (0.25 = 16ths); 0 keeps grainFreq free'),
-    ],
-  },
-  {
-    title: 'SEQUENCER (SpaceCraft notes grid; needs grain on)',
-    params: [
-      b('seq', 'the keys put notes in a grid and one grain stream takes turns through them: chords when grains overlap (high grainFreq, grainLength 1), arpeggios when they are short and separate'),
-      e('seqScale', SCALES.map((x) => x.id), 'the grid\'s scale; MIDI white keys step through it from the patch root (chromatic: every key)'),
-      b('seqEnv', 'each grid note fades in over seqAttack and out over seqRelease'),
-      n('seqAttack', 0.002, 8, 's', 'grid note attack (with seqEnv)'),
-      n('seqRelease', 0.002, 8, 's', 'grid note release (with seqEnv)'),
-      b('seqSingle', 'one grid note at a time (monophonic)'),
       b('mpeGrain', 'MPE sideways bend moves grain position instead of pitch'),
-      b('pitchScale', 'the Play view\'s pitch pad snaps to seqScale'),
+      b('pitchScale', 'the Play view\'s pitch pad snaps to pitchScaleId'),
+      e('pitchScaleId', SCALES.map((x) => x.id), 'the scale pitchScale snaps to'),
     ],
   },
   {

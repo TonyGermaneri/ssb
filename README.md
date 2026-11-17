@@ -128,47 +128,57 @@ Clicking a VCO in the header opens its tab; a sound dragged over a tab opens it,
   (follow the played key keeping TRANS / FINE, or always play NOTE) and **LEVEL**.
 - **Tuning** (the **ET** chip, on every VCO): equal temperament, or **adaptive just intonation**, which retunes that
   VCO to each chord you hold: pure fifths and thirds, while the keyboard stays close to equal temperament. See below.
-- **PLAY** (beside the tuning chip) turns a VCO's panel into a performance page, after SpaceCraft's: the clip big, four
-  XY pads and a sequencer, in the theme's colours (each VCO its own). Drag a crosshair anywhere; double-click a pad to reset it; ⚙ has its options.
+- **PLAY** (beside the tuning chip) turns a VCO's panel into a performance page: the clip big over its XY pads, in
+  the theme's colours (each VCO its own), with a light show behind them all. Drag the reticle anywhere (notches on the
+  edges mark where it sits); double-click a pad to reset it; ⚙ has its options.
   - **The big view** is played like a pad: left / right is where in the clip the grains fire (POS), up / down how loud
-    (on a wavetable, left / right moves through its waves instead: WT, and WT BLEND between them).
-    The squares are the grains as they play (where each is reading), the dotted line where the LFO has moved the firing
-    point. Its corner chip picks the view (2D, or a live SCOPE / BARS / SPECTRO under the crosshair, the TV stretched
-    to the view's shape); **GRAIN ON / OFF** in the other corner switches grains.
+    (on a wavetable, left / right moves through its waves instead: WT, and WT BLEND between them). The clip is drawn as
+    a bar graph, the grains as diamonds where each is reading, and brackets top and bottom mark where the LFO has moved
+    the firing point. Its corner chip picks the view (2D, or a live SCOPE / BARS / SPECTRO under the crosshair, the TV
+    stretched to the view's shape); **GRAIN ON / OFF** switches grains and **GL ON / OFF** the shaders.
   - **GRAIN**: up / down the grains' size (small and fast at the top; at the bottom one grain as long as the whole
-    sample, or a wavetable's wave); left / right how
-    much of each grain's turn it sounds — 1 % at the far left (mostly silence between grains), all of it at the right
-    (LENGTH). Time runs along the rows like lines of text: a dash is a grain sounding, a gap silence, the one just
-    fired lit. Top left: fast, far apart; top right: fast, nearly continuous; bottom right: long slow grains; bottom
-    left: short grains with long silences.
+    sample, or a wavetable's wave); left / right how much of each grain's turn it sounds — 1 % at the far left (mostly
+    silence between grains), all of it at the right (LENGTH). Time runs out along a spiral groove: a dash is a grain
+    sounding, a gap silence, the one just fired lit. Its ⚙: **FREE / SYNC** (SYNC: the heights are tempo divisions, two
+    bars down to a 32nd, shown as notches up the right edge, the top band left free for smooth fast grains), the grain
+    **MODE**, **MPE PITCH / MPE GRAIN** (a note's sideways bend bends its pitch, or moves where its grains fire, over
+    half the clip each way) and **ATTACK** (a percussive grain to an even one).
   - **LFO**: sweeps where the grains fire forward of the position, never behind it — left / right how far (far left:
-    off), up / down how fast (tempo divisions). It is the layer's LFO 2, routed one-sided to POS. The dots are the
-    firing point over the last cycle and a half, the sweep centred in the pad.
+    off), up / down how fast (tempo divisions). It is the layer's LFO 2, routed one-sided to POS. The pendulum swings
+    as the firing point does, its ghosts the last swing, the arc over it the sweep's range. Its ⚙: the LFO's shape.
   - **FILTER · REVERB**: up / down the reverb; left / right the filter, bypassed in the middle, a low-pass closing to
-    the left, a high-pass opening to the right. The bright line is the filter's response, the copies behind it the reverb.
+    the left, a high-pass opening to the right. The sliced horizon is the filter's response, the ripples under it the
+    reverb. Its ⚙: reverb SIZE / DECAY / **DAMP** (the tail darkens as it decays) and the filter's RES.
   - **PITCH · RING**: fine pitch (±2 semitones) in the middle; coarse toward the edges (×2 at the top corners,
     stopped half-way, backwards below, ×2 backwards at the bottom corners); the right also brings in the ring
-    modulator, up / down setting its carrier with the pitch (its dots shake as it comes in). The lines are contours
-    of equal pitch: thick for the original pitch, red for stopped, the one below it the original pitch backwards, the
-    thin one through the crosshair what plays now.
-  - **SEQUENCER** (SpaceCraft's notes grid): a piano in rows, an octave a row (one above the sample's own key, two below),
-    the scale's notes across; the pad with the ▲ is the sample's own key. **SEQ ON** plays the VCO through its grid (and
-    turns its grains on): a pad clicked goes in and stays until it's clicked again; the keys and MIDI put their notes in
-    while they're held. The VCO's grains take turns through the notes in the order they went in, a note a grain: where
-    the grains overlap (GRAIN's top right) that's a chord, where they're short and apart (its left) an arpeggio, and
-    longer grains layer the notes as a sampler would. With a scale other than CHROMATIC, MIDI's white keys play the
-    scale's notes from the patch's root. **✕** takes every note out; **LATCH** is HOLD. SEQ OFF, the keys play the VCO as
-    voices, as they always did. Its ⚙: **ENVELOPE OFF / ON** (on: an ENVELOPE pad beside the grid, each note's attack up /
-    down and release left / right), **MULTI NOTES / SINGLE NOTE** (one note at a time: melodies from the pads), the
-    **scale** (SpaceCraft's 34), **MPE PITCH / MPE GRAIN** (a note's sideways bend bends its pitch, or moves where its
-    grains fire, over half the clip each way).
-  - Each pad's ⚙ has SpaceCraft's options too: GRAIN's **FREE / SYNC** (SYNC: its rows are tempo divisions, two bars down to
-    a 32nd, the top band left free for smooth fast grains) and **ATTACK** (a percussive grain to an even one); FILTER ·
-    REVERB's **DAMP** (the tail darkens as it decays); PITCH · RING's **FREE / SCALE** (SCALE snaps the pitch to the
-    sequencer's scale); and PERFORM's ⚙ (bottom right): **PHASE** (the right channel up to 30 ms later than the left: a
-    mono sample made wide) and **COARSE / FINE** tuning (the sample's own key, ±12 semitones and ±100 cents, under PITCH /
-    FINE, so the pitch pad's reset keeps a sample you've tuned).
-  It's the same settings as the knobs (GRAIN, LENGTH, BACK, RING, filter, reverb, PITCH / FINE): PLAY again shows them.
+    modulator, up / down setting its carrier with the pitch. Each needle points the way the sample plays where it
+    stands: right at its own pitch, tipping down towards ×2, up where it stops, left backwards; the haloed ones are the
+    ring's side (they shake as it plays), the lit line plays what the crosshair plays. Its ⚙: **FREE / SCALE** (SCALE
+    snaps the pitch to the scale chosen under it, from 34).
+  - **TEXTURE**: the grain cloud's scatter — left / right **SPRAY** (each grain thrown up to 2 s from where it should
+    fire), up / down **DETUNE** (the grains split, left lower and right higher: a shimmer that widens). The grains are
+    pollen in a strand: in step with no spray, flung about with it, parted into a low strand and a high one by detune.
+    Its ⚙: VARY (VARIATION), SPREAD, DENSITY (CLOUD) and FLUX. Needs GRAIN on.
+  - **ECHO**: the VCO's own delay — left / right its time (20 ms to 1.5 s, catching on the tempo's divisions, the ticks
+    along the floor), up / down its feedback. The taps march away, each fainter by the feedback. Touching it gives an
+    echo with no MIX some; double-click turns it off. Its ⚙: MIX, TIME, FDBK.
+  - **TONE** (wide, under the others): the VCO's EQ — left / right tilts it darker (bass up, treble down) or brighter,
+    up / down pushes or scoops the mids; flat in the middle. A comb of light stands on the EQ's curve. Its ⚙: BASS,
+    MID, TREBLE.
+  - PERFORM's ⚙ (bottom right): **PHASE** (the right channel up to 30 ms later than the left: a mono sample made wide)
+    and **COARSE / FINE** tuning (the sample's own key, ±12 semitones and ±100 cents, under PITCH / FINE, so the pitch
+    pad's reset keeps a sample you've tuned).
+  - **Shaders**: one WebGL2 canvas runs behind all three VCOs' pads at once. Each pad has its own effect, driven by its
+    VCO's live audio (level, wave, spectrum) and by what the pad is set to — PERFORM: SPECTRAL / STARFIELD / LIQUID;
+    GRAIN: NEBULA / PULSAR / MOIRÉ; LFO: TIDE / AURORA / VORTEX; FILTER · REVERB: HORIZON / CAUSTIC / PLASMA; PITCH ·
+    RING: WARP / RIPPLE / KALEIDO; TEXTURE: POLLEN / SILK / DUST; ECHO: TUNNEL / SONAR / MIRROR; TONE: PRISM / EMBER /
+    TIDEPOOL — and the light crosses the borders: halos bleed between pads, each pad's rim glows
+    as it plays, light runs along threads from each PERFORM view to its pads, and trails drift out of a pad over its
+    neighbours. Every pad's ⚙ has a **SHADER** section: **GL ON / OFF** (for every pad), the style, and **AMT**, **GLOW**
+    (bloom, and the halo on its neighbours), **TRAIL** (feedback) and **SPEED**, shared by that kind of pad in every VCO
+    and kept by the page (not the patch). Off, or without WebGL2, the pads draw their pictures alone.
+  It's the same settings as the knobs (GRAIN, LENGTH, BACK, RING, filter, reverb, PITCH / FINE, SPRAY, DETUNE, delay,
+  EQ): PLAY again shows them.
 - Each list has one bar: its tag filter (a drop-down), a description field, **≈ SIMILAR**, card size and **CARDS** /
   **GRID**; both lists open as grids.
 - The header's **VIEW** group has three toggles for what's under the header: **RACK**, **PATCHES** and **SAMPLES**
@@ -278,6 +288,43 @@ it's on.
 
 Contract tests against the real APIs: `SSB_AI_LIVE=1 npx vitest run src/lib/ai/providers.live.test.ts`, with
 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` set and LM Studio's server up (`LMSTUDIO_URL`).
+
+### Prompt garden
+
+**GROW** on a VCO (its tab's bar, or its column in PLAY) lets that VCO regrow its own sample while it plays; while a
+clip is being made the chip fills as its progress bar. Beside it, each VCO has its own **XFADE**, **OFFSET** and
+**LOOPS** knobs (in PLAY, its **VOL** too), **⏸**, which pauses its growth (the clip playing loops on; nothing new is
+made or stitched in), **💾**, which saves the clip playing into the samples (tagged `generated`), and in PLAY, while it
+grows, a green **↻** (GROW NOW): the clip ready goes in at once, or a new one is made now and goes in when it's done:
+
+- **Rings** of words (adjectives, nouns, verbs, textures, instruments, places, your own) each turn a Euclidean rhythm,
+  HITS spread over STEPS and ROTATEd. Every new clip is one step of all of them: a ring that hits moves on to its next
+  word (CYCLE), a random one (RANDOM) or a neighbour (WALK); between hits it HOLDs its word or DROPs out. LOCK freezes
+  one. The words make the caption — "warm bells humming" — and the **chips** (genre, mood, style) and **grids**
+  (tempo, key, scale, length; the lit cells take turns) go on every one.
+- **Growing**: once the VCO sounds, the next clip is made in the background — Stable Audio 3 Small (8 steps, seconds)
+  by default, which must be downloaded (AI settings › SOUND MODEL); SKETCH, a little synth that plays the words, needs
+  nothing and is what a browser tab uses. After **LOOPS** passes of the clip (2 s at least) the new one is **stitched**
+  in with an equal-power crossfade (**XFADE**, up to 10 s: longer than a loop, several loops
+  of the old clip and the new overlap; the next swap waits for it to finish) — the note never stops. **OFFSET** pushes
+  a VCO's swaps back by that many loops, so VCOs with the same LOOPS don't all swap together. The new clip starts at
+  once, from its start, and the two play on top of each other for the whole XFADE (grains: a second grain stream on
+  the new clip under the first). A single-cycle wave or an SFZ zone picks the new clip up on its next note.
+- **In PLAY**, with SHADERS on, the prompt playing shows behind that VCO's pads: by default (SCROLL) as a line, in
+  order, gliding slowly across the screen (each VCO's at its own height); with DRIFT each word drifts on its own current,
+  kicked by the audio. Either way in film-stock colours with an anamorphic streak, lens ghosts, colour slipping apart, halation,
+  grain and a little gate weave. A new prompt's words fade in one by one as the old ones go. PERFORM's ⚙ › GARDEN WORDS
+  turns them off, picks SCROLL or DRIFT, and sets AMT, FLARE and AGE (how old the lens and film are).
+- **It loops, sometimes**: everything follows from the SEED and the step, so cycling rings come round again (the
+  RINGS tab says after how many steps), and with **REUSE** a caption that comes up again plays the clip it made then.
+  **BACK** is the chance a step returns to an earlier clip instead. HISTORY plays any take (hold ▶) or goes back to
+  it (↺). Every take is also a sound in the list, tagged `garden`.
+- **GAME**: three 20 s rounds — ORBIT (fling comets through the VCO's gravity at orbiting words), RAIN (catch falling
+  words on a paddle in a shifting wind), MAGNET (pull drifting words into a portal) — the VCO's output driving the
+  physics. GROW THE CATCH NEXT makes the next caption from what you caught; LOCK RINGS TO IT freezes each ring on the
+  word caught from it.
+
+The garden is saved with the patch slot. In the plugin the engine stitches on its own as the VCO's new audio arrives.
 
 ### Semantic search
 

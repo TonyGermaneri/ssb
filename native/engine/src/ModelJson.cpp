@@ -330,62 +330,6 @@ Settings settingsFromJson (const juce::var& o)
     s.tuneFine = std::clamp (num (o, "tuneFine", 0), -100.0f, 100.0f);
     s.stereoPhase = std::clamp (num (o, "stereoPhase", 0), 0.0f, 30.0f);   // voice.ts STEREO_PHASE_MAX
     s.reverbDamp = std::clamp (num (o, "reverbDamp", 0), 0.0f, 1.0f);
-    // the sequencer (lib/play/seq.ts SCALES: the same, in its order; an unknown scale is MAJOR)
-    s.seq = flag (o, "seq", false);
-    {
-        struct ScaleDef { const char* id; std::array<int8_t, 12> steps; int count; };
-        static const ScaleDef scales[] {
-        { "minor", { { 0, 2, 3, 5, 7, 8, 10 } }, 7 },
-        { "major", { { 0, 2, 4, 5, 7, 9, 11 } }, 7 },
-        { "chromatic", { { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 } }, 12 },
-        { "minorPent", { { 0, 3, 5, 7, 10 } }, 5 },
-        { "majorPent", { { 0, 2, 4, 7, 9 } }, 5 },
-        { "dorian", { { 0, 2, 3, 5, 7, 9, 10 } }, 7 },
-        { "phrygian", { { 0, 1, 3, 5, 7, 8, 10 } }, 7 },
-        { "lydian", { { 0, 2, 4, 6, 7, 9, 11 } }, 7 },
-        { "mixolydian", { { 0, 2, 4, 5, 7, 9, 10 } }, 7 },
-        { "locrian", { { 0, 1, 3, 5, 6, 8, 10 } }, 7 },
-        { "octaves", { { 0 } }, 1 },
-        { "fifths", { { 0, 7 } }, 2 },
-        { "fourths", { { 0, 5 } }, 2 },
-        { "majorThirds", { { 0, 4, 8 } }, 3 },
-        { "minorThirds", { { 0, 3, 6, 9 } }, 4 },
-        { "harmonicMinor", { { 0, 2, 3, 5, 7, 8, 11 } }, 7 },
-        { "melodicMinor", { { 0, 2, 3, 5, 7, 9, 11 } }, 7 },
-        { "superLocrian", { { 0, 1, 3, 4, 6, 8, 10 } }, 7 },
-        { "bhairav", { { 0, 1, 4, 5, 7, 8, 11 } }, 7 },
-        { "hungarianMinor", { { 0, 2, 3, 6, 7, 8, 11 } }, 7 },
-        { "minorGypsy", { { 0, 2, 3, 6, 7, 8, 10 } }, 7 },
-        { "enigmatic", { { 0, 1, 4, 6, 8, 10, 11 } }, 7 },
-        { "wholeTone", { { 0, 2, 4, 6, 8, 10 } }, 6 },
-        { "minorBlues", { { 0, 3, 5, 6, 7, 10 } }, 6 },
-        { "pelog", { { 0, 1, 3, 7, 8 } }, 5 },
-        { "tritone", { { 0, 1, 4, 6, 7, 10 } }, 6 },
-        { "prometheus", { { 0, 2, 4, 6, 9, 10 } }, 6 },
-        { "augmented", { { 0, 3, 4, 7, 8, 11 } }, 6 },
-        { "diminished", { { 0, 1, 3, 4, 6, 7, 9, 10 } }, 8 },
-        { "wholeHalf", { { 0, 2, 3, 5, 6, 8, 9, 11 } }, 8 },
-        { "hirajoshi", { { 0, 2, 3, 7, 8 } }, 5 },
-        { "inSen", { { 0, 1, 5, 7, 10 } }, 5 },
-        { "iwato", { { 0, 1, 5, 6, 10 } }, 5 },
-        { "kumoi", { { 0, 2, 3, 7, 9 } }, 5 },
-        };
-        const auto id = str (o, "seqScale");
-        const ScaleDef* scale = &scales[1];
-        for (const auto& d : scales)
-            if (id == d.id) scale = &d;
-        s.seqSteps = scale->steps;
-        s.seqStepCount = scale->count;
-        s.seqChromatic = juce::String (scale->id) == "chromatic";
-    }
-    s.seqGrid.clear();
-    if (auto* grid = o.getProperty ("seqGrid", {}).getArray())
-        for (const auto& x : *grid)
-            if (s.seqGrid.size() < 64) s.seqGrid.push_back ((float) (double) x);
-    s.seqEnv = flag (o, "seqEnv", false);
-    s.seqAttack = std::clamp (num (o, "seqAttack", 0.05f), 0.0f, 20.0f);
-    s.seqRelease = std::clamp (num (o, "seqRelease", 0.4f), 0.0f, 20.0f);
-    s.seqSingle = flag (o, "seqSingle", false);
     s.mpeGrain = flag (o, "mpeGrain", false);
     s.rootNote = num (o, "rootNote", 60);
     s.velAmount = num (o, "velAmount", 1);
@@ -460,6 +404,8 @@ std::shared_ptr<Sound> soundFromJson (const juce::var& o, const SampleLookup& sa
         }
     sound->tuning = tuningFrom (str (o, "tuning"));
     sound->tuningDepth = num (o, "tuningDepth", 1);
+    // the PROMPT GARDEN (stores/garden.ts): new audio stitches into the sounding voices, crossfaded over this
+    sound->stitch = std::clamp (num (o, "stitch", 0), 0.0f, 10.0f);
     if (auto* cc = o.getProperty ("ccDefaults", {}).getDynamicObject())
         for (const auto& p : cc->getProperties())
             sound->ccDefaults.emplace_back (p.name.toString().getIntValue(), (float) (double) p.value);

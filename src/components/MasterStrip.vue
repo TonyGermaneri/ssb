@@ -77,11 +77,6 @@ function togglePatchesSolo() {
   Object.assign(m, { rack: false, showPatches: true, showSamples: false, tab: 'patches' })
 }
 
-/** new patch from the sound being edited (or the first sound) */
-function newPatch() {
-  const src = board.selected ?? board.sounds[0]
-  if (src) board.newPatch(src.id)
-}
 const octaveLabel = computed(() => {
   const o = board.master.octave
   return `OCT ${o > 0 ? '+' : ''}${o}`
@@ -130,7 +125,6 @@ function onImport(e: Event) {
       <template #activator="{ props: act }">
         <button class="brand" v-bind="act" :title="`SSB — Super Sound Board · theme: ${board.theme.name} — click for themes and scanlines`">
           <span class="logo">SSB</span>
-          <span class="theme-name">{{ board.theme.name }} ▾</span>
         </button>
       </template>
       <ThemePicker v-model="themeMenu" />
@@ -138,21 +132,43 @@ function onImport(e: Event) {
 
     <StripSection id="output" title="OUTPUT" fixed>
       <Knob v-model="board.master.volume" label="MASTER" :max="1.2" :default="0.8" :format="fmtPct" :size="K" />
-      <button
-        class="hw-btn icon"
-        :class="{ lit: board.master.muted }"
-        :title="board.master.muted ? 'Unmute' : 'Mute'"
-        @click="board.master.muted = !board.master.muted"
-      >
-        <v-icon size="16" :icon="board.master.muted ? 'mdi-volume-off' : 'mdi-volume-high'" />
-      </button>
-      <button class="panic" title="PANIC — stop all sounds (Space)" @click="board.panic()">
-        <v-icon size="18" icon="mdi-alert-octagon" />
-      </button>
-      <VuMeter />
+      <div class="out-col">
+        <button
+          class="hw-btn icon mute"
+          :class="{ lit: board.master.muted }"
+          :title="board.master.muted ? 'Unmute' : 'Mute'"
+          @click="board.master.muted = !board.master.muted"
+        >
+          <v-icon size="13" :icon="board.master.muted ? 'mdi-volume-off' : 'mdi-volume-high'" />
+        </button>
+        <button class="panic" title="PANIC — stop all sounds (Space)" @click="board.panic()">
+          <v-icon size="13" icon="mdi-alert-octagon" />
+        </button>
+        <VuMeter horizontal />
+      </div>
+    </StripSection>
+
+    <StripSection id="view" title="VIEW" fixed>
+      <div class="stack">
+        <button
+          v-for="p in VIEW_PARTS"
+          :key="p.id"
+          class="chip"
+          :class="{ on: viewOn(p.id) }"
+          :aria-pressed="viewOn(p.id)"
+          :title="p.title"
+          @click="toggleView(p.id)"
+        >
+          {{ p.label }}
+        </button>
+      </div>
     </StripSection>
 
     <StripSection id="patch" title="PATCH" fixed>
+      <button class="hw-btn icon" title="New patch: an empty one, its three VCOs waiting for sounds" @click="board.newPatch()">
+        <v-icon size="16" icon="mdi-plus-box-multiple" />
+      </button>
+      <i class="vdiv" />
       <button class="hw-btn icon" title="Previous patch" @click="board.selectPatchStep(-1)">
         <v-icon size="18" icon="mdi-chevron-left" />
       </button>
@@ -168,33 +184,19 @@ function onImport(e: Event) {
       <button class="hw-btn icon" title="Next patch" @click="board.selectPatchStep(1)">
         <v-icon size="18" icon="mdi-chevron-right" />
       </button>
+      <i class="vdiv" />
       <button class="hw-btn icon save" :class="{ lit: board.patchEdited }" :disabled="!board.patchEdited" :title="saveTitle" @click="board.savePatch()">
         <v-icon size="16" icon="mdi-content-save" />
       </button>
-      <button
-        class="hw-btn icon"
-        :disabled="!board.sounds.length"
-        :title="`New patch from ${(board.selected ?? board.sounds[0])?.settings.name ?? 'a sound'}`"
-        @click="newPatch"
-      >
-        <v-icon size="16" icon="mdi-plus-box-multiple" />
-      </button>
+      <i class="vdiv" />
       <button
         class="hw-btn icon ai"
         :class="{ mcp: mcpStatus.state === 'on' }"
         :title="`AI patch maker: describe a sound, and an AI model makes and refines patches with you${mcpStatus.state === 'on' ? ` · MCP server on at ${mcpStatus.url}` : ''}`"
         @click="emit('ai')"
       >
-        <v-icon size="16" icon="mdi-creation" />
+        <v-icon size="16" icon="mdi-robot" />
         <i v-if="mcpStatus.state === 'on'" class="mcp-led" />
-      </button>
-      <button
-        class="hw-btn icon play"
-        :class="{ lit: board.master.play }"
-        title="PLAY: MIDI and the computer keyboard (Z / Q rows, - = octave) play the selected patch. C4 = original pitch."
-        @click="board.master.play = !board.master.play"
-      >
-        <v-icon size="16" icon="mdi-piano" />
       </button>
       <div class="stack">
         <div class="pair">
@@ -251,21 +253,6 @@ function onImport(e: Event) {
       <VcoScopes />
     </StripSection>
 
-    <StripSection id="view" title="VIEW" fixed>
-      <div class="stack">
-        <button
-          v-for="p in VIEW_PARTS"
-          :key="p.id"
-          class="chip"
-          :class="{ on: viewOn(p.id) }"
-          :aria-pressed="viewOn(p.id)"
-          :title="p.title"
-          @click="toggleView(p.id)"
-        >
-          {{ p.label }}
-        </button>
-      </div>
-    </StripSection>
 
     <StripSection id="perform" title="PERFORM">
       <div class="stack">
@@ -394,7 +381,15 @@ function onImport(e: Event) {
     </StripSection>
 
 
-    <StripSection id="board" title="BOARD" fixed>
+    <StripSection id="board" title="BOARD">
+      <button
+        class="hw-btn icon play"
+        :class="{ lit: board.master.play }"
+        title="PLAY: MIDI and the computer keyboard (Z / Q rows, - = octave) play the selected patch (off: they play the soundboard's pads). C4 = original pitch."
+        @click="board.master.play = !board.master.play"
+      >
+        <v-icon size="16" icon="mdi-piano" />
+      </button>
       <button
         v-if="inPlugin"
         class="hw-btn icon"
@@ -481,14 +476,33 @@ function onImport(e: Event) {
   color: transparent;
   filter: drop-shadow(0 1px 0 #000);
 }
-.theme-name {
-  margin-top: 3px;
-  font-family: 'VT323', monospace;
-  font-size: 12px;
-  line-height: 1;
-  letter-spacing: 0.06em;
-  color: var(--text-mute);
-  white-space: nowrap;
+.brand .logo {
+  /* turned to read upwards, like a folded group's title: the header's narrowest */
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 17px;
+  letter-spacing: 0.02em;
+}
+.out-col {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 2px;
+}
+.out-col .mute,
+.out-col .panic {
+  width: 30px;
+  height: 17px;
+  min-width: 0;
+}
+.vdiv {
+  flex: none;
+  align-self: stretch;
+  width: 1px;
+  margin: 2px 1px;
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: 1px 0 0 rgba(0, 0, 0, 0.6);
 }
 .panic {
   display: grid;

@@ -100,6 +100,16 @@ function nudge(dir: number) {
         <span class="lcd" @dblclick="board.master.scale = 1">{{ scale }}</span>
         <button class="chip" @click="nudge(1)">+</button>
       </div>
+      <button
+        v-if="kind === 'sounds'"
+        class="chip"
+        :class="{ on: board.master.gridPanel }"
+        :aria-pressed="board.master.gridPanel"
+        title="SAMPLE PLAYER: the selected sound's controls above the list (☰ on a sound shows it too; drag its bottom edge to size it)"
+        @click="board.master.gridPanel = !board.master.gridPanel"
+      >
+        <v-icon size="13" icon="mdi-tune-vertical" /> SAMPLE PLAYER
+      </button>
       <div class="seg" role="group" aria-label="List view">
         <button
           v-for="v in VIEWS"

@@ -28,8 +28,12 @@ public:
     /** In memory, else from the disk cache, else null. */
     SamplePtr get (const std::string& audioId);
 
-    /** Keep a sample the page sent, in memory and (in the background) on disk. */
+    /** Keep a sample the page sent, in memory and (in the background) on disk. Samples no sound holds any more
+        leave memory as it does (they come back from disk if asked for again). */
     void put (const std::string& audioId, SamplePtr sample);
+
+    /** A sample gone for good (the PROMPT GARDEN's old takes): out of memory and off the disk. */
+    void forget (const std::string& audioId);
 
     static juce::File cacheDirectory();
 
@@ -37,6 +41,7 @@ private:
     std::mutex lock;
     std::map<std::string, SamplePtr> memory;
     std::set<std::string> absent;   // looked for on disk and not there (until put)
+    std::map<std::string, juce::uint32> putAt;   // when the page sent each (ms): a fresh one stays till its disk copy is surely written
     juce::ThreadPool writer { 1 };
 };
 

@@ -7,9 +7,15 @@ import { fmtCents, fmtPct, fmtSemis, midiNoteName, padHue } from '../lib/format'
 import { PATCH_SLOTS, TUNING_MODES, vcoHeard, type PatchSlot, type Sound, type TuningMode } from '../types'
 import ControlPanel from './ControlPanel.vue'
 import PlayView from './PlayView.vue'
+import ShaderStage from './ShaderStage.vue'
+import { shaderPrefs, stageStatus } from '../lib/play/shaders'
 import Knob from './Knob.vue'
 import { useAi } from '../lib/ai/store'
 import { errorMessage } from '../lib/ai/types'
+import GardenDialog from './GardenDialog.vue'
+import GardenBar from './GardenBar.vue'
+import VcoMeter from './VcoMeter.vue'
+import { useGarden } from '../stores/garden'
 
 /**
  * The selected patch's three VCO slots as tabs, one showing at a time across the width: the one place a patch is
@@ -37,7 +43,7 @@ const TUNING: Record<TuningMode, { chip: string; label: string; hint: string }> 
 const TUNING_TITLE =
   'Tuning. ET is equal temperament; AJI (adaptive just intonation) retunes this VCO to each chord you hold, staying close to ET. Each VCO has its own'
 
-// PLAY: the rack's own view, every VCO's Play view (the clip big and four XY pads) side by side in place of a tab's
+// PLAY: the rack's own view, every VCO's Play view (the clip big and its XY pads) side by side in place of a tab's
 // knobs; kept with the instance's view
 const playView = computed({
   get: () => !!board.master.rackPlay,
@@ -105,6 +111,31 @@ async function promptWave(i: number) {
 }
 const stopPrompt = (i: number) => promptAborts[i]?.abort()
 
+// ── the PROMPT GARDEN (stores/garden.ts): a VCO regrowing its sample from rings of words ──
+const garden = useGarden()
+const gardenSlot = ref(0)
+const gardenOpen = ref(false)
+function openGarden(i: number) {
+  gardenSlot.value = i
+  gardenOpen.value = true
+}
+function gardenChip(x: PatchSlot | null) {
+  if (!x?.garden?.on) return 'GROW'
+  if (x.garden.paused) return 'PAUSED'
+  const r = garden.runs.get(x.layer.id)
+  // making a clip: how far through it (the chip fills behind, GardenBar.vue); made: waiting for its loops
+  if (r?.status === 'growing') return `${Math.round((r.genProgress ?? 0) * 100)} %`
+  if (r?.status === 'ready') return 'READY'
+  if (r?.status === 'error') return 'GROW ⚠'
+  return 'GROWING'
+}
+/** each VCO's colour, as its PLAY column and meters show it */
+const vcoColor = (i: number) => [board.theme.primary, board.theme.secondary, board.theme.accent][i % 3]
+const gardenTitle = (x: PatchSlot | null) =>
+  x?.garden?.on
+    ? `PROMPT GARDEN growing: ${x.garden.history[0]?.prompt ?? ''} — click to tend it`
+    : 'PROMPT GARDEN: this VCO regrows its own sample from rings of words (Euclidean rhythms pick them), stitched in as it loops'
+
 // ── drop sounds into slots ──
 const dropTarget = ref(-1)
 function onDragOver(e: DragEvent, i: number) {
@@ -164,6 +195,15 @@ function onDrop(e: DragEvent, i: number) {
         >
           MPE<small v-if="patch.mpe?.length"> {{ patch.mpe.length }}</small>
         </button>
+        <button
+          class="mpe-chip play-chip"
+          :class="{ on: playView }"
+          :aria-pressed="playView"
+          :title="playView ? 'PLAY view on: all three VCOs side by side, under their tabs — click (or a VCO tab) for one VCO\'s controls' : 'PLAY: all three VCOs side by side, each played from its clip and its XY pads'"
+          @click="playView = !playView"
+        >
+          <v-icon size="12" icon="mdi-gamepad-variant" /> PLAY
+        </button>
         <v-spacer />
         <!-- (a candidate's SAVE / DISCARD are on its bar, under the header) -->
         <template v-if="patch !== board.candidate">
@@ -206,6 +246,7 @@ function onDrop(e: DragEvent, i: number) {
         @dragleave="dropTarget = -1"
         @drop="(e) => onDrop(e, i)"
       >
+        <VcoMeter v-if="x" kind="vu" :sound-id="x.layer.id" :color="vcoColor(i)" />
         <button class="pick" role="tab" :aria-selected="!playView && tab === i" :title="tabTitle(x, i)" @click="tab = i">
           <i class="led" />
           <b>{{ i + 1 }}</b>
@@ -215,19 +256,12 @@ function onDrop(e: DragEvent, i: number) {
         <button class="ms mute" :class="{ on: muted(i) }" :aria-pressed="muted(i)" :title="muteTitle(i)" @click="toggleMix('vcoMute', i)">M</button>
         <button class="ms solo" :class="{ on: soloed(i) }" :aria-pressed="soloed(i)" :title="soloTitle(i)" @click="toggleMix('vcoSolo', i)">S</button>
       </div>
-      <button
-        class="vtab ptab"
-        role="tab"
-        :aria-selected="playView"
-        :class="{ on: playView }"
-        title="PLAY: all three VCOs' Play views side by side, each played from its clip and four XY pads (grain, LFO, filter · reverb, pitch · ring), SpaceCraft-style"
-        @click="playView = true"
-      >
-        PLAY
-      </button>
     </div>
     <!-- PLAY: the three VCOs' Play views together, a column each (stacked when the rack is narrow) -->
-    <div v-if="playView" ref="playBody" class="plays">
+    <div v-if="playView" class="playwrap" :class="{ 'gl-on': shaderPrefs.on && stageStatus.available }">
+    <!-- the shader stage: one canvas behind every VCO's pads (lib/play/shaders.ts) -->
+    <ShaderStage />
+    <div ref="playBody" class="plays">
       <div class="pgrid">
       <div
         v-for="(x, i) in slots"
@@ -238,11 +272,14 @@ function onDrop(e: DragEvent, i: number) {
         @dragleave="dropTarget = -1"
         @drop="(e) => onDrop(e, i)"
       >
+        <!-- its spectrogram, rising behind the column -->
+        <VcoMeter v-if="x" kind="spectrum" class="pspec" :sound-id="x.layer.id" :color="vcoColor(i)" />
         <div class="phead">
           <b>{{ i + 1 }}</b>
           <span class="src" :title="tabTitle(x, i)">{{ x ? sourceName(x) : 'empty' }}</span>
           <em v-if="!heard(i)">{{ muted(i) ? 'MUTED' : 'SOLO OFF' }}</em>
           <em v-else-if="x && i > 0 && !x.audible">MOD</em>
+          <GardenBar v-if="x" class="phead-garden" play :x="x" :slot="i" :chip="gardenChip(x)" :title="gardenTitle(x)" @open="openGarden(i)" />
         </div>
         <PlayView v-if="x && layerOf(x)" :sound="layerOf(x)!" :slot="i" />
         <div v-else class="drop">
@@ -252,6 +289,7 @@ function onDrop(e: DragEvent, i: number) {
         </div>
       </div>
       </div>
+    </div>
     </div>
     <div v-else class="slots">
       <template v-for="(x, i) in slots" :key="i">
@@ -288,11 +326,12 @@ function onDrop(e: DragEvent, i: number) {
           <button
             v-if="x"
             class="chip"
-            title="PLAY view: all three VCOs side by side, each played from its clip and four XY pads (grain, LFO, filter · reverb, pitch · ring), SpaceCraft-style"
+            title="PLAY view: all three VCOs side by side, each played from its clip and its XY pads (grain, LFO, filter · reverb, pitch · ring, texture, echo, tone)"
             @click="playView = true"
           >
             PLAY
           </button>
+          <GardenBar v-if="x" :x="x" :slot="i" :chip="gardenChip(x)" :title="gardenTitle(x)" @open="openGarden(i)" />
           <v-spacer />
           <Knob
             v-if="x && x.tuning !== 'et'"
@@ -348,10 +387,14 @@ function onDrop(e: DragEvent, i: number) {
       </div>
       </template>
     </div>
+    <GardenDialog v-if="gardenOpen" v-model="gardenOpen" :slot="gardenSlot" />
   </div>
 </template>
 
 <style scoped>
+.phead-garden {
+  margin-left: auto;
+}
 .prompt {
   flex: none;
   display: flex;
@@ -403,6 +446,16 @@ function onDrop(e: DragEvent, i: number) {
 .mpe-chip.on.live {
   color: var(--c-secondary);
   box-shadow: 0 0 6px color-mix(in srgb, var(--c-secondary) 40%, transparent);
+}
+.play-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.play-chip.on {
+  color: #111;
+  background: var(--c-accent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--c-accent) 50%, transparent);
 }
 .mpe-chip small {
   font-size: 11px;
@@ -485,12 +538,16 @@ function onDrop(e: DragEvent, i: number) {
 /* the VCO tabs, folder tabs on the slot showing */
 .vtabs {
   flex: none;
-  display: flex;
-  gap: 3px;
-  padding: 0 4px;
+  /* a tab over each PLAY column: the same three columns, gaps and inset (.plays' padding and border, .pgrid's gap) */
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 0 7px;
 }
 .vtab {
-  flex: 0 1 260px;
+  /* its meters (VcoTabMeter) lie behind the name, M and S */
+  position: relative;
+  overflow: hidden;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -510,7 +567,15 @@ function onDrop(e: DragEvent, i: number) {
   color: var(--text);
 }
 /* the tab's name picks it; M / S beside it */
+.vtab .pick,
+.vtab .ms {
+  position: relative;
+  z-index: 1;
+}
 .vtab .pick {
+  /* (no button face of its own: the tab's colour, and its meters, show through) */
+  background: none;
+  border: 0;
   flex: 1;
   min-width: 0;
   align-self: stretch;
@@ -552,18 +617,6 @@ function onDrop(e: DragEvent, i: number) {
 .vtab.unheard .nm,
 .pslot.unheard .phead .src {
   opacity: 0.45;
-}
-/* PLAY: the rack's own view, after the VCO tabs */
-.vtab.ptab {
-  flex: none;
-  padding: 0 12px;
-  font-family: 'Orbitron', sans-serif;
-  font-size: 9px;
-  font-weight: 900;
-  letter-spacing: 0.14em;
-}
-.vtab.ptab.on {
-  color: var(--c-accent);
 }
 .vtab b {
   font-family: 'Orbitron', sans-serif;
@@ -625,8 +678,18 @@ function onDrop(e: DragEvent, i: number) {
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(0, 0, 0, 0.18);
 }
-/* PLAY: a column per VCO; stacked, one under another, when the rack is too narrow for three */
+/* PLAY: a column per VCO; stacked, one under another, when the rack is too narrow for three. The wrap holds the
+   shader stage behind the scrolling view, so it always covers what's in sight */
+.playwrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 6px;
+}
 .plays {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -636,6 +699,23 @@ function onDrop(e: DragEvent, i: number) {
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(0, 0, 0, 0.18);
   container-type: inline-size;
+}
+.playwrap.gl-on {
+  background: rgba(0, 0, 0, 0.32);
+}
+.playwrap.gl-on .plays {
+  background: transparent;
+}
+.playwrap.gl-on .pslot {
+  background: transparent;
+}
+/* over the stage the Play views are see-through, so its light shows between and through their pads */
+.playwrap.gl-on :deep(.play) {
+  background: color-mix(in srgb, var(--panel-lo) 25%, transparent);
+}
+.playwrap.gl-on :deep(.play .pad),
+.playwrap.gl-on :deep(.play .perform) {
+  background: color-mix(in srgb, var(--lcd-bg) 35%, transparent);
 }
 .pgrid {
   display: grid;
@@ -649,6 +729,9 @@ function onDrop(e: DragEvent, i: number) {
   }
 }
 .pslot {
+  /* its spectrogram (VcoMeter) lies behind the header and the Play view */
+  position: relative;
+  isolation: isolate;
   min-width: 0;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.06);
@@ -657,7 +740,19 @@ function onDrop(e: DragEvent, i: number) {
 .pslot :deep(.play) {
   border-radius: 0 0 6px 6px;
 }
+.pspec {
+  z-index: 0;
+}
+.pslot > .phead,
+.pslot > :deep(.play),
+.pslot > .drop {
+  position: relative;
+  z-index: 1;
+}
 .phead {
+  /* the garden's knobs drop their readouts in a narrow column (GardenBar.vue) */
+  container-type: inline-size;
+  overflow: hidden;
   display: flex;
   align-items: center;
   gap: 6px;

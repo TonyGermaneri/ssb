@@ -38,7 +38,7 @@ function paint() {
   g.clearRect(0, 0, w, h)
   props.draw(g, w, h, dpr)
 }
-defineExpose({ paint })
+defineExpose({ paint, el: () => wrap.value })
 
 let ro: ResizeObserver | undefined
 onMounted(() => {
@@ -90,9 +90,10 @@ function up() {
 .pad {
   position: relative;
   min-width: 0;
-  border: 1.5px solid var(--line);
-  border-radius: 6px;
-  background: var(--lcd-bg);
+  border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  border-radius: 14px;
+  background: radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--line) 7%, var(--lcd-bg)), var(--lcd-bg) 75%);
+  box-shadow: inset 0 0 18px color-mix(in srgb, var(--line) 18%, transparent);
   overflow: hidden;
   touch-action: none;
 }
@@ -108,26 +109,28 @@ canvas {
 }
 .label {
   position: absolute;
-  left: 5px;
-  bottom: 3px;
+  left: 6px;
+  top: 5px;
   pointer-events: none;
+  padding: 0 5px;
+  border-radius: 6px;
   font-family: 'Orbitron', sans-serif;
   font-size: 7px;
   font-weight: 900;
-  letter-spacing: 0.14em;
-  color: color-mix(in srgb, var(--line) 70%, transparent);
-  text-shadow: 0 0 3px var(--lcd-bg);
+  letter-spacing: 0.18em;
+  color: var(--lcd-bg);
+  background: color-mix(in srgb, var(--line) 70%, transparent);
 }
 .gear {
   position: absolute;
-  top: 3px;
-  right: 3px;
+  top: 4px;
+  right: 5px;
   display: grid;
   place-items: center;
   width: 16px;
   height: 16px;
   padding: 0;
-  border-radius: 3px;
+  border-radius: 50%;
   color: color-mix(in srgb, var(--line) 70%, transparent);
   background: color-mix(in srgb, var(--lcd-bg) 55%, transparent);
   border: 1px solid color-mix(in srgb, var(--line) 35%, transparent);
@@ -149,13 +152,13 @@ canvas {
   gap: 5px;
   padding: 6px;
   overflow: auto;
-  background: color-mix(in srgb, var(--lcd-bg) 85%, transparent);
+  background: color-mix(in srgb, var(--lcd-bg) 92%, transparent);
 }
 .settings :deep(button.opt),
 .done {
   min-width: 84px;
   padding: 2px 10px;
-  border-radius: 4px;
+  border-radius: 10px;
   font-family: 'VT323', monospace;
   font-size: 16px;
   color: color-mix(in srgb, var(--line) 75%, transparent);

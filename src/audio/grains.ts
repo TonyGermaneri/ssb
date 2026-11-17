@@ -41,17 +41,21 @@ export interface GrainNode {
   node: AudioWorkletNode
   configure(config: GrainConfig): void
   stop(): void
+  /** the garden's stitch: from context time `at`, grains read `buffer` (sent first if this scope hasn't got it) */
+  swap(audioId: string, buffer: AudioBuffer, config: GrainConfig, at: number): void
 }
 
 /** A voice's grain processor, playing `buffer` (sent to the worklet the first time it's used). */
 export function grainNode(
   ctx: BaseAudioContext,
-  audioId: string,
-  buffer: AudioBuffer,
+  audioIdIn: string,
+  bufferIn: AudioBuffer,
   config: GrainConfig,
   onGrains: (list: GrainEvent[]) => void,
   onDone: () => void,
 ): GrainNode {
+  let audioId = audioIdIn
+  let buffer = bufferIn
   const sent = scopes.get(ctx)?.sent ?? new Map<string, number>()
   const version = versions.get(audioId) ?? 0
   const first = sent.get(audioId) !== version
@@ -78,6 +82,17 @@ export function grainNode(
     node,
     configure: (c) => send({ type: 'config', config: c }),
     stop: () => send({ type: 'stop' }),
+    swap: (id, buf, config, at) => {
+      audioId = id
+      buffer = buf
+      const v = versions.get(id) ?? 0
+      if (sent.get(id) !== v) {
+        const p = samplePayload(id, buf)
+        send({ type: 'sample', ...p }, p.channels.map((c) => c.buffer))
+        sent.set(id, v)
+      }
+      send({ type: 'swap', id, config, at })
+    },
   }
 }
 

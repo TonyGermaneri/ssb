@@ -71,7 +71,15 @@ function soundJson(board: Board, sound: Sound) {
     // a patch's main voice is a slot too, without a link to carry its tuning
     tuning: main?.tuning ?? 'et',
     tuningDepth: main?.tuningDepth ?? 1,
+    // the PROMPT GARDEN (stores/garden.ts): its VCO's new audio stitches into the sounding voices (Engine.cpp adopt)
+    stitch: gardenStitch(board, sound.id),
   }
+}
+
+/** the crossfade a growing garden's VCO stitches its new clips in with (0: no garden) */
+function gardenStitch(board: Board, layerId: string): number {
+  const g = board.selectedPatch?.slots.find((x) => x?.layer.id === layerId)?.garden
+  return g?.on ? Math.max(0.005, g.fade) : 0
 }
 
 /** how many clicked sounds the engine keeps besides the ones it always needs */

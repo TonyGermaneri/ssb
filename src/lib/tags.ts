@@ -15,6 +15,16 @@ export const splitTags = (tag: string | undefined): string[] => {
 
 export const joinTags = (tags: string[]) => splitTags(tags.join(',')).join(', ')
 
+/** A tag string without `drop` (case-insensitive). */
+export const removeTags = (tag: string, drop: string[]) => {
+  const gone = new Set(drop.map((t) => t.toLowerCase()))
+  return joinTags(splitTags(tag).filter((t) => !gone.has(t.toLowerCase())))
+}
+
+/** the PROMPT GARDEN's clips while they're only takes (stores/garden.ts): kept out of the samples list until saved */
+export const TAKE_TAG = 'take'
+export const isTake = (tag: string | undefined) => splitTags(tag).some((t) => t.toLowerCase() === TAKE_TAG)
+
 /** Add tags to a tag string, keeping existing ones first. */
 export const addTags = (tag: string, extra: string[]) => joinTags([...splitTags(tag), ...extra])
 

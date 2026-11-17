@@ -5,7 +5,7 @@ import { useBoard } from '../stores/board'
 /**
  * One of the header's groups. Folds sideways (◀) to a thin strip, its title turned to read upwards, like the control
  * panel's sections fold up to theirs; a folded group is one button that opens it again (▶). Which are folded is kept
- * in master.headerFolded. A `fixed` group (the console's core: output, patch, VCOs, view, board) never folds.
+ * in master.headerFolded. A `fixed` group (the console's core: output, view, patch, VCOs) never folds.
  */
 const props = defineProps<{ id: string; title: string; fixed?: boolean }>()
 const board = useBoard()

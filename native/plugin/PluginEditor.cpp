@@ -180,6 +180,15 @@ SsbEditor::SsbEditor (SsbProcessor& p)
               plugin.library.addSample (args[0].toString().toStdString(), sample);
               complete (juce::var (true));
           })
+          .withNativeFunction ("ssbForget", [] (const juce::Array<juce::var>& args, auto complete)
+          {
+              // ([audioId, ...]): the PROMPT GARDEN's old takes, gone for good
+              if (args.size() > 0)
+                  if (auto* ids = args[0].getArray())
+                      for (const auto& id : *ids)
+                          ssb::SampleStore::instance().forget (id.toString().toStdString());
+              complete (juce::var (true));
+          })
           .withNativeFunction ("ssbPreview", [this] (const juce::Array<juce::var>& args, auto complete)
           {
               // the library's audition (engine.ts preview): (sampleRate, channels, base64 of planar float32, rate,
@@ -233,8 +242,7 @@ SsbEditor::SsbEditor (SsbProcessor& p)
               const auto& c = args[0];
               const auto type = c.getProperty ("type", {}).toString();
               const T t = type == "press" ? T::press : type == "release" ? T::release : type == "noteOn" ? T::noteOn
-                        : type == "noteOff" ? T::noteOff : type == "cc" ? T::cc : type == "midi" ? T::midi
-                        : type == "seqClear" ? T::seqClear : T::panic;
+                        : type == "noteOff" ? T::noteOff : type == "cc" ? T::cc : type == "midi" ? T::midi : T::panic;
               auto cmd = ssb::Command::make (t, c.getProperty ("id", {}).toString().toStdString(),
                                              (float) (double) c.getProperty ("velocity", 1.0));
               cmd.note = (uint8_t) juce::jlimit (0, 127, (int) c.getProperty ("note", 60));

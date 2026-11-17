@@ -1,8 +1,9 @@
+import type { Garden } from './lib/garden/garden'
 import {
   GRAIN_FREQ_FLOOR, GRAIN_FREQ_MAX, type AmpMode, type GrainMode, type SpraySign, type Symmetry,
 } from './audio/grainMath'
 import { SVF_TYPES, type SvfType } from './audio/svfMath'
-import type { ScaleId } from './lib/play/seq'
+import type { ScaleId } from './lib/play/scales'
 /**
  * How a sound's display draws: live, what its voices play (a 1960s phosphor SCOPE, 90s spectrum BARS, an RX-style
  * SPECTRO) or the sample itself, flat or isometric (where clip and grain are dragged).
@@ -330,21 +331,12 @@ export interface SoundSettings {
   grainBackwards: boolean // every grain reads the sample backwards from where it starts (LOOP: every segment reversed)
   grainSync: boolean // SYNC: GRAIN is a tempo division (grainBeats) instead of free Hz
   grainBeats: number // beats a grain under SYNC; 0 = the top band, where GRAIN stays free (grainFreq)
-  pitchScale: boolean // PITCH · RING's SCALE: the pitch it sets snaps to the sequencer's scale
+  pitchScale: boolean // PITCH · RING's SCALE: the pitch it sets snaps to pitchScaleId
+  pitchScaleId: ScaleId // the scale PITCH · RING's SCALE snaps to (lib/play/seq.ts)
   // SpaceCraft's sample tuning: the sample's own key, on top of PITCH / FINE (which the pitch pad plays)
   tuneCoarse: number // semitones -12..12
   tuneFine: number // cents -100..100
   stereoPhase: number // ms 0..30: the right channel this much later than the left (a mono sample made wide)
-  // the sequencer (SpaceCraft's notes grid, lib/play/seq.ts): while SEQ is on, the keys, MIDI and the grid's pads
-  // all put notes in the grid, and one stream of grains takes turns through them (a chord when grains overlap, an
-  // arpeggio when they're short)
-  seq: boolean
-  seqScale: ScaleId // the grid's columns, and how MIDI's white keys map to them
-  seqGrid: number[] // the pads on: semitones from the sample's own key, in the order they were entered
-  seqEnv: boolean // ENVELOPE ON: each note fades in over seqAttack and out over seqRelease
-  seqAttack: number // seconds
-  seqRelease: number // seconds
-  seqSingle: boolean // SINGLE NOTE: a new note replaces the one before
   mpeGrain: boolean // MPE GRAIN: a note's sideways bend moves where its grains fire instead of its pitch
   // wavetable (audio/wavetable.ts): a sample of equal single cycles, played as an oscillator from one cycle blended
   // into the next. wtSize says the sample is one (the AKWF tables, a wavetable WAV); the VCO shows WT and BLEND for it
@@ -505,6 +497,7 @@ export const GRAIN_DEFAULTS = {
   grainSync: false,
   grainBeats: 0,
   pitchScale: false,
+  pitchScaleId: 'major' as ScaleId,
 }
 
 export function defaultSettings(name = 'SOUND'): SoundSettings {
@@ -548,13 +541,6 @@ export function defaultSettings(name = 'SOUND'): SoundSettings {
     tuneCoarse: 0,
     tuneFine: 0,
     stereoPhase: 0,
-    seq: false,
-    seqScale: 'major',
-    seqGrid: [],
-    seqEnv: false,
-    seqAttack: 0.05,
-    seqRelease: 0.4,
-    seqSingle: false,
     mpeGrain: false,
     delayTime: 0.25,
     delayFeedback: 0.35,
@@ -601,9 +587,12 @@ function migrateGrains(raw: Record<string, unknown>) {
 
 /** Fill in settings added since a board was saved, and map renamed ones. */
 export function migrateSettings(raw: Partial<SoundSettings> & { fadeIn?: number; fadeOut?: number }): SoundSettings {
-  const { fadeIn, fadeOut, ...rest } = raw
+  // (0.19's sequencer, since removed: its scale is the pitch pad's now; the grid itself goes)
+  const { fadeIn, fadeOut, seq: _seq, seqScale, seqGrid: _g, seqEnv: _e, seqAttack: _a, seqRelease: _r, seqSingle: _s, ...rest } =
+    raw as typeof raw & Record<'seq' | 'seqScale' | 'seqGrid' | 'seqEnv' | 'seqAttack' | 'seqRelease' | 'seqSingle', unknown>
   migrateGrains(rest as Record<string, unknown>)
   const s = { ...defaultSettings(raw.name), ...rest, mod: migrateMatrix(raw.mod), vcos: raw.vcos ?? [] }
+  if (seqScale && raw.pitchScaleId === undefined) s.pitchScaleId = seqScale as ScaleId
   if (fadeIn !== undefined && raw.attack === undefined) s.attack = Math.max(0.001, fadeIn)
   if (fadeOut !== undefined && raw.release === undefined) s.release = Math.max(0.001, fadeOut)
   return s
@@ -697,6 +686,8 @@ export interface MasterState {
   folded: string[]
   /** header sections folded to their title */
   headerFolded: string[]
+  /** the header's fold defaults a board has had (board.ts load: 1 = PERFORM, TEMPO · MIDI and BOARD folded once) */
+  uiDefaults?: number
   /** show only favourites, per catalog */
   favSounds: boolean
   favPatches: boolean
@@ -743,13 +734,14 @@ export const defaultMaster = (): MasterState => ({
   theme: 'console85',
   view: 'grid',
   patchView: 'grid',
-  gridPanel: true,
+  gridPanel: false,
   showPatches: false,
   showSamples: true,
   paneSplit: 0.5,
   listWidth: 0.33,
   folded: ['eq', 'ring', 'delay', 'reverb'],
-  headerFolded: ['perform', 'chorus', 'delay', 'reverb'],
+  headerFolded: ['perform', 'tempo', 'board', 'chorus', 'delay', 'reverb'],
+  uiDefaults: 1,
   favSounds: false,
   favPatches: false,
   factory: false,
@@ -851,6 +843,8 @@ export interface PatchSlot {
   fixedNote: number
   tuning: TuningMode
   tuningDepth: number
+  /** the PROMPT GARDEN (lib/garden/garden.ts): this VCO regrowing its own sample from rings of words */
+  garden?: Garden
 }
 export const PATCH_SLOTS = 3
 

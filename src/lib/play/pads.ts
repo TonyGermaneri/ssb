@@ -1,5 +1,5 @@
 /**
- * The VCO Play view's pads (SpaceCraft's), as numbers: where each crosshair sits for a layer's settings, and what a
+ * The VCO Play view's pads, as numbers: where each crosshair sits for a layer's settings, and what a
  * crosshair position writes back. Positions are 0..1 with y = 1 at the top. Pure, so the mappings are tested.
  *
  * - PERFORM (the big waveform): x = where grains fire (POS, in the clip), y = the layer's volume.
@@ -9,13 +9,18 @@
  * - FILTER · REVERB: y = reverb; x = the filter: centre bypassed, left a low-pass closing, right a high-pass opening.
  * - PITCH · RING: a pitch multiplier that is fine (±2 semitones) in the middle and coarse (×2 up, through stopped, to
  *   ×2 backwards) at the edges; the right edge brings in the ring modulator, its carrier rising with y. SCALE snaps the
- *   pitch to the sequencer's scale.
+ *   pitch to a scale (settings.pitchScaleId).
  * - GRAIN under SYNC: the rows below the top are tempo divisions (bands); the top band stays free, for smooth fast grains.
- * - ENVELOPE (the sequencer's, ENVELOPE ON): y = each note's attack, x = its release, both log.
+ * - TEXTURE: the grain cloud's scatter: x = SPRAY (each grain's random offset in the clip, up to 2 s), y = DETUNE (the
+ *   grains' left side lower and right higher: a shimmer that widens). Both cubed, so the fine amounts get the room.
+ * - ECHO: the VCO's own delay: x = its time (20 ms .. 1.5 s, log; drawn to the tempo's divisions near them), y = its
+ *   feedback (to 90 %). An echo with no MIX yet gets some, so the pad is heard at once.
+ * - TONE: the VCO's three-band EQ as a tilt and a middle: x = darker (bass up, treble down) .. brighter, y = the mids
+ *   scooped .. pushed; flat in the middle.
  */
 import { DIVISIONS, type ModRoute, type SoundSettings } from '../../types'
 import { GRAIN_FREQ_MAX, grainFreqMin } from '../../audio/grainMath'
-import { snapToScale } from './seq'
+import { snapToScale } from './scales'
 
 export interface Point {
   x: number
@@ -74,12 +79,6 @@ export function grainSyncPoint(s: SoundSettings, bpm: number): Point {
   const fast = Math.min(GRAIN_FREQ_MAX, syncFastest(bpm))
   return { x, y: SYNC_TOP + (1 - SYNC_TOP) * logTo(Math.max(fast, s.grainFreq), fast, GRAIN_FREQ_MAX) }
 }
-
-// ── ENVELOPE (the sequencer's) ──
-export const ENV_LO = 0.002
-export const ENV_HI = 8
-export const envPoint = (s: SoundSettings): Point => ({ x: logTo(Math.max(ENV_LO, s.seqRelease), ENV_LO, ENV_HI), y: logTo(Math.max(ENV_LO, s.seqAttack), ENV_LO, ENV_HI) })
-export const envWrite = (p: Point) => ({ seqAttack: round4(logFrom(p.y, ENV_LO, ENV_HI)), seqRelease: round4(logFrom(p.x, ENV_LO, ENV_HI)) })
 
 // ── LFO (the layer's LFO 2 → POS) ──
 /** slow (bottom) to fast (top): the tempo divisions, longest first */
@@ -231,6 +230,69 @@ export function contours(levels: number[], n = 96): { level: number; segments: [
     }
     return { level, segments }
   })
+}
+
+// ── TEXTURE (the grain cloud's SPRAY × DETUNE) ──
+export const TEXTURE_SPRAY = 2000 // ms at the right edge
+export const TEXTURE_DETUNE = 12 // semitones at the top
+export const texturePoint = (s: Pick<SoundSettings, 'grainSpray' | 'grainDetune'>): Point => ({
+  x: Math.cbrt(clamp01((s.grainSpray ?? 0) / TEXTURE_SPRAY)),
+  y: Math.cbrt(clamp01((s.grainDetune ?? 0) / TEXTURE_DETUNE)),
+})
+export const textureWrite = (p: Point) => ({
+  grainSpray: Math.round(TEXTURE_SPRAY * clamp01(p.x) ** 3 * 10) / 10,
+  grainDetune: Math.round(TEXTURE_DETUNE * clamp01(p.y) ** 3 * 1000) / 1000,
+})
+
+// ── ECHO (the VCO's delay: TIME × FEEDBACK) ──
+export const ECHO_LO = 0.02
+export const ECHO_HI = 1.5
+export const ECHO_FB = 0.9
+/** a MIX for an echo that had none, the moment the pad is touched */
+export const ECHO_MIX = 0.3
+/** how close (in x) a tempo division draws the time to it */
+const ECHO_SNAP = 0.018
+/** the tempo's divisions that fall on the pad, with where (x): what the time snaps to near them */
+export function echoDivisions(bpm: number): { id: string; seconds: number; x: number }[] {
+  return DIVISIONS.map((d) => ({ id: d.id, seconds: (60 / Math.max(1, bpm)) * d.beats }))
+    .filter((d) => d.seconds >= ECHO_LO && d.seconds <= ECHO_HI)
+    .map((d) => ({ ...d, x: logTo(d.seconds, ECHO_LO, ECHO_HI) }))
+}
+export const echoPoint = (s: Pick<SoundSettings, 'delayTime' | 'delayFeedback'>): Point => ({
+  x: logTo(Math.max(ECHO_LO, s.delayTime), ECHO_LO, ECHO_HI),
+  y: clamp01(s.delayFeedback / ECHO_FB),
+})
+export function echoWrite(p: Point, bpm: number, mix: number) {
+  const x = clamp01(p.x)
+  const near = echoDivisions(bpm).find((d) => Math.abs(d.x - x) < ECHO_SNAP)
+  const delayTime = near ? Math.round(near.seconds * 10000) / 10000 : round4(logFrom(x, ECHO_LO, ECHO_HI))
+  return { delayTime, delayFeedback: round4(clamp01(p.y) * ECHO_FB), ...(mix > 0 ? {} : { delayMix: ECHO_MIX }) }
+}
+
+// ── TONE (the VCO's EQ: tilt × mids) ──
+export const TONE_TILT = 9 // dB each end at the edges
+export const TONE_MID = 12
+const TONE_DEAD = 0.025
+const halfDb = (v: number) => Math.round(v * 2) / 2 || 0
+const bipolar = (t: number) => {
+  const v = (clamp01(t) - 0.5) * 2
+  return Math.abs(v) < TONE_DEAD * 2 ? 0 : v
+}
+export const tonePoint = (s: Pick<SoundSettings, 'eqLow' | 'eqMid' | 'eqHigh'>): Point => ({
+  x: clamp01(0.5 + (s.eqHigh - s.eqLow) / (4 * TONE_TILT)),
+  y: clamp01(0.5 + s.eqMid / (2 * TONE_MID)),
+})
+export function toneWrite(p: Point) {
+  const t = bipolar(p.x)
+  return { eqLow: halfDb(-t * TONE_TILT), eqMid: halfDb(bipolar(p.y) * TONE_MID), eqHigh: halfDb(t * TONE_TILT) }
+}
+/** the EQ's curve, in dB, at a frequency (Hz): its three shelves / bell, as the pad draws it */
+export function toneResponse(s: Pick<SoundSettings, 'eqLow' | 'eqMid' | 'eqHigh'>, hz: number): number {
+  const oct = (a: number, b: number) => Math.log2(a / b)
+  const low = s.eqLow / (1 + Math.exp(oct(hz, 120) * 3))
+  const high = s.eqHigh / (1 + Math.exp(-oct(hz, 8000) * 3))
+  const mid = s.eqMid * Math.exp(-(oct(hz, 1000) ** 2) / 1.2)
+  return low + mid + high
 }
 
 const round4 = (v: number) => Math.round(v * 10000) / 10000

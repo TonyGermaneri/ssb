@@ -21,7 +21,7 @@
 import {
   cloudGain, cloudLength, DENSITY_MAX, DENSITY_MIN, FREQ_RND_RATE, FREQ_RND_SEMIS, GRAIN_LENGTH_MIN, grainLevel, hann,
   lengthGate, lengthPhase, loopFade,
-  loopSegment, MAX_PHASE_STEP, readAt, scanRate, scanWrap, seqPick, skewExponent, skewPhase, sprayOffset, STRETCH_GRAIN,
+  loopSegment, MAX_PHASE_STEP, readAt, scanRate, scanWrap, skewExponent, skewPhase, sprayOffset, STRETCH_GRAIN,
   STRETCH_OVERLAP, tuneRndRatio, varGain, varPitchRatio, varPosOffset, varSizeRatio, windowAt, windowTable,
   type FromGrains, type GrainConfig, type GrainEvent, type ToGrains,
 } from './grainMath'
@@ -150,8 +150,6 @@ class GrainProcessor extends AudioWorkletProcessor {
   private fmPhase = 0
   private window = windowTable(0, 'std')
   private windowKey = ''
-  /** the sequencer: grains fired so far, which take turns through the grid's notes */
-  private seqK = 0
 
   // stretch
   private grains: StretchGrain[] = []
@@ -169,7 +167,23 @@ class GrainProcessor extends AudioWorkletProcessor {
       if (m.type === 'config') this.cfg = m.config
       else if (m.type === 'sample') samples.set(m.id, { ch: m.channels, rate: m.rate })
       else if (m.type === 'stop') this.stopped = true
+      else if (m.type === 'swap') this.swapTo = m
     }
+  }
+
+  /** the garden's stitch, waiting for its time (the bottom of the voice's dip) */
+  private swapTo?: { id: string; config: GrainConfig; at: number }
+  /** Grains read the new sample from here: the ones sounding stop (the voice is silent for it), the rest start anew. */
+  private swap(w: { id: string; config: GrainConfig }) {
+    this.id = w.id
+    this.sample = undefined
+    this.asked = false
+    this.cfg = w.config
+    for (const sl of this.slots) sl.on = false
+    this.loops = [newLoopSide(), newLoopSide()]
+    for (const side of this.clouds) for (const g of side) g.on = false
+    this.cloudLive = [false, false]
+    this.grains.length = 0
   }
 
   private post(m: FromGrains) {
@@ -217,16 +231,6 @@ class GrainProcessor extends AudioWorkletProcessor {
       (c.tuneRnd > 0 ? tuneRndRatio(c.tuneRnd, Math.random()) : 1)
   }
 
-  /**
-   * The sequencer's note for a grain starting at `t` (grainMath.ts seqPick): semitones and level, each grain the next
-   * note. Without a sequencer every grain plays the voice's own note at full level; with one and nothing sounding, null.
-   */
-  private seqNext(t: number): { semis: number; gain: number } | null {
-    const q = this.cfg.seq
-    if (!q) return { semis: 0, gain: 1 }
-    return seqPick(q.notes, t, this.seqK++, q.attack, q.release)
-  }
-
   /** A grain's level: FLUX / VOID, then VARIATION's. */
   private grainGain(side: number): number {
     const c = this.cfg
@@ -239,19 +243,12 @@ class GrainProcessor extends AudioWorkletProcessor {
   private startSlot(si: number, side: number, t: number, lead: number, semis: number, posMod: number, smp: Sample, f: number) {
     const c = this.cfg
     const slot = this.slots[si]
-    const q = this.seqNext(t)
-    if (!q) {
-      // the sequencer with nothing sounding: this slot sits its turn out
-      slot.on = false
-      this.sizeVar[side] = varSizeRatio(c.varSize, this.variation(side), Math.random())
-      return
-    }
     const at = this.grainAt(side, semis, posMod)
-    const rate = this.grainRate(side, semis) * semisToRate(q.semis)
+    const rate = this.grainRate(side, semis)
     const back = !!c.backwards
     slot.step = ((back ? -1 : 1) * (rate * smp.rate)) / sampleRate
     slot.pos = at * smp.rate + slot.step * lead
-    slot.amp = this.grainGain(side) * q.gain
+    slot.amp = this.grainGain(side)
     slot.on = true
     slot.e = skewExponent(this.skew(side))
     this.sizeVar[side] = varSizeRatio(c.varSize, this.variation(side), Math.random())
@@ -331,17 +328,12 @@ class GrainProcessor extends AudioWorkletProcessor {
       old.dir = cur.dir
       old.u = cur.u
       old.du = cur.du
-      const q = ending ? null : this.seqNext(t)
       if (ending) cur.on = false
-      else if (!q) {
-        // the sequencer with nothing sounding: silent, asking again at the next sample
-        cur.on = false
-        s.due = true
-      } else {
+      else {
         // BACK: every segment backwards; otherwise REVERSE's chance
         const dir = c.backwards ? -1 : Math.random() < c.reverse ? -1 : 1
         const at = this.grainAt(side, semis, pm) * smp.rate
-        const rate = this.grainRate(side, semis) * semisToRate(q.semis)
+        const rate = this.grainRate(side, semis)
         const dur = varSizeRatio(c.varSize, this.variation(side), Math.random()) / f
         const span = Math.max(1, dur * rate * smp.rate)
         const fade = loopFade(this.skew(side), span, old.on ? s.room : 0)
@@ -351,7 +343,7 @@ class GrainProcessor extends AudioWorkletProcessor {
         cur.end = seg.end
         cur.dir = dir
         cur.step = (rate * smp.rate) / sampleRate
-        cur.amp = this.grainGain(side) * q.gain
+        cur.amp = this.grainGain(side)
         cur.u = 0
         cur.du = cur.step / Math.max(1, Math.abs(seg.end - seg.head))
         s.room = seg.room
@@ -418,18 +410,16 @@ class GrainProcessor extends AudioWorkletProcessor {
           g.on = false
           continue
         }
-        const q = this.seqNext(t)
         const at = this.grainAt(side, semis, pm)
         const ratio = varPitchRatio(c.varPitch, this.variation(side), Math.random())
-        const rate = this.grainRate(side, semis) * ratio * (q ? semisToRate(q.semis) : 1)
+        const rate = this.grainRate(side, semis) * ratio
         const dur = (varSizeRatio(c.varSize, this.variation(side), Math.random()) * cloudLength(i)) / f
         const back = !!c.backwards
         g.phase = 0
         g.phaseStep = ratio / (dur * sampleRate)
         g.pos = at * smp.rate
         g.step = ((back ? -1 : 1) * (rate * smp.rate)) / sampleRate
-        // (the sequencer with nothing sounding: a silent grain, its turn sat out)
-        g.amp = q ? this.grainGain(side) * q.gain : 0
+        g.amp = this.grainGain(side)
         const len = ((dur * rate) / ratio) * length
         this.report({ when: t, pos: back ? at - len : at, len, dur: (dur / ratio) * length, rate, reverse: back, pan: side ? 0.5 : -0.5, gain: Math.min(1, g.amp), stream: side })
       }
@@ -566,6 +556,10 @@ class GrainProcessor extends AudioWorkletProcessor {
     const L = out[0]
     const R = out[1] ?? out[0]
     const n = L.length
+    if (this.swapTo && currentTime >= this.swapTo.at) {
+      this.swap(this.swapTo)
+      this.swapTo = undefined
+    }
     const smp = (this.sample ??= samples.get(this.id))
     if (!smp) {
       if (!this.asked) this.post({ type: 'need', id: this.id })

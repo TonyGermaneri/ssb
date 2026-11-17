@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { defaultSettings } from '../../types'
 import {
   contours,
+  echoDivisions,
+  echoPoint,
+  echoWrite,
+  ECHO_HI,
+  ECHO_LO,
+  ECHO_MIX,
   fxPoint,
   fxResponse,
   fxWrite,
@@ -13,6 +19,11 @@ import {
   pitchMultiplier,
   pitchPoint,
   pitchWrite,
+  texturePoint,
+  textureWrite,
+  tonePoint,
+  toneResponse,
+  toneWrite,
 } from './pads'
 
 const s = () => ({ ...defaultSettings('T'), grainLength: 1, grainBackwards: false, ringMix: 0, ringFreq: 440 })
@@ -136,12 +147,46 @@ describe('SpaceCraft options on the pads', () => {
     expect(pitchWrite(p, 'chromatic')).toMatchObject({ pitch: 1, fine: 0 })
   })
 
-  it('ENVELOPE: up / down the attack, left / right the release, both ways round', async () => {
-    const { envPoint, envWrite } = await import('./pads')
-    const w = envWrite({ x: 0.75, y: 0.25 })
-    expect(w.seqRelease).toBeGreaterThan(w.seqAttack)
-    const back = envPoint({ ...defaultSettings(), ...w })
-    expect(back.x).toBeCloseTo(0.75, 3)
-    expect(back.y).toBeCloseTo(0.25, 3)
+})
+
+
+describe('the added Play pads', () => {
+  it('TEXTURE: x SPRAY (to 2 s), y DETUNE (to 12 st), both cubed so the small amounts get the room; and back', () => {
+    expect(textureWrite({ x: 0, y: 0 })).toEqual({ grainSpray: 0, grainDetune: 0 })
+    expect(textureWrite({ x: 1, y: 1 })).toEqual({ grainSpray: 2000, grainDetune: 12 })
+    expect(textureWrite({ x: 0.5, y: 0.5 })).toEqual({ grainSpray: 250, grainDetune: 1.5 })
+    const p = texturePoint({ grainSpray: 250, grainDetune: 1.5 })
+    expect(p.x).toBeCloseTo(0.5, 3)
+    expect(p.y).toBeCloseTo(0.5, 3)
+    // more than the pad reaches (the knob's further): pinned to the edge
+    expect(texturePoint({ grainSpray: 9000, grainDetune: 0 }).x).toBe(1)
+  })
+
+  it('ECHO: x the time (log 20 ms .. 1.5 s), drawn to a tempo division near it; y the feedback; MIX given if none', () => {
+    const lo = echoWrite({ x: 0, y: 0 }, 120, 0.5)
+    expect(lo.delayTime).toBeCloseTo(ECHO_LO, 4)
+    expect(lo).not.toHaveProperty('delayMix')
+    expect(echoWrite({ x: 1, y: 1 }, 120, 0.5)).toMatchObject({ delayTime: ECHO_HI, delayFeedback: 0.9 })
+    // an eighth at 120 BPM is 0.25 s: a hair off its x lands on it exactly
+    const eighth = echoDivisions(120).find((d) => d.id === '1/8')!
+    expect(echoWrite({ x: eighth.x + 0.01, y: 0.5 }, 120, 0.4).delayTime).toBe(0.25)
+    expect(echoWrite({ x: 0.5, y: 0.5 }, 120, 0).delayMix).toBe(ECHO_MIX)
+    const p = echoPoint({ delayTime: 0.25, delayFeedback: 0.45 })
+    expect(p.x).toBeCloseTo(eighth.x, 6)
+    expect(p.y).toBeCloseTo(0.5, 6)
+  })
+
+  it('TONE: flat in the middle; x tilts bass against treble, y scoops or pushes the mids, in half dB', () => {
+    expect(toneWrite({ x: 0.5, y: 0.5 })).toEqual({ eqLow: 0, eqMid: 0, eqHigh: 0 })
+    expect(toneWrite({ x: 0.51, y: 0.49 })).toEqual({ eqLow: 0, eqMid: 0, eqHigh: 0 })
+    expect(toneWrite({ x: 1, y: 0 })).toEqual({ eqLow: -9, eqMid: -12, eqHigh: 9 })
+    expect(toneWrite({ x: 0, y: 1 })).toEqual({ eqLow: 9, eqMid: 12, eqHigh: -9 })
+    const p = tonePoint({ eqLow: -4.5, eqMid: 6, eqHigh: 4.5 })
+    expect(p.x).toBeCloseTo(0.75, 6)
+    expect(p.y).toBeCloseTo(0.75, 6)
+    // the curve: bright tilt is up at the top, down at the bottom
+    const bright = { eqLow: -9, eqMid: 0, eqHigh: 9 }
+    expect(toneResponse(bright, 16000)).toBeGreaterThan(6)
+    expect(toneResponse(bright, 40)).toBeLessThan(-6)
   })
 })

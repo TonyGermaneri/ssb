@@ -2,6 +2,8 @@
 import { computed } from 'vue'
 import { levels } from '../audio/engine'
 
+/** horizontal: the bars lie down (the header's OUTPUT column), segment 1 at the left */
+const props = defineProps<{ horizontal?: boolean }>()
 const SEGMENTS = 14
 /** Peak → lit segment count on a -42..0 dB scale. */
 const lit = computed(() =>
@@ -14,7 +16,7 @@ const segColor = (i: number) => (i >= SEGMENTS - 2 ? 'red' : i >= SEGMENTS - 5 ?
 </script>
 
 <template>
-  <div class="vu" title="Master level (L / R)">
+  <div class="vu" :class="{ horizontal: props.horizontal }" title="Master level (L / R)">
     <div v-for="(n, ch) in lit" :key="ch" class="bar">
       <i v-for="i in SEGMENTS" :key="i" :class="[segColor(i - 1), { on: i <= n }]" />
     </div>
@@ -44,6 +46,17 @@ i {
 }
 i.on {
   opacity: 1;
+}
+.vu.horizontal {
+  flex-direction: column;
+  padding: 2px 3px;
+}
+.vu.horizontal .bar {
+  flex-direction: row;
+}
+.vu.horizontal i {
+  width: 2px;
+  height: 4px;
 }
 .green { background: var(--c-success); }
 .amber { background: var(--c-primary); }

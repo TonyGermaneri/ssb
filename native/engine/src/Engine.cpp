@@ -64,23 +64,6 @@ double grainFreqNow (const Settings& s, double bpm) noexcept
     return beats > 0 ? std::clamp (bpm / 60.0 / beats, 1.0 / 3600.0, 150.0) : (double) s.grainFreq;
 }
 
-/** seq.ts keyToGrid: the semitones from the sample's own key that a key plays into the grid. */
-float keyToGrid (const Settings& s, float note, float root) noexcept
-{
-    if (s.seqChromatic) return std::round (note - root);
-    static constexpr int white[12] { 0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6 };
-    const auto whiteIndex = [] (float x)
-    {
-        const int n = (int) std::lround (x);
-        const int oct = (int) std::floor (n / 12.0);
-        return oct * 7 + white[n - oct * 12];
-    };
-    const int deg = whiteIndex (note) - whiteIndex (root);
-    const int count = std::max (1, s.seqStepCount);
-    const int oct = (int) std::floor ((double) deg / count);
-    return (float) (s.seqSteps[(size_t) (deg - oct * count)] + 12 * oct);
-}
-
 } // namespace
 
 uint64_t idHash (std::string_view id) noexcept
@@ -217,15 +200,8 @@ struct Engine::Voice
 
     // grains (voice.ts): 'cloud' is Granulator II's voice (grains.worklet.ts renderCloud), 'stretch' walks
     // grains through the clip at SPEED
-    // seqKey: a key's note in a VCO's sequencer grid (board.ts seqKeyOn): silent, here so the note bookkeeping
-    // (note-off, the pedal, HOLD, MPE channels) lets it go as it would a voice; its envelope is the grid's
-    enum class Kind : uint8_t { sample, stretch, cloud, seqKey };
+    enum class Kind : uint8_t { sample, stretch, cloud };
     Kind kind { Kind::sample };
-    // the sequencer: a VCO's grain stream (its grains take turns through the grid's notes, seqK counting them), or a
-    // key's grid note (its semitones from the sample's own key)
-    bool seqStream { false };
-    uint32_t seqK { 0 };
-    float seqSemis { 0 };
     // cloud: a phasor per side (left, right) at GRAIN; each runs two slots, A from the wrap and B from half a
     // period later, windowed by the phasor's phase, so a grain lasts one period and two overlap
     struct Slot { bool on { false }; double pos { 0 }; double step { 1 }; float amp { 1 }; double e { 1 }; };   // e: SKEW's exponent
@@ -276,6 +252,19 @@ struct Engine::Voice
     std::vector<float> tap;
     // STEREO PHASE (voice.ts startPhase): the right channel, delayed after the pan
     dsp::DelayLine phaseLine;
+
+    // the PROMPT GARDEN's stitch (voice.ts stitch; adopt queues it): new audio carried on with, never stopping. A
+    // sample takes it at once, from its start, the old clip looping on and fading out under it (equal power); grains get a second
+    // voice on the new audio (stitchGrains), the two crossfaded over the whole XFADE
+    uint64_t audioKey { 0 };         // idHash of the audio `sample` is
+    SamplePtr stitchTo;              // waiting: the next loop boundary (a sample) or the dip's bottom (grains)
+    float stitchFade { 0.08f };
+    bool stitchDue { false };        // a sample wrapped with one waiting: it takes over at the next block
+    SamplePtr stitchFrom;            // a sample's old clip, fading out
+    double fromPos { 0 }, fromLoopStart { 0 }, fromLoopEnd { 0 };
+    double xfade { 1 }, xfadeStep { 0 };
+    double xIn { -1 }, xInStep { 0 };     // grains' stitch: this voice (the new audio) rising, 0..1; -1 none
+    double xOut { -1 }, xOutStep { 0 };   // ... and the one it replaces falling, 0..1, gone at 1
 
     const Settings& s() const noexcept { return sound->s; }
     const Zone* z() const noexcept { return zone >= 0 && sound && zone < (int) sound->zones.size() ? &sound->zones[(size_t) zone] : nullptr; }
@@ -466,9 +455,12 @@ struct Engine::Impl
         discard (std::move (v.sound));
         discard (std::move (v.sample));
         discard (std::move (v.group));
+        discard (std::move (v.stitchTo));
+        discard (std::move (v.stitchFrom));
         v.sound = nullptr;
         v.sample = nullptr;
         v.group = nullptr;
+        v.stitchTo = v.stitchFrom = nullptr;
     }
 
     float random01() noexcept
@@ -643,6 +635,13 @@ struct Engine::Impl
         scopeFrom[(size_t) index].store (clockSamples, std::memory_order_relaxed);
         scopeSound[(size_t) index].store (idHash (sound->id), std::memory_order_relaxed);
         v.sample = sample;
+        v.audioKey = zone ? 0 : idHash (sound->audioId);
+        discard (std::move (v.stitchTo));
+        discard (std::move (v.stitchFrom));
+        v.stitchTo = v.stitchFrom = nullptr;
+        v.stitchDue = false;
+        v.xfade = 1;
+        v.xIn = v.xOut = -1;
         v.zone = o.zone;
         v.group = o.group;
         v.silent = o.silent;
@@ -751,8 +750,6 @@ struct Engine::Impl
         keyEnv (v.filtEnv, s.fEnvKey);
 
         v.kind = s.grain ? Voice::Kind::cloud : s.stretch ? Voice::Kind::stretch : Voice::Kind::sample;
-        v.seqStream = false;
-        v.seqK = 0;
         v.phaseLine.clear();
         v.grainCount = 0;
         v.nextStretch = 0;
@@ -967,15 +964,6 @@ struct Engine::Impl
                 if (! link.osc || link.osc->id == sound->id)
                     continue;
                 const auto& osc = *link.osc;
-                // SEQ: the note goes into the VCO's grid, which its one grain stream plays
-                if (seqOn (osc))
-                {
-                    Start o = base;
-                    o.group = sound;
-                    const int i = startSeqKey (link.osc, keyToGrid (osc.s, note, sound->s.rootNote) + link.transpose, velocity, o);
-                    if (i >= 0 && vcoCount < 16) vcoVoices[vcoCount++] = i;
-                    continue;
-                }
                 const float vNote = (link.track ? note - sound->s.rootNote + osc.s.rootNote : (float) link.fixedNote) + link.transpose;
                 const float vFrom = fromNote - sound->s.rootNote + osc.s.rootNote + link.transpose;
                 Start o = base;
@@ -997,13 +985,7 @@ struct Engine::Impl
             }
         }
         if (! asVco && base.midiNote >= 0) base.tuneSlot = tuneMain;
-        if (! asVco && seqOn (*sound))
-        {
-            const int i = startSeqKey (sound, keyToGrid (sound->s, note, sound->s.rootNote), velocity, base);
-            if (i >= 0 && n < outCap) out[n++] = i;
-        }
-        else
-            n = startOwn (sound, note, velocity, base, fromNote, hasFrom, out, outCap);
+        n = startOwn (sound, note, velocity, base, fromNote, hasFrom, out, outCap);
         for (int i = 0; i < vcoCount && n < outCap; ++i)
             out[n++] = vcoVoices[i];
         return n;
@@ -1183,218 +1165,6 @@ struct Engine::Impl
         }
     }
 
-    // ------------------------------------------------------------------------ the sequencer (board.ts, lib/play/seq.ts)
-    // A VCO with SEQ on (and grains) puts every note it gets into its grid: a key's note is a seqKey voice (so note-off,
-    // the pedal, HOLD and stealing let it go as they would a voice), a pad that's on (settings.seqGrid) one of `pads`
-    // here. One grain voice of the VCO, its stream, plays while any of them sounds, each grain the next of them in the
-    // order they went in (grainMath.ts seqPick).
-    static bool seqOn (const Sound& s) noexcept { return s.s.seq && s.s.grain; }
-    static void seqTimes (const Settings& s, double& attack, double& release) noexcept
-    {
-        // ENVELOPE ON's attack and release; off, notes come and go at once
-        attack = s.seqEnv ? (double) s.seqAttack : 0.0;
-        release = s.seqEnv ? (double) s.seqRelease : 0.0;
-    }
-    struct SeqPad { float semis { 0 }; double on { 0 }, off { inf }; uint32_t order { 0 }; };
-    struct SeqPads { uint64_t id { 0 }; std::array<SeqPad, 64> pads {}; int count { 0 }; };
-    std::array<SeqPads, 4> seqPads {};   // the playable patch's layers: its main voice and three VCOs
-
-    SeqPads* padsFor (uint64_t id, bool make) noexcept
-    {
-        for (auto& p : seqPads)
-            if (p.id == id) return &p;
-        if (make)
-            for (auto& p : seqPads)
-                if (p.id == 0) { p.id = id; p.count = 0; return &p; }
-        return nullptr;
-    }
-
-    /** board.ts seqKeyOn: a key's note into a VCO's grid. SINGLE NOTE: it takes over from the keys' notes before it. */
-    int startSeqKey (const SoundPtr& sound, float semis, float velocity, const Start& o) noexcept
-    {
-        if (sound->s.seqSingle)
-            for (auto& v : voices)
-                if (v.alive && v.kind == Voice::Kind::seqKey && sameSound (v.sound, sound)) releaseVoice (v);
-        const int index = allocateVoice();
-        if (index < 0) return -1;
-        auto& v = voices[(size_t) index];
-        v.alive = true;
-        ++v.generation;
-        v.order = nextOrder++;
-        v.sound = sound;
-        v.sample = nullptr;
-        v.zone = -1;
-        v.group = o.group;
-        v.silent = true;
-        v.taps = { { -1, -1, -1 } };
-        v.tapGen = {};
-        v.velocity = velocity;
-        v.level = 1;
-        v.midiNote = o.midiNote;
-        v.channel = o.channel;
-        v.noteBend = v.bendBefore = o.hasMpe ? o.noteBend : 0;
-        v.pressure = o.hasMpe ? o.pressure : pressure;
-        v.timbre = o.hasMpe ? o.timbre : timbre;
-        v.tuneSlot = v.tunePc = -1;
-        v.tuneCents = v.tuneTarget = 0;
-        v.t = 0;
-        v.releaseT = v.endT = v.killT = inf;
-        v.kind = Voice::Kind::seqKey;
-        v.seqStream = false;
-        v.seqSemis = semis;
-        v.glideFrom = v.glideTo = 0;
-        v.glideDur = 0;
-        v.ampEnv = { 0, 0, 1, 0 };
-        v.routeCount = 0;
-        return index;
-    }
-
-    /** A grid note's level now: a pad's, or a key's (velocity and all). */
-    double keyLevel (const Voice& k, double attack, double release) const noexcept
-    {
-        const double on = now - k.t;
-        const double off = std::isfinite (k.releaseT) ? on + k.releaseT : inf;
-        const auto& s = k.s();
-        return dsp::seqLevel (on, off, now, attack, release) * (1.0f - s.velAmount + s.velAmount * k.velocity);
-    }
-
-    /** grainMath.ts seqPick: the note the stream's next grain plays (semitones, level); false when none sounds. */
-    bool seqNext (Voice& st, float& semis, float& gain) noexcept
-    {
-        double attack, release;
-        seqTimes (st.s(), attack, release);
-        struct Cand { uint32_t order; float semis, gain; };
-        std::array<Cand, 128> c;
-        int n = 0;
-        if (const auto* p = padsFor (idHash (st.sound->id), false))
-            for (int i = 0; i < p->count && n < (int) c.size(); ++i)
-            {
-                const auto& pd = p->pads[(size_t) i];
-                const double lv = dsp::seqLevel (pd.on, pd.off, now, attack, release);
-                if (lv > 0) c[(size_t) n++] = { pd.order, pd.semis, (float) lv };
-            }
-        for (const auto& k : voices)
-        {
-            if (! k.alive || k.kind != Voice::Kind::seqKey || ! sameSound (k.sound, st.sound) || n >= (int) c.size()) continue;
-            const double lv = keyLevel (k, attack, release);
-            if (lv > 0) c[(size_t) n++] = { k.order, k.seqSemis, (float) lv };
-        }
-        if (n == 0) return false;
-        // in the order they went in
-        std::sort (c.begin(), c.begin() + n, [] (const Cand& a, const Cand& b) { return a.order < b.order; });
-        const auto& pick = c[(size_t) (st.seqK++ % (uint32_t) n)];
-        semis = pick.semis;
-        gain = pick.gain;
-        return true;
-    }
-
-    /** grains.worklet.ts seqNext: a grain's note: the stream's turn, or the voice's own note at full level. */
-    bool grainNote (Voice& v, float& semis, float& gain) noexcept
-    {
-        semis = 0;
-        gain = 1;
-        return ! v.seqStream || seqNext (v, semis, gain);
-    }
-
-    /** board.ts seqPads: the pads that are on as notes, a pad turned on in at the end, one turned off out. */
-    void seqSyncPads (const Sound& osc, SeqPads& p) noexcept
-    {
-        double attack, release;
-        seqTimes (osc.s, attack, release);
-        const auto& grid = osc.s.seqGrid;
-        for (int i = 0; i < p.count; ++i)
-        {
-            auto& pd = p.pads[(size_t) i];
-            if (std::isfinite (pd.off)) continue;
-            if (std::find (grid.begin(), grid.end(), pd.semis) == grid.end()) pd.off = now;
-        }
-        for (const float x : grid)
-        {
-            bool have = false;
-            for (int i = 0; i < p.count && ! have; ++i)
-                have = p.pads[(size_t) i].semis == x && ! std::isfinite (p.pads[(size_t) i].off);
-            if (! have && p.count < (int) p.pads.size()) p.pads[(size_t) p.count++] = { x, now, inf, nextOrder++ };
-        }
-        int w = 0;   // the faded go
-        for (int i = 0; i < p.count; ++i)
-            if (! std::isfinite (p.pads[(size_t) i].off) || now < p.pads[(size_t) i].off + release)
-                p.pads[(size_t) w++] = p.pads[(size_t) i];
-        p.count = w;
-    }
-
-    /** board.ts seqChanged / seqSync, once a chunk: each grid's stream plays while a note sounds and lets go after. */
-    void seqUpdate() noexcept
-    {
-        std::array<uint64_t, 4> live {};
-        int liveCount = 0;
-        const auto consider = [&] (const SoundPtr& osc, Start o)
-        {
-            if (! osc || ! seqOn (*osc) || liveCount >= (int) live.size()) return;
-            const uint64_t id = idHash (osc->id);
-            live[(size_t) liveCount++] = id;
-            auto* p = padsFor (id, true);
-            if (p) seqSyncPads (*osc, *p);
-            double attack, release;
-            seqTimes (osc->s, attack, release);
-            bool sounding = false;
-            for (int i = 0; p && i < p->count && ! sounding; ++i)
-                sounding = now < p->pads[(size_t) i].off + release;
-            for (const auto& k : voices)
-                sounding = sounding || (k.alive && k.kind == Voice::Kind::seqKey && sameSound (k.sound, osc));
-            Voice* stream = nullptr;
-            for (auto& v : voices)
-                if (v.alive && v.seqStream && v.held() && sameSound (v.sound, osc)) stream = &v;
-            if (sounding && ! stream)
-            {
-                o.semis = o.glideFrom = 0;   // the sample's own key: each grain adds its note's semitones
-                o.velocity = 1;
-                const int i = startVoice (osc, o);
-                if (i >= 0)
-                {
-                    auto& v = voices[(size_t) i];
-                    v.seqStream = true;
-                    v.endT = v.releaseT = inf;   // until the grid falls silent, whatever REPEAT says
-                }
-            }
-            else if (! sounding && stream)
-                releaseVoice (*stream);
-        };
-        if (perf && perf->playable)
-        {
-            const auto& sound = perf->playable;
-            for (const auto& link : sound->links)
-            {
-                if (! link.osc || link.osc->id == sound->id) continue;
-                Start o;
-                o.group = sound;
-                o.level = link.level;
-                o.detune = link.fine;
-                o.silent = ! link.audible;
-                consider (link.osc, o);
-            }
-            consider (sound, Start {});
-        }
-        const auto isLive = [&] (uint64_t id)
-        {
-            for (int i = 0; i < liveCount; ++i)
-                if (live[(size_t) i] == id) return true;
-            return false;
-        };
-        // a grid no longer played (SEQ off, another patch): its pads forgotten, its stream let go
-        for (auto& p : seqPads)
-            if (p.id != 0 && ! isLive (p.id)) p.id = 0, p.count = 0;
-        for (auto& v : voices)
-            if (v.alive && v.seqStream && v.held() && ! isLive (idHash (v.sound->id))) releaseVoice (v);
-    }
-
-    /** The sequencer's ALL NOTES OFF (board.ts seqClear): the keys' notes in a VCO's grid out (its pads are a setting). */
-    void seqClear (const SoundPtr& sound) noexcept
-    {
-        if (! sound) return;
-        for (auto& v : voices)
-            if (v.alive && v.kind == Voice::Kind::seqKey && sameSound (v.sound, sound)) releaseVoice (v);
-    }
-
     bool isMember (int ch) const noexcept
     {
         if (! perf || ! perf->mpe || ch < 0 || ch > 15) return false;
@@ -1505,7 +1275,7 @@ struct Engine::Impl
         if (perf->mono && ! isMember (channel))
         {
             // legato: slide the held voice (single-sample sounds; SFZ zones retrigger)
-            if (mono.count == 1 && sound->zones.empty() && ! seqOn (*sound))
+            if (mono.count == 1 && sound->zones.empty())
             {
                 auto& v = voices[(size_t) mono.refs[0].index];
                 if (v.alive && v.generation == mono.refs[0].generation && v.held() && sameSound (v.sound, sound))
@@ -1584,7 +1354,7 @@ struct Engine::Impl
                 if (first.midiNote == top) return;
                 const int from = lastNote;
                 lastNote = top;
-                if (mono.count == 1 && sound->zones.empty() && ! seqOn (*sound) && first.alive && first.generation == mono.refs[0].generation)
+                if (mono.count == 1 && sound->zones.empty() && first.alive && first.generation == mono.refs[0].generation)
                 {
                     auto& v = voices[(size_t) mono.refs[0].index];
                     v.glideFrom = v.semisAt (v.t);
@@ -1815,7 +1585,6 @@ struct Engine::Impl
             case Command::Type::panic:   panic(); return;
             case Command::Type::cc:      controlChange (c.cc, c.value, c.channel); return;
             case Command::Type::midi:    midi (c.bytes[0], c.bytes[1], c.bytes[2]); return;
-            case Command::Type::seqClear: if (perf) seqClear (perf->find (c.id)); return;
         }
     }
 
@@ -1837,6 +1606,21 @@ struct Engine::Impl
                 if (fresh != v.sound)
                 {
                     const bool sameZones = fresh->zones.size() == v.sound->zones.size();
+                    // the garden's new audio: stitched in (renderVoice), not the old clip's end
+                    if (fresh->stitch > 0 && v.zone < 0 && v.tableCycles == 0 && v.held() && v.xOut < 0
+                        && fresh->sample && fresh->sample->frames() >= 2 && idHash (fresh->audioId) != v.audioKey)
+                    {
+                        if (v.kind == Voice::Kind::sample)
+                        {
+                            discard (std::move (v.stitchTo));
+                            v.stitchTo = fresh->sample;
+                            v.stitchFade = fresh->stitch;
+                            v.stitchDue = true;   // at once: no waiting for the old clip's loop to come round
+                            v.audioKey = idHash (fresh->audioId);
+                        }
+                        else if (stitchGrains (v, fresh))
+                            continue;   // it fades out on the audio it had; the new voice has the new sound
+                    }
                     discard (std::move (v.sound));
                     v.sound = fresh;
                     if (! sameZones) v.zone = -1;
@@ -2103,20 +1887,12 @@ struct Engine::Impl
         const auto& s = v.s();
         const double sr = v.sample->rate;
         auto& sl = v.slots[(size_t) si];
-        float seqSemis, seqGain;
-        if (! grainNote (v, seqSemis, seqGain))
-        {
-            // the sequencer with nothing sounding: this slot sits its turn out
-            sl.on = false;
-            v.sizeVar[(size_t) side] = dsp::varSizeRatio (s.grainVarSize, variation (v, side), random01());
-            return;
-        }
         const double pos = grainAt (v, side, semis);
-        const double rate = grainRate (v, side, semis) * dsp::semisToRate (seqSemis);
+        const double rate = grainRate (v, side, semis);
         const bool back = s.grainBackwards;
         sl.step = (back ? -1.0 : 1.0) * rate * sr / engine.rate;
         sl.pos = pos * sr + sl.step * lead;
-        sl.amp = grainGain (v, side) * seqGain;
+        sl.amp = grainGain (v, side);
         sl.on = true;
         sl.e = dsp::skewExponent (skew (v, side));
         v.sizeVar[(size_t) side] = dsp::varSizeRatio (s.grainVarSize, variation (v, side), random01());
@@ -2197,22 +1973,14 @@ struct Engine::Impl
         {
             ls.due = false;
             old = cur;
-            float seqSemis = 0, seqGain = 1;
-            const bool noted = ! ending && grainNote (v, seqSemis, seqGain);
             if (ending)
                 cur.on = false;
-            else if (! noted)
-            {
-                // the sequencer with nothing sounding: silent, asking again at the next sample
-                cur.on = false;
-                ls.due = true;
-            }
             else
             {
                 // BACK: every segment backwards; otherwise REVERSE's chance
                 const int dir = s.grainBackwards ? -1 : random01() < s.grainReverse ? -1 : 1;
                 const double pos = grainAt (v, side, semis);
-                const double rate = grainRate (v, side, semis) * dsp::semisToRate (seqSemis);
+                const double rate = grainRate (v, side, semis);
                 const double dur = dsp::varSizeRatio (s.grainVarSize, variation (v, side), random01()) / f;
                 const double span = std::max (1.0, dur * rate * sr);
                 const double fade = dsp::loopFade (skew (v, side), span, old.on ? ls.room : 0.0);
@@ -2222,7 +1990,7 @@ struct Engine::Impl
                 cur.end = seg.end;
                 cur.dir = dir;
                 cur.step = rate * sr / engine.rate;
-                cur.amp = grainGain (v, side) * seqGain;
+                cur.amp = grainGain (v, side);
                 cur.u = 0;
                 cur.du = cur.step / std::max (1.0, std::abs (seg.end - seg.head));
                 ls.room = seg.room;
@@ -2301,19 +2069,16 @@ struct Engine::Impl
                     g.on = false;
                     continue;
                 }
-                float seqSemis, seqGain;
-                const bool noted = grainNote (v, seqSemis, seqGain);
                 const double pos = grainAt (v, side, semis);
                 const double ratio = dsp::varPitchRatio (s.grainVarPitch, variation (v, side), random01());
-                const double rate = grainRate (v, side, semis) * ratio * (noted ? dsp::semisToRate (seqSemis) : 1.0);
+                const double rate = grainRate (v, side, semis) * ratio;
                 const double dur = dsp::varSizeRatio (s.grainVarSize, variation (v, side), random01()) * dsp::cloudLength (i) / f;
                 const bool back = s.grainBackwards;
                 g.phase = 0;
                 g.phaseStep = ratio / (dur * engine.rate);
                 g.pos = pos * sr;
                 g.step = (back ? -1.0 : 1.0) * rate * sr / engine.rate;
-                // (the sequencer with nothing sounding: a silent grain, its turn sat out)
-                g.amp = noted ? grainGain (v, side) * seqGain : 0.0f;
+                g.amp = grainGain (v, side);
                 const double len = dur * rate / ratio * length;
                 report (v, at, back ? pos - len : pos, len, dur / ratio * length, rate, side ? 0.5f : -0.5f, std::min (1.0f, g.amp), side, back);
             }
@@ -2431,18 +2196,147 @@ struct Engine::Impl
     }
 
     /** Render one voice for `n` samples, adding to the buses. Returns false once it has ended. */
-    void renderVoice (Voice& v, int n, int bufferOffset) noexcept
+    /** A voice's clip from its settings and its audio (a pad's: not a zone, not a wavetable). */
+    static void setClip (Voice& v) noexcept
     {
-        if (v.kind == Voice::Kind::seqKey)
+        const auto& s = v.s();
+        const double dur = v.sample->duration(), sr = v.sample->rate;
+        const double a = std::min (s.clipIn, s.clipOut) * dur, b = std::max (s.clipIn, s.clipOut) * dur;
+        const double in = std::min (a, std::max (0.0, dur - 0.005));
+        const double out = std::max (in + 0.005, std::min (b, dur));
+        v.clipIn = v.loopStart = in * sr;
+        v.clipOut = v.loopEnd = out * sr;
+    }
+
+    /**
+     * The garden's stitch, at the start of a block (so a block reads one clip): a sample that wrapped with new audio
+     * waiting takes it now, as far into the new clip as it had got into the old loop, the old one fading out from
+     * where it is (mixOld); grains start their dip, or at its bottom take the new audio, every grain stopped.
+     */
+    void stitchBlock (Voice& v) noexcept
+    {
+        if (! v.stitchTo) return;
+        if (v.kind == Voice::Kind::sample)
         {
-            // a grid note: silent, gone once its release (the grid's, as it is now) has run out
-            v.t += n / engine.rate;
-            double attack, release;
-            seqTimes (v.s(), attack, release);
-            if (v.t >= v.killT || v.t >= v.releaseT + release) kill (v);
+            if (! v.stitchDue) return;
+            discard (std::move (v.stitchFrom));
+            v.stitchFrom = std::move (v.sample);
+            v.fromPos = v.pos;
+            v.fromLoopStart = v.loopStart;
+            v.fromLoopEnd = v.loopEnd;
+            v.sample = std::move (v.stitchTo);
+            v.stitchTo = nullptr;
+            setClip (v);
+            v.pos = v.clipIn;   // the new clip from its start, the old one looping on under it (mixOld)
+            v.xfade = 0;
+            v.xfadeStep = 1.0 / std::max (1.0, (double) v.stitchFade * engine.rate);
+            v.stitchDue = false;
+            v.monoSource = v.sample->channels.size() < 2 && v.stitchFrom->channels.size() < 2;
             return;
         }
+    }
+
+    /**
+     * The garden's stitch for grains: a second voice, `v` as it is (note, envelope, LFOs, routes, place in the note
+     * sets) but on `fresh`'s audio with its grains starting afresh, rising along a sine over STITCH while `v` falls
+     * along a cosine on the audio it had and then goes -- both heard on top of each other the whole way. False
+     * when there's no voice to spare (it carries on as it was).
+     */
+    bool stitchGrains (Voice& v, const SoundPtr& fresh) noexcept
+    {
+        const int from = (int) (&v - voices.data());
+        const int index = allocateVoice();
+        if (index < 0 || index == from || ! v.alive)
+            return false;
+        auto& c = voices[(size_t) index];
+        const uint32_t gen = c.generation + 1;
+        c = v;   // (a free slot holds no audio: kill let it go; its buffers keep their capacity)
+        c.generation = gen;
+        c.order = nextOrder++;
+        scopeFrom[(size_t) index].store (scopeFrom[(size_t) from].load (std::memory_order_relaxed), std::memory_order_relaxed);
+        scopeSound[(size_t) index].store (idHash (fresh->id), std::memory_order_relaxed);
+        c.sound = fresh;
+        c.sample = fresh->sample;
+        c.audioKey = idHash (fresh->audioId);
+        c.stitchTo = c.stitchFrom = nullptr;
+        c.stitchDue = false;
+        c.xfade = 1;
+        setClip (c);
+        c.pos = c.clipIn;
+        c.monoSource = c.kind != Voice::Kind::cloud && c.sample->channels.size() < 2;
+        // its grains from nothing, on the new clip
+        c.grainCount = 0;
+        c.nextStretch = 0;
+        c.cloudStarted = false;
+        c.phase = {};
+        for (auto& sl : c.slots) sl.on = false;
+        c.windowShape = -1;
+        c.sizeVar = { 1, 1 };
+        c.loopSides = {};
+        for (auto& side : c.cloudGrains)
+            for (auto& g : side) g.on = false;
+        c.cloudCount = 0;
+        c.cloudLive = {};
+        c.scanX = { 0, 0 };
+        const double step = 1.0 / std::max (1.0, (double) fresh->stitch * engine.rate);
+        c.xIn = 0;
+        c.xInStep = step;
+        c.xOut = -1;
+        v.xOut = 0;
+        v.xOutStep = step;
+        // wherever the old voice answers note-offs, the new one does too
+        const auto join = [&] (VoiceSet& set)
+        {
+            const int n = set.count;
+            for (int k = 0; k < n; ++k)
+                if (set.refs[(size_t) k].index == from && set.refs[(size_t) k].generation == v.generation)
+                    set.add (index, c.generation);
+        };
+        for (auto& set : poly) join (set);
+        join (mono);
+        buildRoutes (c);
+        return true;
+    }
+
+    /** A sample's old clip under the new one while the stitch crossfades: read, advanced (`step` frames at the
+     *  engine's rate, scaled to its own) and mixed in, equal power; gone once the fade is through. */
+    void mixOld (Voice& v, double step, float& xl, float& xr) noexcept
+    {
+        const auto& o = *v.stitchFrom;
+        const float* l = o.channels[0].data();
+        const float* r = o.channels.size() > 1 ? o.channels[1].data() : l;
+        const auto frames = (double) o.frames();
+        const auto i0 = (size_t) v.fromPos;
+        double next = (double) i0 + 1;
+        if (next >= v.fromLoopEnd) next -= v.fromLoopEnd - v.fromLoopStart;
+        float ol = 0, or_ = 0;
+        if ((double) i0 < frames && next >= 0 && next < frames)
+        {
+            const auto i1 = (size_t) next;
+            const auto f = (float) (v.fromPos - (double) i0);
+            ol = l[i0] + (l[i1] - l[i0]) * f;
+            or_ = r[i0] + (r[i1] - r[i0]) * f;
+        }
+        const auto x = (float) (v.xfade * dsp::pi * 0.5);
+        const float gNew = std::sin (x), gOld = std::cos (x);
+        xl = xl * gNew + ol * gOld;
+        xr = xr * gNew + or_ * gOld;
+        v.fromPos += step * o.rate / engine.rate;
+        if (v.fromLoopEnd > v.fromLoopStart && v.fromPos >= v.fromLoopEnd)
+            v.fromPos = v.fromLoopStart + std::fmod (v.fromPos - v.fromLoopStart, v.fromLoopEnd - v.fromLoopStart);
+        v.xfade += v.xfadeStep;
+        if (v.xfade >= 1)
+        {
+            discard (std::move (v.stitchFrom));
+            v.stitchFrom = nullptr;
+            v.monoSource = v.sample->channels.size() < 2;
+        }
+    }
+
+    void renderVoice (Voice& v, int n, int bufferOffset) noexcept
+    {
         const auto& s = v.s();
+        stitchBlock (v);
         const auto& smp = *v.sample;
         const float* chL = smp.channels[0].data();
         const float* chR = smp.channels.size() > 1 ? smp.channels[1].data() : chL;
@@ -2604,7 +2498,12 @@ struct Engine::Impl
                 const double step = v.kRate * dsp::semisToRate (semis) * v.speed * srRatio;
                 v.pos += step;
                 if (v.loops && v.pos >= v.loopEnd && v.loopEnd > v.loopStart)
+                {
                     v.pos = v.loopStart + std::fmod (v.pos - v.loopStart, v.loopEnd - v.loopStart);
+                    if (v.stitchTo) v.stitchDue = true;   // the boundary: the new clip takes over next block
+                }
+                if (v.stitchFrom)
+                    mixOld (v, step / srRatio, xl, xr);
                 if (! v.loops && (v.pos >= v.clipOut || v.pos >= frames - 1))
                     v.endT = std::min (v.endT, v.t);   // the sample ran out
             }
@@ -2643,6 +2542,23 @@ struct Engine::Impl
             v.ringPhase += 2.0 * dsp::pi * s.ringFreq / engine.rate;
             if (v.ringPhase > 2.0 * dsp::pi) v.ringPhase -= 2.0 * dsp::pi;
 
+            // the garden's grain stitch: the new voice rising, the old one falling, equal power (what a patch reads
+            // of it too, and a silent VCO's fade runs all the same)
+            if (v.xIn >= 0)
+            {
+                const auto g = (float) std::sin (std::min (1.0, v.xIn) * 0.5 * dsp::pi);
+                xl *= g;
+                xr *= g;
+                v.xIn += v.xInStep;
+                if (v.xIn >= 1) v.xIn = -1;
+            }
+            if (v.xOut >= 0)
+            {
+                const auto g = (float) std::cos (std::min (1.0, v.xOut) * 0.5 * dsp::pi);
+                xl *= g;
+                xr *= g;
+                v.xOut = std::min (1.0, v.xOut + v.xOutStep);
+            }
             // what a patch reads when this voice is one of its VCOs: the post-EQ (and ring) signal, as mono (and
             // the editor's live views, the same)
             const float mono = v.monoSource ? xl : 0.5f * (xl + xr);
@@ -2686,7 +2602,7 @@ struct Engine::Impl
             v.t += dt;
         }
 
-        const bool killed = v.killT < inf && v.t >= v.killT + v.killFade;
+        const bool killed = (v.killT < inf && v.t >= v.killT + v.killFade) || v.xOut >= 1;
         if (killed || (v.t >= v.endT && ! (v.kind != Voice::Kind::sample && grainsRinging (v))))
             kill (v);
     }
@@ -2723,7 +2639,6 @@ struct Engine::Impl
         for (auto& r : reverbs)
             for (int i = 0; i < n; ++i) r.inL[(size_t) (offset + i)] = r.inR[(size_t) (offset + i)] = 0;
 
-        seqUpdate();
         // VCO voices first: their taps feed the voices that follow
         int count = 0;
         for (auto& v : voices)

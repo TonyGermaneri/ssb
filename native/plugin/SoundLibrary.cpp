@@ -63,7 +63,23 @@ void SampleStore::put (const std::string& audioId, SamplePtr sample)
     if (! sample) return;
     {
         std::lock_guard<std::mutex> g (lock);
+        // what no sound holds any more (only this map does) leaves memory: a garden growing for hours sends a new
+        // sample every few loops, and the disk keeps them for a session reopened
+        const auto now = juce::Time::getMillisecondCounter();
+        for (auto it = memory.begin(); it != memory.end();)
+        {
+            const auto at = putAt.find (it->first);
+            const bool fresh = at != putAt.end() && now - at->second < 10000;
+            if (it->second.use_count() == 1 && ! fresh)
+            {
+                if (at != putAt.end()) putAt.erase (at);
+                it = memory.erase (it);
+            }
+            else
+                ++it;
+        }
         memory[audioId] = sample;
+        putAt[audioId] = now;
         absent.erase (audioId);
     }
     writer.addJob ([audioId, sample]
@@ -87,6 +103,18 @@ void SampleStore::put (const std::string& audioId, SamplePtr sample)
         }
         temp.moveFileTo (file);   // whole files only: a half-written sample is never read
     });
+}
+
+void SampleStore::forget (const std::string& audioId)
+{
+    {
+        std::lock_guard<std::mutex> g (lock);
+        memory.erase (audioId);
+        putAt.erase (audioId);
+        absent.insert (audioId);
+    }
+    // after any write still queued for it
+    writer.addJob ([audioId] { fileFor (audioId).deleteFile(); });
 }
 
 // =================================================================================== library

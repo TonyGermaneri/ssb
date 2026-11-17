@@ -1,28 +1,32 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, toRaw, watch } from 'vue'
-import { activeVoices, clock, getBuffer, audioDuration } from '../audio/engine'
+import { activeVoices, clock, getBuffer, audioDuration, readSound, SCOPE_SAMPLES, soundSounding, watchSound } from '../audio/engine'
 import { useBoard } from '../stores/board'
-import type { Sound } from '../types'
+import { lfoHz, type Sound } from '../types'
 import {
-  fxPoint, fxWrite, GRAIN_SYNC_BANDS, grainPoint, grainSyncPoint, grainSyncWrite, grainWrite, lfoPoint, lfoWrite, performPoint,
-  performWrite, pitchPoint, pitchWrite, SYNC_TOP, type Point,
+  echoDivisions, echoPoint, echoWrite, fxPoint, fxWrite, GRAIN_SYNC_BANDS, grainPoint, grainSyncPoint, grainSyncWrite, grainWrite,
+  lfoPoint, lfoWrite, performPoint, performWrite, pitchPoint, pitchWrite, SYNC_TOP, texturePoint, textureWrite, tonePoint,
+  toneWrite, type Point,
 } from '../lib/play/pads'
 import {
-  crosshair, drawClip, drawFx, drawGrain, drawLfo, drawPerformOverlay, drawPitch, drawSyncBands, grainLit, lfoOffset, type Colors,
-  type GrainDot,
+  crosshair, drawClip, drawEcho, drawFx, drawGrain, drawLfo, drawPerformOverlay, drawPitch, drawSyncBands, drawTexture, drawTone,
+  grainLit, lfoOffset, lfoSwing, type Colors, type GrainDot,
 } from '../lib/play/draw'
-import { keyToGrid } from '../lib/play/seq'
+import { pitchMultiplier } from '../lib/play/pads'
+import { SCALES } from '../lib/play/scales'
+import { AudioFeed, registerVco, shaderPrefs, stageStatus, type PadKind, type StagePad } from '../lib/play/shaders'
 import Knob from './Knob.vue'
-import SeqSection from './SeqSection.vue'
+import ShaderControls from './ShaderControls.vue'
 import LiveView from './LiveView.vue'
 import PlayPad from './PlayPad.vue'
 import WaveViewPicker from './WaveViewPicker.vue'
 import { cycleFillSeconds, tableCount } from '../audio/wavetable'
 
 /**
- * A VCO slot's Play view (SpaceCraft's performance page): the clip big, played by dragging where the grains fire
- * (left / right) and how loud (up / down), and four pads -- GRAIN, LFO, FILTER · REVERB, PITCH · RING
- * (lib/play/pads.ts says what each axis does). Everything here is the layer's own settings: the knobs show the same.
+ * A VCO slot's Play view: the clip big, played by dragging where the grains fire (left / right) and how loud (up /
+ * down), and seven pads -- GRAIN, LFO, FILTER · REVERB, PITCH · RING, TEXTURE, ECHO, TONE (lib/play/pads.ts says what each axis does; draw.ts
+ * how each looks). Everything here is the layer's own settings: the knobs show the same. Behind them all, the shader
+ * stage (lib/play/shaders.ts, mounted by the rack) reads this VCO's pads and audio through registerVco.
  *
  * Kept off the reactive path where it can be: a pointer's moves are held here and written to the settings once a
  * frame (the latest), its crosshair follows the pointer at once, and one frame loop repaints only the pictures whose
@@ -147,7 +151,7 @@ const lfoRouteOf = (r: Settings) => {
 }
 
 // ── the pads: where their crosshairs are, and what moving them writes ──
-type PadId = 'perform' | 'grain' | 'lfo' | 'fx' | 'pitch'
+type PadId = 'perform' | 'grain' | 'lfo' | 'fx' | 'pitch' | 'texture' | 'echo' | 'tone'
 /** the pitch pad's column: several give the same pitch, so it remembers which one you're in */
 let pitchX = 0.5
 /** each pad's pointer while it's held: the crosshair follows it exactly, ahead of the settings */
@@ -174,9 +178,12 @@ const writers: Record<PadId, (p: Point) => void> = {
   fx: (p) => put(s.value, fxWrite(p)),
   pitch: (p) => {
     pitchX = p.x
-    // SCALE: snapped to the sequencer's scale
-    put(s.value, pitchWrite(p, raw().pitchScale ? raw().seqScale : null))
+    // SCALE: snapped to the chosen scale
+    put(s.value, pitchWrite(p, raw().pitchScale ? (raw().pitchScaleId ?? 'major') : null))
   },
+  texture: (p) => put(s.value, textureWrite(p)),
+  echo: (p) => put(s.value, echoWrite(p, board.bpm, raw().delayMix)),
+  tone: (p) => put(s.value, toneWrite(p)),
 }
 function pointOf(id: PadId, r: Settings): Point {
   const h = held[id]
@@ -188,6 +195,9 @@ function pointOf(id: PadId, r: Settings): Point {
   if (id === 'grain') return r.grainSync ? grainSyncPoint(r, board.bpm) : grainPoint(r, sampleSeconds())
   if (id === 'lfo') return lfoPoint(r)
   if (id === 'fx') return fxPoint(r)
+  if (id === 'texture') return texturePoint(r)
+  if (id === 'echo') return echoPoint(r)
+  if (id === 'tone') return tonePoint(r)
   return pitchPoint(r, pitchX)
 }
 let touched = 0
@@ -211,6 +221,10 @@ const resets: Record<PadId, () => void> = {
   lfo: () => writers.lfo({ x: 0, y: lfoPoint(raw()).y }),
   fx: () => writers.fx({ x: 0.5, y: 0 }),
   pitch: () => writers.pitch({ x: 0.5, y: 0.5 }),
+  texture: () => put(s.value, { grainSpray: 0, grainDetune: 0 }),
+  // the echo out (its time and feedback kept)
+  echo: () => put(s.value, { delayMix: 0 }),
+  tone: () => put(s.value, { eqLow: 0, eqMid: 0, eqHigh: 0 }),
 }
 function reset(id: PadId) {
   delete pending[id]
@@ -250,13 +264,34 @@ const drawers = {
     drawPitch(g, w, h, { at, ring: r.ringMix ?? 0, tick: pitchTick, colors: colors.value, dpr })
     crosshair(g, w, h, at, colors.value, dpr)
   },
+  texture: (g: CanvasRenderingContext2D, w: number, h: number, dpr: number) => {
+    const at = pointOf('texture', raw())
+    drawTexture(g, w, h, { at, t: frozen, colors: colors.value, dpr })
+    crosshair(g, w, h, at, colors.value, dpr)
+  },
+  echo: (g: CanvasRenderingContext2D, w: number, h: number, dpr: number) => {
+    const r = raw()
+    const at = pointOf('echo', r)
+    const divs = echoDivisions(board.bpm)
+    const lit = divs.findIndex((d) => Math.abs(d.seconds - r.delayTime) < 1e-3)
+    drawEcho(g, w, h, { at, feedback: r.delayFeedback, mix: r.delayMix, divisions: divs.map((d) => d.x), lit, colors: colors.value, dpr })
+    crosshair(g, w, h, at, colors.value, dpr)
+  },
+  tone: (g: CanvasRenderingContext2D, w: number, h: number, dpr: number) => {
+    const r = raw()
+    drawTone(g, w, h, { s: r, colors: colors.value, dpr })
+    crosshair(g, w, h, pointOf('tone', r), colors.value, dpr)
+  },
 }
-type PadRef = { paint(): void } | undefined
+type PadRef = { paint(): void; el(): HTMLElement | undefined } | undefined
 const grainPad = ref<PadRef>()
 const lfoPad = ref<PadRef>()
 const fxPad = ref<PadRef>()
 const pitchPad = ref<PadRef>()
-const padRefs = { grain: grainPad, lfo: lfoPad, fx: fxPad, pitch: pitchPad }
+const texturePad = ref<PadRef>()
+const echoPad = ref<PadRef>()
+const tonePad = ref<PadRef>()
+const padRefs = { grain: grainPad, lfo: lfoPad, fx: fxPad, pitch: pitchPad, texture: texturePad, echo: echoPad, tone: tonePad }
 /** what each picture shows, as text: a pad repaints when its changes */
 function looks(id: keyof typeof padRefs, r: Settings): string {
   const at = pointOf(id, r)
@@ -267,6 +302,10 @@ function looks(id: keyof typeof padRefs, r: Settings): string {
     return `${p}|${amount}|${unipolar}|${JSON.stringify(r.mod.lfo2)}|${board.bpm}|${amount ? frozen : 0}`
   }
   if (id === 'fx') return `${p}|${r.filterType}|${r.cutoff}|${r.resonance}|${r.reverbMix}`
+  // the pollen drifts while it plays (a few times a second is plenty)
+  if (id === 'texture') return `${p}|${sounding.value ? Math.floor(frozen * 20) : 0}`
+  if (id === 'echo') return `${p}|${r.delayTime}|${r.delayFeedback}|${r.delayMix}|${board.bpm}`
+  if (id === 'tone') return `${p}|${r.eqLow}|${r.eqMid}|${r.eqHigh}`
   return `${p}|${r.ringMix ?? 0}|${pitchTick}`
 }
 const shown: Record<string, string> = {}
@@ -416,17 +455,71 @@ function grainBand(hz: number): number {
   return ((best + 0.5) / GRAIN_SYNC_BANDS.length) * SYNC_TOP
 }
 
-/** the keys held now, as the grid notes they put in this VCO's grid (lit on its pads) */
-const keyNotes = computed(() => {
-  if (!s.value.seq) return []
-  const patch = board.playable
-  if (!patch) return []
-  const slot = patch.id === props.sound.id ? null : board.tunedSlots(patch)?.[props.slot]
-  const transpose = slot?.transpose ?? 0
-  return board.heldNotes.map((n) => keyToGrid(s.value.seqScale, n, patch.settings.rootNote) + transpose)
+// ── the shader stage: this VCO's pads and audio, read once a frame ──
+const feed = new AudioFeed()
+const scopeBuf = new Float32Array(SCOPE_SAMPLES)
+let scopeSeq = 0
+function feedNow(): AudioFeed {
+  const n = readSound(props.sound.id, scopeBuf)
+  const fresh = n > 0 && n !== scopeSeq && soundSounding(props.sound.id)
+  if (n > 0) scopeSeq = n
+  feed.update(scopeBuf, fresh)
+  return feed
+}
+const logTo = (v: number, lo: number, hi: number) => clamp01(Math.log(Math.max(lo, v) / lo) / Math.log(hi / lo))
+function stagePads(): StagePad[] {
+  const r = raw()
+  const lfo = lfoRouteOf(r)
+  const now = frozen
+  const perfAt = pointOf('perform', r)
+  const el = (x: { value: PadRef }) => x.value?.el()
+  const pad = (kind: PadKind, e: HTMLElement | undefined, a: StagePad['a'], p: { x: number; y: number }): StagePad => ({ kind, el: e, a, p })
+  const grainAt = pointOf('grain', r)
+  const pitchAt = pointOf('pitch', r)
+  const texAt = pointOf('texture', r)
+  const echoAt = pointOf('echo', r)
+  const toneAt = pointOf('tone', r)
+  return [
+    pad('perform', perform.value, [perfAt.x, perfAt.y, lfo.amount > 0 ? clamp01(r.grainPos + lfoOffset(r.mod.lfo2, lfo.amount, board.bpm, now, lfo.unipolar)) : -1, sounding.value ? 1 : 0], perfAt),
+    pad('grain', el(grainPad), [r.grainLength ?? 1, grainAt.y, r.grainFreq, 0], grainAt),
+    pad('lfo', el(lfoPad), [lfo.amount, lfoHz(r.mod.lfo2, board.bpm), lfoSwing({ lfo: r.mod.lfo2, ...lfo, bpm: board.bpm, now }), 0], pointOf('lfo', r)),
+    pad('fx', el(fxPad), [pointOf('fx', r).x, r.reverbMix, logTo(r.resonance, 0.1, 20), r.reverbDamp ?? 0], pointOf('fx', r)),
+    pad('pitch', el(pitchPad), [pitchMultiplier(pitchAt), r.ringMix ?? 0, logTo(r.ringFreq ?? 440, 30, 3840), pitchAt.x], pitchAt),
+    pad('texture', el(texturePad), [texAt.x, texAt.y, 0, 0], texAt),
+    pad('echo', el(echoPad), [echoAt.x, echoAt.y, r.delayMix, 0], echoAt),
+    pad('tone', el(tonePad), [(toneAt.x - 0.5) * 2, (toneAt.y - 0.5) * 2, 0, 0], toneAt),
+  ]
+}
+const unregister = registerVco({
+  get slot() {
+    return props.slot
+  },
+  colors: () => colors.value,
+  audio: feedNow,
+  pads: stagePads,
+  // growing: the prompt playing, its words drifting behind this column (lib/play/words.ts)
+  prompt: () => {
+    const g = board.selectedPatch?.slots[props.slot]?.garden
+    return g?.on ? (g.history[0]?.prompt ?? '') : ''
+  },
+  area: () => root.value ?? undefined,
+})
+// the plugin sends its voices' audio only while something wants it
+let unwatch: (() => void) | null = null
+watch(
+  () => [shaderPrefs.on && stageStatus.available, props.sound.id] as const,
+  ([on]) => {
+    unwatch?.()
+    unwatch = on ? watchSound(props.sound.id) : null
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => {
+  unregister()
+  unwatch?.()
 })
 
-// PERFORM's settings (SpaceCraft's main panel's): STEREO PHASE and the sample's tuning
+// PERFORM's settings: STEREO PHASE, the sample's tuning, its shader
 const performSettings = ref(false)
 const fmtMs = (v: number) => (v > 0 ? `${v.toFixed(1)}ms` : 'OFF')
 const fmtSemis = (v: number) => (v ? `${v > 0 ? '+' : ''}${Math.round(v)}st` : 'ORIG')
@@ -434,6 +527,9 @@ const fmtCents = (v: number) => (v ? `${v > 0 ? '+' : ''}${Math.round(v)}c` : 'O
 const fmtSec = (v: number) => `${v.toFixed(1)}s`
 const fmtNum = (v: number) => v.toFixed(1)
 const fmtQ = (v: number) => v.toFixed(1)
+const pct = (v: number) => `${Math.round(v * 100)}%`
+const fmtMsS = (v: number) => (v < 1 ? `${Math.round(v * 1000)}ms` : `${v.toFixed(2)}s`)
+const fmtDb = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(1)}dB`
 </script>
 
 <template>
@@ -442,7 +538,7 @@ const fmtQ = (v: number) => v.toFixed(1)
       <div
         ref="perform"
         class="perform"
-        :title="s.wtSize > 0 ? 'A wavetable — drag: left / right moves through its waves (WT, and WT BLEND between them), up / down how loud (VOL). Its grains, when on, play the wave chosen' : 'Drag: left / right is where in the clip the grains fire (POS), up / down how loud (VOL). The squares are the grains as they play'"
+        :title="s.wtSize > 0 ? 'A wavetable — drag: left / right moves through its waves (WT, and WT BLEND between them), up / down how loud (VOL). Its grains, when on, play the wave chosen' : 'Drag: left / right is where in the clip the grains fire (POS), up / down how loud (VOL). The diamonds are the grains as they play'"
         @pointerdown="performDown"
         @pointermove="performMove"
         @pointerup="performUp"
@@ -451,24 +547,37 @@ const fmtQ = (v: number) => v.toFixed(1)
       >
         <LiveView v-if="live" class="under" :sound="sound" :hue="0" :height="Math.max(60, Math.round(performSize.h))" :width="Math.round(performSize.w)" readonly />
         <canvas ref="performCanvas" />
-        <button
-          class="grain-chip"
-          :class="{ on: s.grain }"
-          :title="s.grain ? 'Grains on: the pads play the sound as grains — click for the plain sample' : 'The sound plays as a plain sample: most of the pads need grains — click to turn them on'"
-          @pointerdown.stop
-          @click.stop="board.toggleGrain(sound.id)"
-        >
-          GRAIN {{ s.grain ? 'ON' : 'OFF' }}
-        </button>
+        <div class="chips" @pointerdown.stop>
+          <button
+            class="chip"
+            :class="{ on: s.grain }"
+            :title="s.grain ? 'Grains on: the pads play the sound as grains — click for the plain sample' : 'The sound plays as a plain sample: most of the pads need grains — click to turn them on'"
+            @click.stop="board.toggleGrain(sound.id)"
+          >
+            GRAIN {{ s.grain ? 'ON' : 'OFF' }}
+          </button>
+          <button
+            class="chip"
+            :class="{ on: shaderPrefs.on && stageStatus.available }"
+            :disabled="!stageStatus.available"
+            :title="stageStatus.available ? 'SHADERS: the light show behind every pad, driven by the sound and the pads (every VCO) — click to turn it on / off' : 'No WebGL2 here: the pads draw their pictures alone'"
+            @click.stop="shaderPrefs.on = !shaderPrefs.on"
+          >
+            GL {{ !stageStatus.available ? 'N/A' : shaderPrefs.on ? 'ON' : 'OFF' }}
+          </button>
+        </div>
         <WaveViewPicker class="picker" @pointerdown.stop />
         <span class="label">PERFORM</span>
-        <button class="perform-gear" :class="{ on: performSettings }" title="Settings: stereo phase and the sample's tuning" @pointerdown.stop @click.stop="performSettings = !performSettings">
+        <button class="perform-gear" :class="{ on: performSettings }" title="Settings: stereo phase, the sample's tuning, the shader" @pointerdown.stop @click.stop="performSettings = !performSettings">
           <v-icon size="12" icon="mdi-cog" />
         </button>
         <div v-if="performSettings" class="perform-settings" @pointerdown.stop @click.stop>
-          <Knob v-model="s.stereoPhase" label="PHASE" :min="0" :max="30" :default="0" :format="fmtMs" :size="30" />
-          <Knob v-model="s.tuneCoarse" label="COARSE" :min="-12" :max="12" :step="1" :default="0" bipolar :format="fmtSemis" :size="30" />
-          <Knob v-model="s.tuneFine" label="FINE" :min="-100" :max="100" :step="1" :default="0" bipolar :format="fmtCents" :size="30" />
+          <div class="knobs">
+            <Knob v-model="s.stereoPhase" label="PHASE" :min="0" :max="30" :default="0" :format="fmtMs" :size="30" />
+            <Knob v-model="s.tuneCoarse" label="COARSE" :min="-12" :max="12" :step="1" :default="0" bipolar :format="fmtSemis" :size="30" />
+            <Knob v-model="s.tuneFine" label="FINE" :min="-100" :max="100" :step="1" :default="0" bipolar :format="fmtCents" :size="30" />
+          </div>
+          <ShaderControls kind="perform" />
           <button class="done" @click="performSettings = false">DONE</button>
         </div>
       </div>
@@ -478,7 +587,7 @@ const fmtQ = (v: number) => v.toFixed(1)
           ref="grainPad"
           label="GRAIN"
           class="a-grain"
-          title="GRAIN — up / down: the grains' size (small and fast at the top, long and slow at the bottom); left / right: how much of each grain's turn it sounds (1 % at the far left, mostly silence; all of it at the right). Time runs along the rows like lines of text: a dash is a grain sounding, a gap silence. Double-click: reset"
+          title="GRAIN — up / down: the grains' size (small and fast at the top, long and slow at the bottom); left / right: how much of each grain's turn it sounds (1 % at the far left, mostly silence; all of it at the right). Time runs out along the spiral: a dash is a grain sounding, a gap silence. Double-click: reset"
           :color="colors.line"
           :draw="drawers.grain"
           square
@@ -489,21 +598,26 @@ const fmtQ = (v: number) => v.toFixed(1)
           <template #settings>
             <div class="row">
               <button class="opt" :class="{ on: !s.grainSync }" title="FREE: the grains' rate sweeps smoothly" @click="setSync(false)">FREE</button>
-              <button class="opt" :class="{ on: s.grainSync }" title="SYNC: the rows are tempo divisions (the top band stays free, for smooth fast grains)" @click="setSync(true)">SYNC</button>
+              <button class="opt" :class="{ on: s.grainSync }" title="SYNC: the heights are tempo divisions (the top band stays free, for smooth fast grains)" @click="setSync(true)">SYNC</button>
             </div>
             <div class="row">
               <button v-for="m in MODES" :key="m" class="opt" :class="{ on: s.grainMode === m }" @click="s.grainMode = m">{{ m.toUpperCase() }}</button>
             </div>
+            <div class="row">
+              <button class="opt" :class="{ on: !s.mpeGrain }" title="MPE: a note's sideways bend bends its pitch" @click="s.mpeGrain = false">MPE PITCH</button>
+              <button class="opt" :class="{ on: s.mpeGrain }" title="MPE: a note's sideways bend moves where its grains fire, over half the clip each way" @click="s.mpeGrain = true">MPE GRAIN</button>
+            </div>
             <div class="knobs">
               <Knob v-model="grainAttack" label="ATTACK" :min="0" :max="1" :default="1" :format="(v: number) => `${Math.round(v * 100)}%`" :size="26" />
             </div>
+            <ShaderControls kind="grain" />
           </template>
         </PlayPad>
         <PlayPad
           ref="lfoPad"
           label="LFO"
           class="a-lfo"
-          title="LFO — sweeps where the grains fire, forward of the position (never behind it): left / right how far (far left: off), up / down how fast (tempo divisions, slow at the bottom). It is the layer's LFO 2, routed to POS. Double-click: off"
+          title="LFO — sweeps where the grains fire, forward of the position (never behind it): left / right how far (far left: off), up / down how fast (tempo divisions, slow at the bottom). The pendulum swings as it does. It is the layer's LFO 2, routed to POS. Double-click: off"
           :color="colors.line"
           :draw="drawers.lfo"
           square
@@ -513,14 +627,17 @@ const fmtQ = (v: number) => v.toFixed(1)
         >
           <template #settings>
             <span class="head">SHAPE</span>
-            <button v-for="sh in SHAPES" :key="sh.id" class="opt" :class="{ on: s.mod.lfo2.shape === sh.id }" @click="s.mod.lfo2.shape = sh.id">{{ sh.label }}</button>
+            <div class="row">
+              <button v-for="sh in SHAPES" :key="sh.id" class="opt" :class="{ on: s.mod.lfo2.shape === sh.id }" @click="s.mod.lfo2.shape = sh.id">{{ sh.label }}</button>
+            </div>
+            <ShaderControls kind="lfo" />
           </template>
         </PlayPad>
         <PlayPad
           ref="fxPad"
           label="FILTER · REVERB"
           class="a-fx"
-          title="FILTER · REVERB — up / down: reverb; left / right: the filter, bypassed in the middle, a low-pass closing to the left, a high-pass opening to the right. Double-click: filter off, reverb off"
+          title="FILTER · REVERB — up / down: reverb (the ripples); left / right: the filter (the horizon), bypassed in the middle, a low-pass closing to the left, a high-pass opening to the right. Double-click: filter off, reverb off"
           :color="colors.line"
           :draw="drawers.fx"
           square
@@ -536,13 +653,14 @@ const fmtQ = (v: number) => v.toFixed(1)
               <Knob v-model="s.reverbDamp" label="DAMP" :min="0" :max="1" :default="0" :format="(v: number) => `${Math.round(v * 100)}%`" :size="26" />
               <Knob v-model="s.resonance" label="RES" :min="0.1" :max="20" curve="log" :default="0.7" :format="fmtQ" :size="26" />
             </div>
+            <ShaderControls kind="fx" />
           </template>
         </PlayPad>
         <PlayPad
           ref="pitchPad"
           label="PITCH · RING"
           class="a-pitch"
-          title="PITCH · RING — the middle: fine pitch (±2 semitones); the left: coarse (an octave up at the top, stopped half-way, backwards below); the right brings in the ring modulator, its carrier rising with you. The thick line is the original pitch, the red one stopped. Double-click: reset"
+          title="PITCH · RING — each needle points the way the sample plays there: right at its own pitch, tipping down towards ×2, up where it stops, left backwards. The middle is fine pitch (±2 semitones), the edges coarse; the right brings in the ring modulator (the haloed needles), its carrier rising with you. The lit needles play what the crosshair plays. Double-click: reset"
           :color="colors.line"
           :draw="drawers.pitch"
           square
@@ -553,11 +671,79 @@ const fmtQ = (v: number) => v.toFixed(1)
           <template #settings>
             <div class="row">
               <button class="opt" :class="{ on: !s.pitchScale }" title="FREE: the pitch moves smoothly" @click="s.pitchScale = false">FREE</button>
-              <button class="opt" :class="{ on: s.pitchScale }" title="SCALE: the pitch snaps to the sequencer's scale" @click="s.pitchScale = true">SCALE</button>
+              <button class="opt" :class="{ on: s.pitchScale }" title="SCALE: the pitch snaps to the scale below" @click="s.pitchScale = true">SCALE</button>
             </div>
+            <div class="row">
+              <select v-model="s.pitchScaleId" class="select" :disabled="!s.pitchScale" title="The scale SCALE snaps the pitch to (from the sample's own key)">
+                <option v-for="sc in SCALES" :key="sc.id" :value="sc.id">{{ sc.label }}</option>
+              </select>
+            </div>
+            <ShaderControls kind="pitch" />
           </template>
         </PlayPad>
-        <SeqSection class="seqcell" :sound="sound" :colors="colors" :key-notes="keyNotes" />
+        <PlayPad
+          ref="texturePad"
+          label="TEXTURE"
+          class="a-texture"
+          title="TEXTURE — the grain cloud's scatter: left / right SPRAY (each grain thrown up to 2 s from where it should fire), up / down DETUNE (the grains split, left lower and right higher, a shimmer that widens). Needs GRAIN on. Double-click: back to tight"
+          :color="colors.line"
+          :draw="drawers.texture"
+          square
+          @move="(p: Point) => moved('texture', p)"
+          @end="ended('texture')"
+          @reset="reset('texture')"
+        >
+          <template #settings>
+            <div class="knobs">
+              <Knob v-model="s.grainVariation" label="VARY" :min="0" :max="1" :default="0" :format="pct" :size="26" />
+              <Knob v-model="s.grainStereo" label="SPREAD" :min="0" :max="1" :default="0" :format="pct" :size="26" />
+              <Knob v-model="s.grainDensity" label="DENSITY" :min="2" :max="20" :step="1" :default="4" :format="(v: number) => `${Math.round(v)}`" :size="26" :class="{ dim: s.grainMode !== 'cloud' }" />
+              <Knob v-model="s.grainAmp" label="FLUX" :min="0" :max="1" :default="0" :format="pct" :size="26" />
+            </div>
+            <ShaderControls kind="texture" />
+          </template>
+        </PlayPad>
+        <PlayPad
+          ref="echoPad"
+          label="ECHO"
+          class="a-echo"
+          title="ECHO — this VCO's delay: left / right its time (20 ms to 1.5 s; it catches on the tempo's divisions, the ticks along the floor), up / down its feedback (how many repeats). Touching it gives an echo with no MIX some. Double-click: echo off"
+          :color="colors.line"
+          :draw="drawers.echo"
+          square
+          @move="(p: Point) => moved('echo', p)"
+          @end="ended('echo')"
+          @reset="reset('echo')"
+        >
+          <template #settings>
+            <div class="knobs">
+              <Knob v-model="s.delayMix" label="MIX" :min="0" :max="1" :default="0" :format="pct" :size="26" />
+              <Knob v-model="s.delayTime" label="TIME" :min="0.01" :max="2" curve="log" :default="0.25" :format="fmtMsS" :size="26" />
+              <Knob v-model="s.delayFeedback" label="FDBK" :min="0" :max="0.9" :default="0.35" :format="pct" :size="26" />
+            </div>
+            <ShaderControls kind="echo" />
+          </template>
+        </PlayPad>
+        <PlayPad
+          ref="tonePad"
+          label="TONE"
+          class="a-tone"
+          title="TONE — this VCO's EQ: left / right tilts it darker (more bass, less treble) or brighter, up / down pushes or scoops the mids; flat in the middle. Double-click: flat"
+          :color="colors.line"
+          :draw="drawers.tone"
+          @move="(p: Point) => moved('tone', p)"
+          @end="ended('tone')"
+          @reset="reset('tone')"
+        >
+          <template #settings>
+            <div class="knobs">
+              <Knob v-model="s.eqLow" label="BASS" :min="-12" :max="12" :step="0.5" :default="0" bipolar :format="fmtDb" :size="26" />
+              <Knob v-model="s.eqMid" label="MID" :min="-12" :max="12" :step="0.5" :default="0" bipolar :format="fmtDb" :size="26" />
+              <Knob v-model="s.eqHigh" label="TREBLE" :min="-12" :max="12" :step="0.5" :default="0" bipolar :format="fmtDb" :size="26" />
+            </div>
+            <ShaderControls kind="tone" />
+          </template>
+        </PlayPad>
       </div>
     </div>
   </div>
@@ -573,13 +759,17 @@ const fmtQ = (v: number) => v.toFixed(1)
   border-radius: 0 0 6px 6px;
   container-type: inline-size;
 }
-.grain-chip {
+.chips {
   position: absolute;
   top: 5px;
   left: 5px;
   z-index: 1;
-  padding: 2px 7px;
-  border-radius: 4px;
+  display: flex;
+  gap: 4px;
+}
+.chip {
+  padding: 2px 8px;
+  border-radius: 10px;
   font-family: 'Orbitron', sans-serif;
   font-size: 8px;
   font-weight: 900;
@@ -588,24 +778,28 @@ const fmtQ = (v: number) => v.toFixed(1)
   background: color-mix(in srgb, var(--lcd-bg) 75%, transparent);
   border: 1.5px solid color-mix(in srgb, var(--cross) 60%, transparent);
 }
-.grain-chip.on {
+.chip.on {
   color: var(--lcd-bg);
   background: var(--line);
   border-color: var(--line);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--line) 60%, transparent);
 }
-/* narrow (beside the list): the big view, then the pads two by two */
+.chip:disabled {
+  opacity: 0.5;
+}
+/* the big view on top, the four pads under it: two by two when narrow, a row of four when there's room */
 .main {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 .perform {
   position: relative;
-  /* short, so the four pads have the room */
-  height: 100px;
+  height: 110px;
   background: var(--lcd-bg);
-  border: 1.5px solid var(--line);
-  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  border-radius: 14px;
+  box-shadow: inset 0 0 18px color-mix(in srgb, var(--line) 18%, transparent);
   overflow: hidden;
   cursor: crosshair;
   touch-action: none;
@@ -630,34 +824,42 @@ const fmtQ = (v: number) => v.toFixed(1)
 }
 .perform .label {
   position: absolute;
-  left: 6px;
+  left: 50%;
   bottom: 4px;
+  transform: translateX(-50%);
   pointer-events: none;
+  padding: 0 6px;
+  border-radius: 6px;
   font-family: 'Orbitron', sans-serif;
   font-size: 7px;
   font-weight: 900;
-  letter-spacing: 0.14em;
-  color: color-mix(in srgb, var(--line) 70%, transparent);
-  text-shadow: 0 0 3px var(--lcd-bg);
+  letter-spacing: 0.3em;
+  color: var(--lcd-bg);
+  background: color-mix(in srgb, var(--line) 70%, transparent);
 }
 .pads {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-areas: 'grain lfo' 'fx pitch' 'seq seq';
-  gap: 6px;
+  grid-template-areas: 'grain lfo' 'fx pitch' 'texture echo' 'tone tone';
+  gap: 8px;
 }
 .a-grain { grid-area: grain; }
 .a-lfo { grid-area: lfo; }
 .a-fx { grid-area: fx; }
 .a-pitch { grid-area: pitch; }
-.seqcell {
-  grid-area: seq;
-  aspect-ratio: 2;
-  min-height: 0;
+.a-texture { grid-area: texture; }
+.a-echo { grid-area: echo; }
+/* TONE lies wide (the EQ's curve reads across), two pads' width and one's height */
+.a-tone {
+  grid-area: tone;
+  aspect-ratio: 2.06;
+}
+.knobs .dim {
+  opacity: 0.4;
 }
 .perform-gear {
   position: absolute;
-  right: 4px;
+  right: 6px;
   bottom: 4px;
   z-index: 1;
   display: grid;
@@ -665,7 +867,7 @@ const fmtQ = (v: number) => v.toFixed(1)
   width: 16px;
   height: 16px;
   padding: 0;
-  border-radius: 3px;
+  border-radius: 50%;
   color: color-mix(in srgb, var(--line) 70%, transparent);
   background: color-mix(in srgb, var(--lcd-bg) 55%, transparent);
   border: 1px solid color-mix(in srgb, var(--line) 35%, transparent);
@@ -683,17 +885,18 @@ const fmtQ = (v: number) => v.toFixed(1)
   flex-wrap: wrap;
   align-items: center;
   justify-content: safe center;
-  gap: 14px;
+  gap: 6px 14px;
   padding: 6px;
+  overflow: auto;
   cursor: default;
-  background: color-mix(in srgb, var(--lcd-bg) 88%, transparent);
+  background: color-mix(in srgb, var(--lcd-bg) 90%, transparent);
 }
 .perform-settings :deep(.label) {
   color: color-mix(in srgb, var(--line) 75%, transparent);
 }
 .perform-settings .done {
   padding: 1px 10px;
-  border-radius: 4px;
+  border-radius: 10px;
   font-family: 'VT323', monospace;
   font-size: 15px;
   color: color-mix(in srgb, var(--line) 75%, transparent);
@@ -707,25 +910,27 @@ const fmtQ = (v: number) => v.toFixed(1)
 .knobs :deep(.label) {
   color: color-mix(in srgb, var(--line) 75%, transparent);
 }
-/* wide (the rack alone): SpaceCraft's arrangement, the pads on the left and the big view beside them */
-@container (min-width: 620px) {
-  .main {
-    flex-direction: row;
-    align-items: stretch;
-  }
-  /* SpaceCraft's rows: GRAIN, LFO, FILTER · REVERB above; the SEQUENCER (two wide) and PITCH · RING below */
+.select {
+  appearance: auto;
+  max-width: 100%;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  color: color-mix(in srgb, var(--line) 80%, transparent);
+  background: color-mix(in srgb, var(--line) 10%, var(--lcd-bg));
+  border: 1px solid color-mix(in srgb, var(--line) 45%, transparent);
+}
+.select:disabled {
+  opacity: 0.5;
+}
+@container (min-width: 520px) {
   .pads {
-    flex: 0 0 auto;
-    width: min(58%, 660px);
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    grid-template-areas: 'grain lfo fx' 'seq seq pitch';
-  }
-  .seqcell {
-    aspect-ratio: auto;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-areas: 'grain lfo fx pitch' 'texture echo tone tone';
   }
   .perform {
-    flex: 1;
-    height: auto;
+    height: 150px;
   }
 }
 </style>

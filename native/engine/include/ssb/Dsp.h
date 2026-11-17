@@ -659,18 +659,6 @@ inline uint32_t impulseKey (float size, float decay, float damp = 0) noexcept
 /** The key's damp (impulseKey), to rebuild the impulse from it. */
 inline float impulseKeyDamp (uint32_t key) noexcept { return (float) ((key >> 20) & 31u) / 20.0f; }
 
-// ------------------------------------------------------------------------------------ the sequencer
-
-/** grainMath.ts seqLevel: a grid note's level `t` seconds into the engine, in at `on`, out at `off` (inf while in). */
-inline double seqLevel (double on, double off, double t, double attack, double release) noexcept
-{
-    if (t < on) return 0;
-    const auto rise = [&] (double u) { return attack > 0 ? std::clamp ((u - on) / attack, 0.0, 1.0) : 1.0; };
-    if (t < off) return rise (t);
-    if (! (release > 0)) return 0;
-    return rise (off) * std::max (0.0, 1.0 - (t - off) / release);
-}
-
 /** grainMath.ts MPE_GRAIN_SPAN: a note's full sideways bend moves its grains this share of the clip, each way. */
 constexpr double mpeGrainSpan = 0.5;
 

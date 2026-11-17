@@ -5,7 +5,6 @@ import { useBoard } from '../stores/board'
 import { midiNoteName, padHue } from '../lib/format'
 import { hueColor, paintScore, paintWave, type Box } from '../lib/gridPaint'
 import DataGrid, { type GridRow } from './DataGrid.vue'
-import ControlPanel from './ControlPanel.vue'
 import { TRIGGER_MODES, type Sound, type SoundSettings, type TriggerMode } from '../types'
 
 const board = useBoard()
@@ -210,7 +209,7 @@ const painters = {
   },
   sim: (ctx: CanvasRenderingContext2D, box: Box, row: GridRow) => paintScore(ctx, box, board.soundScores?.get(row.id), board.theme),
 }
-/** ☰: the control panel beside (or under) the grid shows the selected sound; ☰ on its row again puts it away */
+/** ☰: the SAMPLE PLAYER above the list shows the selected sound; ☰ on its row again puts it away */
 const panelShown = computed(() => board.master.gridPanel && !!board.selected)
 const buttons = computed(() => {
   const to = board.similarTo.sounds
@@ -221,12 +220,8 @@ const buttons = computed(() => {
 })
 function onButton(id: string, column: string) {
   if (column === 'like') return board.similarTo.sounds?.kind === 'item' && board.similarTo.sounds.id === id ? board.clearSimilar('sounds') : board.showSimilar(id, 'sounds')
-  if (column !== 'menu') return
-  if (panelShown.value && board.master.selectedId === id) board.master.gridPanel = false
-  else {
-    board.select(id)
-    board.master.gridPanel = true
-  }
+  // ☰: the SAMPLE PLAYER above the list (App.vue)
+  if (column === 'menu') board.togglePanel(id)
 }
 /** behind the rows: the selected sound's waveform */
 const backdrop = computed(() => (board.selected ? { peaks: board.peaksOf(board.selected.audioId), hue: hueOf(board.selected) } : null))
@@ -260,24 +255,6 @@ const backdrop = computed(() => (board.selected ? { peaks: board.peaksOf(board.s
     @toggle="onToggle"
     @button="onButton"
     @move="board.move"
-    slot-above
-  >
-    <template #default>
-      <!-- the selected sound's panel, above the grid -->
-      <aside v-if="panelShown && board.selected" class="side above">
-        <ControlPanel :key="board.selected.id" :sound="board.selected" :hue="hueOf(board.selected)" wide />
-      </aside>
-    </template>
-  </DataGrid>
+  />
 </template>
 
-<style scoped>
-.side {
-  flex: none;
-  overflow-y: auto;
-  scrollbar-width: thin;
-}
-.side.above {
-  max-height: 55%;
-}
-</style>
