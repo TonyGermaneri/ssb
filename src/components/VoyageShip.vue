@@ -59,7 +59,18 @@ export interface ShipGarden {
   lfoAt: (kind: PadId, phase: number) => Point | null
   lfoPhase: (kind: PadId) => number
 }
-const props = defineProps<{ era: Era; vcos: (ShipVco | null)[]; beaming: boolean[] }>()
+const props = defineProps<{
+  era: Era
+  vcos: (ShipVco | null)[]
+  beaming: boolean[]
+  /**
+   * one layer only (VoyageView stacks three, each its own compositing layer, so the hull's art is painted once
+   * rather than every frame its parts move): the parts behind the hull, the hull, or the parts on it and the pads
+   */
+  only?: 'back' | 'hull' | 'front' | 'overlay'
+}>()
+const layers = computed(() => (props.only === 'overlay' ? [] : props.only ? [props.only] : ['back', 'hull', 'front']))
+const defParts = computed(() => props.era.parts.filter((p) => !props.only || (props.only === 'back' ? p.back : props.only === 'front' ? !p.back : false)))
 const emit = defineEmits<{ hover: [Part | null]; settings: [Part, number, number]; grab: [boolean] }>()
 
 const root = ref<SVGGElement>()
@@ -835,7 +846,8 @@ defineExpose({ frame, root: () => root.value })
       <pattern id="vy-scan" patternUnits="userSpaceOnUse" width="8" height="6">
         <rect width="8" height="2" fill="#000" opacity="0.35" />
       </pattern>
-      <template v-for="p in era.parts" :key="p.id">
+      <!-- each part's moving defs, only in the layer that draws it (the hull's layer never changes, so it's never repainted) -->
+      <template v-for="p in defParts" :key="p.id">
         <pattern v-if="p.form === 'funnel'" :id="`vy-str-${p.id}`" :ref="bind(p, 'pat')" patternUnits="userSpaceOnUse" width="36" height="36">
           <rect width="36" height="36" :fill="plain ? pal(p).main : pal(p).hi" />
           <rect width="36" height="18" :fill="plain ? pal(p).main : pal(p).alt" :opacity="plain ? 0 : 1" />
@@ -847,8 +859,8 @@ defineExpose({ frame, root: () => root.value })
     </defs>
 
     <!-- the era's art under everything (shadows under the parts behind the hull) -->
-    <component :is="era.underlay" v-if="era.underlay" :era="era" class="overlay" />
-    <template v-for="layer in ['back', 'hull', 'front']" :key="layer">
+    <component :is="era.underlay" v-if="era.underlay && (!only || only === 'back')" :era="era" class="overlay" />
+    <template v-for="layer in layers" :key="layer">
       <!-- the era's own art, between the parts behind it and the parts on it -->
       <component :is="era.hull" v-if="layer === 'hull'" :era="era" />
       <g v-for="p in layer === 'back' ? back : layer === 'front' ? front : []" v-else :key="p.id" class="part" :class="{ dormant: !vcos[p.vco] }">
@@ -1061,10 +1073,10 @@ defineExpose({ frame, root: () => root.value })
     </template>
 
     <!-- the era's detail over its parts (panel lines, rivets, glare): never in the pointer's way -->
-    <component :is="era.overlay" v-if="era.overlay" :era="era" class="overlay" />
+    <component :is="era.overlay" v-if="era.overlay && (!only || only === 'overlay')" :era="era" class="overlay" />
 
     <!-- ── the pads themselves: each part's rectangle, over everything ── -->
-    <g class="hits">
+    <g v-if="!only || only === 'front'" class="hits">
       <g
         v-for="p in era.parts"
         :key="p.id"
@@ -1149,6 +1161,7 @@ defineExpose({ frame, root: () => root.value })
   opacity: 0.35;
 }
 .hit {
+  pointer-events: all;
   cursor: grab;
   touch-action: none;
 }

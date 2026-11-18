@@ -367,8 +367,13 @@ const steam = [
     <path :d="BAND_LINE" fill="none" stroke="#ffe7a3" stroke-width="4" transform="translate(0 -9)" opacity="0.8" />
     <path :d="BAND_LINE" fill="none" stroke="#2a1804" stroke-width="2" transform="translate(0 12)" opacity="0.8" />
     <path :d="BAND_LINE" fill="none" stroke="url(#tx-brushed)" :stroke-width="B * 2" opacity="0.35" style="mix-blend-mode: overlay" />
+    <!-- the portholes' glow, flickering in three groups (one animated element each, not one per porthole) -->
+    <g v-for="k in 3" :key="`pg${k}`" class="flicker" :style="{ animationDelay: `${-k * 0.9}s` }">
+      <template v-for="p in portholes" :key="`pgl${p.i}`">
+        <ellipse v-if="p.i % 3 === k - 1" :cx="f(p.x)" :cy="f(p.y)" :rx="f(p.rx * 2.6)" :ry="f(p.ry * 2.2)" fill="url(#h50-portGlow)" />
+      </template>
+    </g>
     <g v-for="p in portholes" :key="`p${p.i}`">
-      <ellipse :cx="f(p.x)" :cy="f(p.y)" :rx="f(p.rx * 2.6)" :ry="f(p.ry * 2.2)" fill="url(#h50-portGlow)" class="flicker" :style="{ animationDelay: `${-rnd(p.i) * 3}s` }" />
       <ellipse :cx="f(p.x)" :cy="f(p.y)" :rx="f(p.rx + 4)" :ry="p.ry + 4" fill="url(#h50-brass)" stroke="#1a0e04" stroke-width="1.2" />
       <ellipse :cx="f(p.x)" :cy="f(p.y)" :rx="f(p.rx)" :ry="p.ry" fill="url(#h50-port)" stroke="#0a0604" stroke-width="1.5" />
       <ellipse :cx="f(p.x - p.rx * 0.3)" :cy="f(p.y - 4)" :rx="f(p.rx * 0.35)" ry="2.5" fill="#fff" opacity="0.7" />
@@ -495,8 +500,10 @@ const steam = [
       <path :d="d" fill="none" stroke="#0a0604" stroke-width="2" />
       <path :d="d" fill="none" stroke="#ffe0b0" stroke-width="1" opacity="0.18" transform="translate(0 2)" />
     </g>
+    <g class="flicker" style="animation-delay: -1.3s">
+      <circle v-for="(p, i) in skirtPorts" :key="`spg${i}`" :cx="p.x" :cy="p.y" r="17" fill="url(#h50-portGlow)" />
+    </g>
     <g v-for="(p, i) in skirtPorts" :key="`sp${i}`">
-      <circle :cx="p.x" :cy="p.y" r="17" fill="url(#h50-portGlow)" class="flicker" :style="{ animationDelay: `${-i * 0.7}s` }" />
       <circle :cx="p.x" :cy="p.y" r="9" fill="url(#h50-brass)" stroke="#1a0e04" stroke-width="1" />
       <circle :cx="p.x" :cy="p.y" r="6" fill="url(#h50-port)" />
       <circle :cx="p.x - 2" :cy="p.y - 2.5" r="1.6" fill="#fff" opacity="0.8" />
@@ -600,7 +607,7 @@ const steam = [
 .steam circle {
   transform-box: fill-box;
   transform-origin: center;
-  animation: steam 5s ease-out infinite;
+  animation: steam 5s steps(60) infinite;
   opacity: 0;
 }
 @keyframes steam {
@@ -618,7 +625,7 @@ const steam = [
 }
 .quiver {
   transform-origin: 0 0;
-  animation: quiver 0.2s ease-in-out infinite alternate;
+  animation: quiver 0.2s steps(2) infinite alternate;
 }
 @keyframes quiver {
   from {
@@ -629,7 +636,7 @@ const steam = [
   }
 }
 .flicker {
-  animation: flicker 2.6s ease-in-out infinite alternate;
+  animation: flicker 2.6s steps(7) infinite alternate;
 }
 @keyframes flicker {
   0%,

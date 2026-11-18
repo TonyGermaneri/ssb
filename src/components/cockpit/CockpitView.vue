@@ -77,23 +77,28 @@ function io(vco: number): PointIO | null {
   }
 }
 const controls = computed(() => props.design.controls.filter((c) => props.vcos[c.vco]))
-/** each control's value(s), refreshed a frame at a time (an LFO turns its knob) */
-const vals = reactive<number[]>([])
-const vals2 = reactive<number[]>([])
+/**
+ * Each control's value(s), refreshed a frame at a time (an LFO turns its knob) -- an object of its own per control,
+ * handed to it whole, so a knob that moves re-renders that knob alone, not the cockpit round it.
+ */
+type Val = { v: number; v2: number }
+const vals = computed(() => controls.value.map(() => reactive<Val>({ v: 0.5, v2: 0.5 })))
 function readAll() {
+  const vs = vals.value
   controls.value.forEach((c, i) => {
     const x = io(c.vco)
     if (!x) return
     const d = paramOf(c.param)
     const p = x.read(d.pad)
     const v = p[d.axis]
-    if (vals[i] === undefined || Math.abs(vals[i] - v) > 0.0004) vals[i] = v
-    if (c.kind === 'stick' && (vals2[i] === undefined || Math.abs(vals2[i] - p.y) > 0.0004)) vals2[i] = p.y
+    const o = vs[i]
+    if (Math.abs(o.v - v) > 0.0004) o.v = v
+    if (c.kind === 'stick' && Math.abs(o.v2 - p.y) > 0.0004) o.v2 = p.y
   })
 }
 /** a garden counter's digits: the picked ring's steps, or its hits */
 function counterOf(c: ControlSpec): string {
-  void vals[controls.value.indexOf(c)]
+  void vals.value[controls.value.indexOf(c)]?.v
   const r = props.vcos[c.vco]?.garden.ring()
   if (!r) return '--'
   return String(c.param === 'steps' ? r.n : r.k)
@@ -132,7 +137,7 @@ function drawScreen(i: number) {
   const c = screenEls[i]
   const v = props.vcos[sc.vco]
   if (!c || !v) return
-  const dpr = Math.min(2, window.devicePixelRatio || 1)
+  const dpr = Math.min(1.25, window.devicePixelRatio || 1)
   const w = Math.max(1, Math.round(sc.w * fit.value.k * dpr))
   const h = Math.max(1, Math.round(sc.h * fit.value.k * dpr))
   if (c.width !== w || c.height !== h) {
@@ -225,6 +230,7 @@ let raf = 0
 let last = 0
 let t = 0
 const levels = [0, 0, 0]
+let frameNo = 0
 function loop(now: number) {
   raf = requestAnimationFrame(loop)
   const dt = Math.min(0.05, last ? (now - last) / 1000 : 0.016)
@@ -244,7 +250,8 @@ function loop(now: number) {
   for (const r of field.step(dt, ins, inGlass)) emit('catch', r.vco, r.payload)
   // the controls, the screens, the needles
   readAll()
-  props.design.screens.forEach((_, i) => drawScreen(i))
+  // (the screens at 30 frames a second: half the canvas work, and a CRT doesn't need more)
+  if ((frameNo = (frameNo + 1) % 2) === 0) props.design.screens.forEach((_, i) => drawScreen(i))
   props.design.gauges.forEach((gd, i) => {
     const target = gd.show === 'level' ? levels[gd.vco] : gd.show === 'beam' ? (field.beaming(gd.vco) ? 1 : props.open(gd.vco) ? 0.6 : 0.1) : Math.min(1, (props.vcos[gd.vco]?.pads.raw().grainFreq ?? 0) / 60)
     needle[i] += (target - needle[i]) * Math.min(1, dt * 9)
@@ -316,7 +323,8 @@ function resize() {
   size.w = el.clientWidth
   size.h = el.clientHeight
   const dpr = Math.min(2, window.devicePixelRatio || 1)
-  for (const [c, k] of [[aheadEl.value, 0.85 * dpr], [airEl.value, 0.5]] as const) {
+  // (the stars and rocks at 0.6× the device's pixels: soft enough to be behind glass, a third of the fill)
+  for (const [c, k] of [[aheadEl.value, 0.6 * dpr], [airEl.value, 0.4]] as const) {
     if (!c) continue
     c.width = Math.max(1, Math.round(size.w * k))
     c.height = Math.max(1, Math.round(size.h * k))
@@ -355,7 +363,7 @@ const tintCss = computed(() => `rgb(${atmo.value.tint.map((v) => Math.round(v * 
     </div>
 
     <div class="stage" :style="stageStyle">
-      <svg ref="svg" class="art" :width="STAGE.w" :height="STAGE.h" :viewBox="`0 0 ${STAGE.w} ${STAGE.h}`">
+      <svg class="art still" :width="STAGE.w" :height="STAGE.h" :viewBox="`0 0 ${STAGE.w} ${STAGE.h}`">
         <defs>
           <TextureDefs />
           <pattern id="cp-knurl" patternUnits="userSpaceOnUse" width="6" height="6">
@@ -404,13 +412,6 @@ const tintCss = computed(() => `rgb(${atmo.value.tint.map((v) => Math.round(v * 
           <rect :x="sc.x - 10" :y="sc.y - 10" :width="sc.w + 20" :height="sc.h + 20" :rx="(sc.r ?? 6) + 8" :fill="skin.metal[0]" :stroke="skin.ink" :stroke-width="skin.stroke" />
           <rect :x="sc.x - 6" :y="sc.y - 6" :width="sc.w + 12" :height="sc.h + 12" :rx="(sc.r ?? 6) + 5" fill="none" :stroke="skin.metal[2]" stroke-width="1.5" opacity="0.5" />
         </g>
-        <!-- the intakes: where a caught rock goes down -->
-        <g v-for="it in design.intakes" :key="`i${it.vco}`" :transform="`translate(${it.x} ${it.y})`" class="intake" :class="{ open: open(it.vco) && vcos[it.vco] }">
-          <circle r="24" :fill="skin.metal[0]" :stroke="skin.ink" :stroke-width="skin.stroke" />
-          <circle r="18" fill="#000" />
-          <circle r="14" fill="none" :stroke="colorOf(it.vco)" stroke-width="3" class="ring" />
-          <circle r="5" :fill="colorOf(it.vco)" class="core" />
-        </g>
         <!-- the gauges: a paper dial in the old eras, a dark one with a lit needle in the new -->
         <g v-for="(gd, i) in design.gauges" :key="`g${i}`" :transform="`translate(${gd.x} ${gd.y})`" :style="{ color: colorOf(gd.vco) }">
           <circle :r="gd.r + 6" :fill="skin.metal[1]" :stroke="skin.ink" :stroke-width="skin.stroke" />
@@ -433,20 +434,30 @@ const tintCss = computed(() => `rgb(${atmo.value.tint.map((v) => Math.round(v * 
           />
           <path v-if="paperGauge" :d="`M ${Math.sin(Math.PI / 4) * gd.r * 0.8} ${-Math.cos(Math.PI / 4) * gd.r * 0.8} A ${gd.r * 0.8} ${gd.r * 0.8} 0 0 1 ${Math.sin(Math.PI / 3) * gd.r * 0.8} ${-Math.cos(Math.PI / 3) * gd.r * 0.8}`" stroke="#c0281e" stroke-width="5" fill="none" />
           <text y="14" text-anchor="middle" class="glabel" :font-family="skin.font" :fill="paperGauge ? '#2a2018' : colorOf(gd.vco)">{{ gd.label ?? (gd.show === 'level' ? `VCO ${gd.vco + 1}` : gd.show === 'beam' ? 'BEAM' : 'GRAIN') }}</text>
+        </g>
+      </svg>
+      <!-- what moves: a layer of its own, so a turning knob doesn't repaint the art under it -->
+      <svg ref="svg" class="art live" :width="STAGE.w" :height="STAGE.h" :viewBox="`0 0 ${STAGE.w} ${STAGE.h}`">
+        <!-- the intakes: where a caught rock goes down -->
+        <g v-for="it in design.intakes" :key="`i${it.vco}`" :transform="`translate(${it.x} ${it.y})`" class="intake" :class="{ open: open(it.vco) && vcos[it.vco] }">
+          <circle r="24" :fill="skin.metal[0]" :stroke="skin.ink" :stroke-width="skin.stroke" />
+          <circle r="18" fill="#000" />
+          <circle r="14" fill="none" :stroke="colorOf(it.vco)" stroke-width="3" class="ring" />
+          <circle r="5" :fill="colorOf(it.vco)" class="core" />
+        </g>
+        <g v-for="(gd, i) in design.gauges" :key="`n${i}`" :transform="`translate(${gd.x} ${gd.y})`" :style="{ color: colorOf(gd.vco) }">
           <g :ref="(el) => (needleEls[i] = el as SVGGElement)" transform="rotate(-60)">
             <path :d="`M -2 6 L 0 ${-gd.r * 0.86} L 2 6 Z`" :fill="paperGauge ? '#1a0e08' : colorOf(gd.vco)" :class="{ lit: !paperGauge }" />
           </g>
           <circle r="4" :fill="skin.metal[2]" stroke="#000" stroke-width="1" />
           <ellipse :cx="-gd.r * 0.3" :cy="-gd.r * 0.45" :rx="gd.r * 0.55" :ry="gd.r * 0.25" fill="#fff" :opacity="paperGauge ? 0.25 : 0.1" />
         </g>
-
         <CockpitControl
           v-for="(c, i) in controls"
           :key="`${c.vco}-${c.param}`"
           :spec="c"
           :skin="skin"
-          :value="vals[i] ?? 0.5"
-          :value2="vals2[i]"
+          :src="vals[i]"
           :stops="stopsFor(c)"
           :readout="c.kind === 'counter' ? counterOf(c) : undefined"
           :color="colorOf(c.vco)"
@@ -457,7 +468,10 @@ const tintCss = computed(() => `rgb(${atmo.value.tint.map((v) => Math.round(v * 
           @hover="hover"
         />
 
-        <g v-if="design.front" class="front" filter="url(#cp-blur-near)">
+      </svg>
+      <!-- nearest the eye, out of focus: its own layer too (a blur re-rendered on every repaint is dear) -->
+      <svg v-if="design.front" class="art near" :width="STAGE.w" :height="STAGE.h" :viewBox="`0 0 ${STAGE.w} ${STAGE.h}`">
+        <g class="front" filter="url(#cp-blur-near)">
           <component :is="design.front" :design="design" :skin="skin" />
         </g>
       </svg>
@@ -528,6 +542,8 @@ const tintCss = computed(() => `rgb(${atmo.value.tint.map((v) => Math.round(v * 
   position: absolute;
   inset: 0;
   overflow: visible;
+  /* each its own compositing layer: the still art is painted once, not every frame */
+  will-change: transform;
 }
 .art :deep(*) {
   pointer-events: none;
@@ -552,7 +568,7 @@ const tintCss = computed(() => `rgb(${atmo.value.tint.map((v) => Math.round(v * 
 .intake.open .ring {
   opacity: 1;
   filter: drop-shadow(0 0 4px currentColor);
-  animation: breathe 2s ease-in-out infinite;
+  animation: breathe 2s steps(12) infinite;
 }
 .intake .core {
   opacity: 0.3;
@@ -607,7 +623,7 @@ const tintCss = computed(() => `rgb(${atmo.value.tint.map((v) => Math.round(v * 
   background: repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.06) 0 1px, transparent 1px 3px), linear-gradient(160deg, rgba(255, 255, 255, 0.25), transparent 40%);
 }
 .screen.kaleido canvas {
-  animation: hue 12s linear infinite;
+  animation: hue 12s steps(48) infinite;
 }
 @keyframes hue {
   to {
@@ -623,8 +639,7 @@ const tintCss = computed(() => `rgb(${atmo.value.tint.map((v) => Math.round(v * 
   background: radial-gradient(ellipse at 50% 45%, transparent 45%, rgba(0, 0, 0, 0.55) 80%, rgba(0, 0, 0, 0.9) 110%);
 }
 .scan {
-  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.18) 0 1px, transparent 1px 3px);
-  mix-blend-mode: multiply;
+  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.14) 0 1px, transparent 1px 3px);
 }
 .tint {
   mix-blend-mode: soft-light;
@@ -632,7 +647,6 @@ const tintCss = computed(() => `rgb(${atmo.value.tint.map((v) => Math.round(v * 
 .grain {
   background-size: 256px 256px;
   mix-blend-mode: overlay;
-  animation: grain 0.5s steps(5) infinite;
 }
 @keyframes grain {
   0% {

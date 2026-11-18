@@ -325,7 +325,7 @@ const buttons = [...N(9).map((i) => belly(0.12 + i * 0.035)), ...N(11).map((i) =
   stroke-width: 3px;
 }
 .spin {
-  animation: spin 40s linear infinite;
+  animation: spin 40s steps(400) infinite;
 }
 @keyframes spin {
   to {
@@ -333,7 +333,7 @@ const buttons = [...N(9).map((i) => belly(0.12 + i * 0.035)), ...N(11).map((i) =
   }
 }
 .twinkle {
-  animation: twinkle 4s ease-in-out infinite;
+  animation: twinkle 4s steps(16) infinite;
 }
 @keyframes twinkle {
   0%,
@@ -347,7 +347,7 @@ const buttons = [...N(9).map((i) => belly(0.12 + i * 0.035)), ...N(11).map((i) =
   }
 }
 .breathe {
-  animation: breathe 5s ease-in-out infinite;
+  animation: breathe 5s steps(16) infinite;
 }
 @keyframes breathe {
   0%,

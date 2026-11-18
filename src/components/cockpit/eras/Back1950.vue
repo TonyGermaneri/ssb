@@ -208,7 +208,7 @@ void props
 .steam circle {
   transform-box: fill-box;
   transform-origin: center;
-  animation: steam 7s ease-out infinite;
+  animation: steam 7s steps(84) infinite;
   opacity: 0;
 }
 @keyframes steam {
@@ -226,7 +226,7 @@ void props
 }
 .quiver {
   transform-origin: 0 0;
-  animation: quiver 0.18s ease-in-out infinite alternate;
+  animation: quiver 0.18s steps(2) infinite alternate;
 }
 @keyframes quiver {
   from {

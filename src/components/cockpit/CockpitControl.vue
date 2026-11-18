@@ -10,7 +10,18 @@ import { nearestStop, paramOf, type Stop } from '../../lib/voyage/cockpit/params
  * jack to jack, a stick anywhere. `value` is its axis (0..1, a stick's x; `value2` its y); `set` says where it's been
  * moved to, `end` when let go. A stepped one (`stops`) moves from detent to detent.
  */
-const props = defineProps<{ spec: ControlSpec; skin: Skin; value: number; value2?: number; stops: Stop[] | null; color: string; hint?: string; readout?: string }>()
+const props = defineProps<{
+  spec: ControlSpec
+  skin: Skin
+  /** its value, and a stick's y: an object of its own, read here, so only this control re-renders as it moves */
+  src: { v: number; v2: number }
+  stops: Stop[] | null
+  color: string
+  hint?: string
+  readout?: string
+}>()
+const value = computed(() => props.src.v)
+const value2 = computed(() => props.src.v2)
 const emit = defineEmits<{ set: [number, number?]; end: []; hover: [string | null] }>()
 const toDesign = inject<(e: PointerEvent) => { x: number; y: number }>('cockpitPoint')!
 
@@ -32,7 +43,7 @@ function down(e: PointerEvent) {
   ;(e.currentTarget as Element).setPointerCapture(e.pointerId)
   held.value = true
   const p = toDesign(e)
-  start = { x: p.x, y: p.y, v: props.value, v2: props.value2 ?? 0.5, a: angleAt(p), turns: 0 }
+  start = { x: p.x, y: p.y, v: value.value, v2: value2.value ?? 0.5, a: angleAt(p), turns: 0 }
   // a lever, slider, chain or stick goes straight to where it's grabbed along its travel; a cable picks up its plug
   if (s.value.kind === 'stick') stickTo(p)
   move(e)
@@ -107,8 +118,8 @@ const ticks = computed(() => {
   })
 })
 /** a selector's needle: which stop, evenly round its dial */
-const selIndex = computed(() => (props.stops ? props.stops.indexOf(nearestStop(props.stops, props.value)) : 0))
-const selV = computed(() => (props.stops ? selIndex.value / Math.max(1, props.stops.length - 1) : props.value))
+const selIndex = computed(() => (props.stops ? props.stops.indexOf(nearestStop(props.stops, value.value)) : 0))
+const selV = computed(() => (props.stops ? selIndex.value / Math.max(1, props.stops.length - 1) : value.value))
 const arcPath = (r: number, v0: number, v1: number) => {
   const a0 = rad(sweep(v0) - 90)
   const a1 = rad(sweep(v1) - 90)
@@ -123,12 +134,12 @@ const dir = computed(() => {
   return { x: Math.sin(a), y: -Math.cos(a) }
 })
 const along = (t: number) => ({ x: s.value.x + dir.value.x * (t - 0.5) * s.value.size, y: s.value.y + dir.value.y * (t - 0.5) * s.value.size })
-const head = computed(() => along(props.value))
+const head = computed(() => along(value.value))
 
 // ── chain ──
 const CHAIN_REST = 40
 const chainTop = computed(() => s.value.y - s.value.size / 2 - CHAIN_REST)
-const chainEnd = computed(() => chainTop.value + CHAIN_REST + props.value * s.value.size)
+const chainEnd = computed(() => chainTop.value + CHAIN_REST + value.value * s.value.size)
 const links = computed(() => {
   const n = Math.max(3, Math.round((chainEnd.value - chainTop.value) / 11))
   return Array.from({ length: n }, (_, i) => ({ y: chainTop.value + ((i + 0.5) * (chainEnd.value - chainTop.value)) / n, side: i % 2 === 0 }))
@@ -144,7 +155,7 @@ const jacks = computed(() => {
 function nearestJack(p: { x: number; y: number }) {
   return jacks.value.reduce((a, b) => (Math.hypot(b.x - p.x, b.y - p.y) < Math.hypot(a.x - p.x, a.y - p.y) ? b : a))
 }
-const plugged = computed(() => (props.stops ? jacks.value[props.stops.indexOf(nearestStop(props.stops, props.value))] : null))
+const plugged = computed(() => (props.stops ? jacks.value[props.stops.indexOf(nearestStop(props.stops, value.value))] : null))
 const plug = computed(() => plugAt.value ?? (plugged.value ? { x: plugged.value.x, y: plugged.value.y } : { x: s.value.x, y: s.value.y }))
 /** the lead: from its socket, sagging down to the plug */
 const leadFrom = computed(() => {
@@ -162,15 +173,15 @@ const leadPath = computed(() => {
 })
 
 // ── stick ──
-const stickTop = computed(() => ({ x: s.value.x + ((props.value ?? 0.5) - 0.5) * 2 * s.value.size * 0.8, y: s.value.y - ((props.value2 ?? 0.5) - 0.5) * 2 * s.value.size * 0.8 }))
+const stickTop = computed(() => ({ x: s.value.x + ((value.value ?? 0.5) - 0.5) * 2 * s.value.size * 0.8, y: s.value.y - ((value2.value ?? 0.5) - 0.5) * 2 * s.value.size * 0.8 }))
 
 // ── counter ──
 const STEPS_MAX = 32
 const counterText = computed(() => {
   if (props.readout !== undefined) return props.readout.padStart(2, '0').slice(-2)
-  if (s.value.param === 'steps') return String(Math.round(props.value * (STEPS_MAX - 1)) + 1).padStart(2, '0')
-  if (s.value.param === 'hits') return String(Math.round(props.value * 99)).padStart(2, '0').slice(0, 2)
-  return String(Math.round(props.value * 99)).padStart(2, '0')
+  if (s.value.param === 'steps') return String(Math.round(value.value * (STEPS_MAX - 1)) + 1).padStart(2, '0')
+  if (s.value.param === 'hits') return String(Math.round(value.value * 99)).padStart(2, '0').slice(0, 2)
+  return String(Math.round(value.value * 99)).padStart(2, '0')
 })
 
 const counterStyle = computed(() => props.skin.counter ?? (['crtGreen', 'crtAmber'].includes(props.skin.screen) ? 'nixie' : props.skin.screen === 'lcd' ? 'lcd' : props.skin.screen === 'flat' ? 'flip' : 'led'))
@@ -190,7 +201,7 @@ const labelY = computed(() => {
   return s.value.y + R.value + (knob.value.skirt || s.value.kind === 'selector' ? 24 : 18)
 })
 const labelText = computed(() => def.value.label)
-const stopLabel = computed(() => (props.stops ? nearestStop(props.stops, props.value).label : ''))
+const stopLabel = computed(() => (props.stops ? nearestStop(props.stops, value.value).label : ''))
 const plateW = computed(() => Math.max(38, labelText.value.length * 7.2 + 14))
 const textFill = computed(() => props.skin.plateText ?? (plate.value.text || props.skin.label))
 </script>

@@ -374,7 +374,7 @@ const sideVents = N(9).map((i) => i * 16)
 }
 .sweep {
   transform-origin: 1780px 560px;
-  animation: b80sweep 3s linear infinite;
+  animation: b80sweep 3s steps(45) infinite;
 }
 @keyframes b80sweep {
   to {

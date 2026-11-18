@@ -224,7 +224,7 @@ const puffs = of('funnel')
 .steam circle {
   transform-box: fill-box;
   transform-origin: center;
-  animation: puff 5s ease-out infinite;
+  animation: puff 5s steps(60) infinite;
   opacity: 0;
 }
 @keyframes puff {

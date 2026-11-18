@@ -308,7 +308,12 @@ function caught(r: Pick<Rock, 'vco' | 'x' | 'y' | 'payload'>, t: number) {
 // ── the frame ──
 const root = ref<HTMLDivElement>()
 const canvas = ref<HTMLCanvasElement>()
-const shipG = ref<SVGGElement>()
+const shipWrap = ref<HTMLDivElement>()
+const shipBack = ref<InstanceType<typeof VoyageShip>>()
+/** where the ship rests (screen units) and its scale: its layers are drawn there; the bob moves them as a whole */
+const shipRest = computed(() => ({ x: (size.w / Math.max(1, size.h)) * 0.48, y: 0.5 }))
+const shipScale = computed(() => Math.min((0.86 * size.w) / SHIP_BOX.w, (0.78 * size.h) / SHIP_BOX.h))
+const shipPlace = computed(() => `translate(${(shipRest.value.x * size.h).toFixed(1)} ${(shipRest.value.y * size.h).toFixed(1)}) scale(${shipScale.value.toFixed(4)}) translate(0 20)`)
 const ship = ref<InstanceType<typeof VoyageShip>>()
 const labelEls: (SVGGElement | null)[] = []
 const size = reactive({ w: 1200, h: 800 })
@@ -347,11 +352,14 @@ function loop(now: number) {
   bobT += dt * (1 - steady)
   const A = size.w / Math.max(1, size.h)
   pose = shipPose(bobT, A)
-  shipK = Math.min((0.86 * size.w) / SHIP_BOX.w, (0.78 * size.h) / SHIP_BOX.h)
-  shipG.value?.setAttribute(
-    'transform',
-    `translate(${(pose.x * size.h).toFixed(1)} ${(pose.y * size.h).toFixed(1)}) rotate(${((pose.tilt * 180) / Math.PI).toFixed(2)}) scale(${shipK.toFixed(4)}) translate(0 20)`,
-  )
+  shipK = shipScale.value
+  // the bob, moved by the compositor: the ship's layers are painted where it rests and slid / turned from there
+  const rest = shipRest.value
+  const wrap = shipWrap.value
+  if (wrap) {
+    const tf = `translate(${((pose.x - rest.x) * size.h).toFixed(1)}px, ${((pose.y - rest.y) * size.h).toFixed(1)}px) rotate(${((pose.tilt * 180) / Math.PI).toFixed(2)}deg)`
+    if (wrap.style.transform !== tf) wrap.style.transform = tf
+  }
   // the audio, each VCO's
   for (let i = 0; i < 3; i++) {
     const s = layerOf(i)
@@ -378,12 +386,17 @@ function loop(now: number) {
   }
   for (const r of field.step(dt, ports)) caught(r, t)
   for (let i = 0; i < 3; i++) {
-    beaming[i] = field.beaming(i)
-    cool[i] = cooldown[i] > t ? (cooldown[i] - t) / Math.max(1, prefs.gap) : 0
+    const bm = field.beaming(i)
+    if (beaming[i] !== bm) beaming[i] = bm
+    // (in fiftieths: a reactive write every frame re-rendered the whole view sixty times a second)
+    const c = cooldown[i] > t ? Math.ceil(((cooldown[i] - t) / Math.max(1, prefs.gap)) * 50) / 50 : 0
+    if (cool[i] !== c) cool[i] = c
     flashes[i][2] += dt
     controls[i].flush()
   }
   if (lastCatch.value && t - caughtAt.value > 6) lastCatch.value = ''
+  // (the hull's layer is still: only the parts' layers move)
+  shipBack.value?.frame(dt, clock.value)
   ship.value?.frame(dt, clock.value)
   // the sky
   const lv: [number, number, number] = [feeds[0].level, feeds[1].level, feeds[2].level]
@@ -515,7 +528,9 @@ function resize() {
   if (!el || !c) return
   size.w = el.clientWidth
   size.h = el.clientHeight
-  const k = Math.min(2, window.devicePixelRatio || 1) * 0.55
+  // (from the cockpit the sky is out of focus behind the glass: drawn at well under half the pixels, upscaled soft --
+  // cheaper than a blur, and it looks the same)
+  const k = Math.min(2, window.devicePixelRatio || 1) * 0.55 * (prefs.view === 'cockpit' ? 0.42 : 1)
   c.width = Math.max(1, Math.round(size.w * k))
   c.height = Math.max(1, Math.round(size.h * k))
   if (airEl.value) {
@@ -570,6 +585,7 @@ const vcoName = (i: number) => {
 const pct = (v: number) => `${Math.round(v * 100)}%`
 const secs = (v: number) => `${v.toFixed(1)}s`
 const cockpitHint = ref<string | null>(null)
+watch(() => prefs.view, () => resize())
 const airEl = ref<HTMLCanvasElement>()
 const air = shallowRef<Air | null>(null)
 const noiseTile = texture('noise')
@@ -616,7 +632,7 @@ const caption = computed(() => {
       @pointermove="revealAt"
       @pointerleave="reveal.top = reveal.bottom = false"
     >
-      <canvas ref="canvas" class="sky" :class="{ off: !glOk }" :style="prefs.view === 'cockpit' ? { filter: `blur(${cockpit.atmosphere.depth}px)` } : undefined" />
+      <canvas ref="canvas" class="sky" :class="{ off: !glOk }" />
       <CockpitView
         v-if="prefs.view === 'cockpit'"
         :key="cockpit.era"
@@ -640,19 +656,37 @@ const caption = computed(() => {
             <text x="0" y="4" text-anchor="middle" />
           </g>
         </g>
-        <g ref="shipG">
-          <VoyageShip
-            :key="era.id"
-            ref="ship"
-            :era="era"
-            :vcos="vcos"
-            :beaming="beaming"
-            @hover="(p: Part | null) => (hovered = p)"
-            @settings="openSettings"
-            @grab="setGrab"
-          />
-        </g>
       </svg>
+      <!-- the ship: three layers (the parts behind the hull, the hull, the parts on it), each painted once where the
+           ship rests and moved by the compositor as it bobs -->
+      <div v-if="prefs.view !== 'cockpit'" ref="shipWrap" class="ship-wrap" :style="{ transformOrigin: `${shipRest.x * size.h}px ${shipRest.y * size.h}px` }">
+        <svg class="ship-layer" :viewBox="`0 0 ${size.w} ${size.h}`">
+          <g :transform="shipPlace"><VoyageShip :key="era.id" ref="shipBack" only="back" :era="era" :vcos="vcos" :beaming="beaming" /></g>
+        </svg>
+        <svg class="ship-layer" :viewBox="`0 0 ${size.w} ${size.h}`">
+          <g :transform="shipPlace"><VoyageShip :key="era.id" only="hull" :era="era" :vcos="vcos" :beaming="beaming" /></g>
+        </svg>
+        <svg class="ship-layer" :viewBox="`0 0 ${size.w} ${size.h}`">
+          <g :transform="shipPlace">
+            <VoyageShip
+              :key="era.id"
+              ref="ship"
+              only="front"
+              :era="era"
+              :vcos="vcos"
+              :beaming="beaming"
+              @hover="(p: Part | null) => (hovered = p)"
+              @settings="openSettings"
+              @grab="setGrab"
+            />
+          </g>
+        </svg>
+        <!-- the era's detail over its parts: still, so its own layer, never repainted as the parts move (it takes no
+             pointer: the pads under it still do) -->
+        <svg v-if="era.overlay" class="ship-layer" :viewBox="`0 0 ${size.w} ${size.h}`">
+          <g :transform="shipPlace"><VoyageShip :key="era.id" only="overlay" :era="era" :vcos="vcos" :beaming="beaming" /></g>
+        </svg>
+      </div>
 
       <div v-show="prefs.view !== 'cockpit'" class="film-outside">
         <canvas ref="airEl" class="air" />
@@ -804,6 +838,21 @@ const caption = computed(() => {
   inset: 0;
   width: 100%;
   height: 100%;
+}
+.ship-wrap {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  will-change: transform;
+}
+.ship-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  will-change: transform;
 }
 .labels {
   pointer-events: none;
@@ -1236,7 +1285,6 @@ const caption = computed(() => {
 .film.grain {
   background-size: 256px 256px;
   mix-blend-mode: overlay;
-  animation: vgrain 0.5s steps(5) infinite;
 }
 @keyframes vgrain {
   20% {

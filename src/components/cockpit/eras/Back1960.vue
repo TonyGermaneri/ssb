@@ -414,7 +414,7 @@ const daisies = [
 
 <style scoped>
 .spin {
-  animation: spin 60s linear infinite;
+  animation: spin 60s steps(600) infinite;
 }
 .spin.rev {
   animation-direction: reverse;
@@ -425,7 +425,7 @@ const daisies = [
   }
 }
 .drift {
-  animation: drift 9s ease-in-out infinite;
+  animation: drift 9s steps(72) infinite;
 }
 @keyframes drift {
   0%,
@@ -439,7 +439,7 @@ const daisies = [
 .twinkle {
   transform-box: fill-box;
   transform-origin: center;
-  animation: twinkle 3s ease-in-out infinite;
+  animation: twinkle 3s steps(12) infinite;
 }
 @keyframes twinkle {
   0%,
@@ -453,7 +453,7 @@ const daisies = [
   }
 }
 .breathe {
-  animation: breathe 6s ease-in-out infinite;
+  animation: breathe 6s steps(18) infinite;
 }
 @keyframes breathe {
   0%,
@@ -469,13 +469,13 @@ const daisies = [
   transform-origin: center;
 }
 .goo.a {
-  animation: gooA 14s ease-in-out infinite;
+  animation: gooA 14s steps(112) infinite;
 }
 .goo.b {
-  animation: gooB 11s ease-in-out infinite;
+  animation: gooB 11s steps(88) infinite;
 }
 .goo.c {
-  animation: gooC 17s ease-in-out infinite;
+  animation: gooC 17s steps(136) infinite;
 }
 @keyframes gooA {
   0%,
