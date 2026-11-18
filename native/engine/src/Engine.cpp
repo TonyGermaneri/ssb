@@ -148,6 +148,10 @@ struct Engine::Voice
     double pos { 0 }, clipIn { 0 }, clipOut { 0 };
     bool loops { false };
     double loopStart { 0 }, loopEnd { 0 };
+    // a pad's loop markers (padClip): passes of its loop still to go after this one (-1: until released); its last
+    // pass, or a release, leaves the loop for the tail to END
+    bool padLoop { false };
+    int loopsLeft { -1 };
     bool oneShot { false };
     float kRate { 1 }, speed { 1 };
     float glideFrom { 0 }, glideTo { 0 }, glideDur { 0 }, glideStart { 0 };
@@ -676,6 +680,8 @@ struct Engine::Impl
             v.loopStart = zone->loopStart * sr;
             v.loopEnd = std::min ((double) zone->loopEnd * sr, (double) sample->frames());
             v.oneShot = zone->loopMode == LoopMode::oneShot;
+            v.padLoop = false;
+            v.loopsLeft = -1;
             v.zoneGain = dsp::dbToGain (zone->volume + o.extraDb);
             v.zonePan = zone->pan / 100.0f;
             v.zoneFilter = zone->filter.has_value();
@@ -688,14 +694,10 @@ struct Engine::Impl
         }
         else
         {
-            const double a = std::min (s.clipIn, s.clipOut) * dur, b = std::max (s.clipIn, s.clipOut) * dur;
-            const double in = std::min (a, std::max (0.0, dur - 0.005));
-            const double out = std::max (in + 0.005, std::min (b, dur));
-            v.clipIn = in * sr;
-            v.clipOut = out * sr;
-            v.loops = true;                // pads loop the clip; the repeat count ends them
-            v.loopStart = v.clipIn;
-            v.loopEnd = v.clipOut;
+            padClip (v, s, dur, sr);
+            v.loops = true;                // pads go round their loop; the repeat count ends them
+            v.padLoop = true;
+            v.loopsLeft = s.repeat > 0 ? s.repeat - 1 : -1;
             v.oneShot = false;
             v.zoneGain = 1;
             v.zonePan = 0;
@@ -712,6 +714,7 @@ struct Engine::Impl
             v.pos = v.clipIn = v.loopStart = 0;
             v.clipOut = v.loopEnd = v.tableSize;
             v.loops = true;
+            v.padLoop = false;
         }
 
         v.kRate = knobRate (s);
@@ -779,6 +782,10 @@ struct Engine::Impl
             v.endT = v.loops ? inf : (v.clipOut - v.clipIn) / (rate0 * engine.rate);
         else if (v.kind != Voice::Kind::sample)   // grains: only SPEED changes the length
             v.endT = s.repeat > 0 ? s.repeat * clipSeconds / v.speed : inf;
+        else if (v.padLoop)   // START into the loop, its passes, the tail to END (timing.ts loopedClipSeconds)
+            v.endT = s.repeat > 0 ? ((v.loopEnd - v.clipIn) + (s.repeat - 1) * (v.loopEnd - v.loopStart) + (v.clipOut - v.loopEnd)) / sr
+                                        / (v.kRate * dsp::semisToRate (v.glideTo) * v.speed)
+                                  : inf;
         else
             v.endT = s.repeat > 0 ? s.repeat * clipSeconds / (v.kRate * dsp::semisToRate (v.glideTo) * v.speed) : inf;
         if (std::isfinite (v.endT))
@@ -834,6 +841,26 @@ struct Engine::Impl
         v.ccGain = dsp::dbToGain (db) * std::max (0.0f, amp);
     }
 
+    /**
+     * A pad's START, loop and END in frames (timing.ts clipBounds): the loop held inside the clip, at least 5 ms long.
+     */
+    static void padClip (Voice& v, const Settings& s, double dur, double sr) noexcept
+    {
+        constexpr double minClip = 0.005;
+        const double a = std::min (s.clipIn, s.clipOut) * dur, b = std::max (s.clipIn, s.clipOut) * dur;
+        const double in = std::min (a, std::max (0.0, dur - minClip));
+        const double out = std::max (in + minClip, std::min (b, dur));
+        const double ls = (double) s.loopStart * dur, le = (double) s.loopEnd * dur;
+        const double li = std::min (std::max (std::min (ls, le), in), out - minClip);
+        const double lo = std::max (li + minClip, std::min (std::max (ls, le), out));
+        v.clipIn = in * sr;
+        v.clipOut = out * sr;
+        v.loopStart = li * sr;
+        v.loopEnd = lo * sr;
+    }
+    /** a pad's tail after its loop, in frames (0: its loop ends at END) */
+    static double padTail (const Voice& v) noexcept { return v.padLoop ? v.clipOut - v.loopEnd : 0.0; }
+
     void releaseVoice (Voice& v) noexcept
     {
         const Zone* z = v.z();
@@ -843,6 +870,9 @@ struct Engine::Impl
             return;
         v.releaseT = v.t;
         v.endT = std::min (v.endT, v.releaseT + v.ampEnv.releaseLength());
+        // released in its loop, a pad with a tail leaves the loop and plays on to END (ending there, if sooner)
+        if (v.kind == Voice::Kind::sample && v.loops && padTail (v) > 0.001 * v.sample->rate)
+            v.loops = false;
     }
 
     void stopVoice (Voice& v, double fade = 0.03) noexcept
@@ -1630,12 +1660,7 @@ struct Engine::Impl
                     if (v.zone < 0 && v.sample)
                     {
                         // clip edits move the loop of a sounding pad
-                        const double dur = v.sample->duration(), sr = v.sample->rate;
-                        const double a = std::min (s.clipIn, s.clipOut) * dur, b = std::max (s.clipIn, s.clipOut) * dur;
-                        const double in = std::min (a, std::max (0.0, dur - 0.005));
-                        const double out = std::max (in + 0.005, std::min (b, dur));
-                        v.clipIn = v.loopStart = in * sr;
-                        v.clipOut = v.loopEnd = out * sr;
+                        padClip (v, s, v.sample->duration(), v.sample->rate);
                     }
                 }
             }
@@ -2197,16 +2222,7 @@ struct Engine::Impl
 
     /** Render one voice for `n` samples, adding to the buses. Returns false once it has ended. */
     /** A voice's clip from its settings and its audio (a pad's: not a zone, not a wavetable). */
-    static void setClip (Voice& v) noexcept
-    {
-        const auto& s = v.s();
-        const double dur = v.sample->duration(), sr = v.sample->rate;
-        const double a = std::min (s.clipIn, s.clipOut) * dur, b = std::max (s.clipIn, s.clipOut) * dur;
-        const double in = std::min (a, std::max (0.0, dur - 0.005));
-        const double out = std::max (in + 0.005, std::min (b, dur));
-        v.clipIn = v.loopStart = in * sr;
-        v.clipOut = v.loopEnd = out * sr;
-    }
+    static void setClip (Voice& v) noexcept { padClip (v, v.s(), v.sample->duration(), v.sample->rate); }
 
     /**
      * The garden's stitch, at the start of a block (so a block reads one clip): a sample that wrapped with new audio
@@ -2480,7 +2496,8 @@ struct Engine::Impl
                 const auto i0 = (size_t) p;
                 // the frame after i0: past a loop's end that is the loop's start again (an AKWF wave loops every
                 // 600 frames, so stopping short at the end -- a silent frame -- would buzz)
-                const bool wraps = v.loops && v.loopEnd > v.loopStart && (double) i0 + 1 >= v.loopEnd;
+                const bool lastPass = v.padLoop && v.loopsLeft == 0;
+                const bool wraps = v.loops && ! lastPass && v.loopEnd > v.loopStart && (double) i0 + 1 >= v.loopEnd;
                 const double next = wraps ? (double) i0 + 1 - (v.loopEnd - v.loopStart) : (double) i0 + 1;
                 if ((double) i0 < frames && next >= 0 && next < frames)
                 {
@@ -2499,8 +2516,14 @@ struct Engine::Impl
                 v.pos += step;
                 if (v.loops && v.pos >= v.loopEnd && v.loopEnd > v.loopStart)
                 {
-                    v.pos = v.loopStart + std::fmod (v.pos - v.loopStart, v.loopEnd - v.loopStart);
-                    if (v.stitchTo) v.stitchDue = true;   // the boundary: the new clip takes over next block
+                    if (lastPass)
+                        v.loops = false;   // its passes done: on through the tail to END
+                    else
+                    {
+                        if (v.padLoop && v.loopsLeft > 0) --v.loopsLeft;
+                        v.pos = v.loopStart + std::fmod (v.pos - v.loopStart, v.loopEnd - v.loopStart);
+                        if (v.stitchTo) v.stitchDue = true;   // the boundary: the new clip takes over next block
+                    }
                 }
                 if (v.stitchFrom)
                     mixOld (v, step / srRatio, xl, xr);

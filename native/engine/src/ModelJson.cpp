@@ -226,6 +226,8 @@ Settings settingsFromJson (const juce::var& o)
     s.stretch = str (o, "timeMode") == "stretch";
     s.clipIn = num (o, "clipIn", 0);
     s.clipOut = num (o, "clipOut", 1);
+    s.loopStart = num (o, "loopStart", 0);
+    s.loopEnd = num (o, "loopEnd", 1);
     s.attack = num (o, "attack", s.attack);
     s.decay = num (o, "decay", s.decay);
     s.sustain = num (o, "sustain", s.sustain);

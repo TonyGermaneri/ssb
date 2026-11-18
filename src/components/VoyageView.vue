@@ -3,7 +3,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch 
 import { activeVoices, clock, getBuffer, hasAudio, readSound, SCOPE_SAMPLES, soundSounding, stitch, watchSound } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { useGarden } from '../stores/garden'
-import { padControl } from '../lib/play/padControl'
+import { padControl, type PadId } from '../lib/play/padControl'
+import { setRingPoint } from '../lib/garden/garden'
 import { AudioFeed } from '../lib/play/shaders'
 import { Field, MAX_ROCKS, shipPose, type Port, type Rock } from '../lib/voyage/field'
 import { PART_HELP, rgb, SHIP_BOX, type Part } from '../lib/voyage/ship'
@@ -13,6 +14,14 @@ import { voyageFades } from '../lib/voyage/stitch'
 import type { Sound } from '../types'
 import Knob from './Knob.vue'
 import PadSettings from './PadSettings.vue'
+import GardenSettings from './GardenSettings.vue'
+import PadLfoPanel from './PadLfoPanel.vue'
+import CockpitView from './cockpit/CockpitView.vue'
+import { Air } from '../lib/voyage/cockpit/cockpitGL'
+import { texture } from '../lib/voyage/cockpit/textures'
+import { cockpitOf } from '../lib/voyage/cockpit/eras'
+import { lfoAt } from '../lib/play/padLfo'
+import GardenBar from './GardenBar.vue'
 import VoyageShip, { type ShipVco } from './VoyageShip.vue'
 
 /**
@@ -23,6 +32,10 @@ import VoyageShip, { type ShipVco } from './VoyageShip.vue'
  * on, pulls it in, and the VCO takes its sound, crossfaded into whatever's sounding (as the garden stitches). A VCO
  * whose garden grows catches PODS instead: its next clip, in early. After a catch a port rests (GAP) before the next.
  * A click on a rock beams it in from wherever it is.
+ *
+ * Each VCO's GARDEN rides along too (step lamps under its window): its picked ring on X / Y, its prompt behind a right-click, a badge on
+ * every other part saying whether it grows with the garden, and in the HUD each VCO's grow toggle between ◀ ▶ (its
+ * clips) and ☰ (its sound model, its words to avoid).
  */
 const board = useBoard()
 const garden = useGarden()
@@ -37,9 +50,11 @@ interface Prefs {
   trails: number
   steady: boolean
   beams: boolean[]
+  /** outside, the ship; or the COCKPIT, from the pilot's seat */
+  view: 'ship' | 'cockpit'
 }
 const KEY = 'ssb:voyage'
-const DEFAULTS: Prefs = { era: DEFAULT_ERA, gap: 20, density: 0.5, fade: 3, amount: 0.85, trails: 0.6, steady: false, beams: [true, true, true] }
+const DEFAULTS: Prefs = { era: DEFAULT_ERA, gap: 20, density: 0.5, fade: 3, amount: 0.85, trails: 0.6, steady: false, beams: [true, true, true], view: 'ship' }
 function loadPrefs(): Prefs {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? '{}')
@@ -64,6 +79,8 @@ watch(
 // ── the ship: the era's ──
 const era = computed(() => eraOf(prefs.era))
 const PALETTES_OF = () => era.value.palettes
+/** the era's cockpit (the COCKPIT view) */
+const cockpit = computed(() => cockpitOf(era.value.id))
 /** the sky's warp when the era changes (s since) */
 let warpAt = -9
 watch(
@@ -125,17 +142,56 @@ function peaksOf(sound: Sound, columns: number): Float32Array | null {
 }
 
 const controls = [0, 1, 2].map((i) => padControl({ sound: () => layerOf(i)!, bpm: () => board.bpm }))
+/** the ship's hold on each VCO's pads: as `controls`, but a part whose LFO moves it is dragged by its shape's centre */
+const shipControls = controls.map((c, i) => ({
+  ...c,
+  // (its marker glides along the LFO's shape, though the settings it writes snap)
+  pointOf: (id: PadId, r?: Parameters<typeof c.pointOf>[1]) => garden.lfoNow(i, id) ?? c.pointOf(id, r),
+  moved: (id: PadId, p: { x: number; y: number }) => (garden.lfoDrives(i, id) ? garden.setLfoCenter(i, id, p) : c.moved(id, p)),
+  ended: (id: PadId) => {
+    if (!garden.lfoDrives(i, id)) c.ended(id)
+  },
+  reset: (id: PadId) => {
+    c.reset(id)
+    if (garden.lfoDrives(i, id)) garden.setLfoCenter(i, id, c.pointOf(id))
+  },
+}))
 const vcos = computed<(ShipVco | null)[]>(() =>
   [0, 1, 2].map((i) => {
     const sound = layerOf(i)
     if (!sound) return null
     return {
       sound,
-      pads: controls[i],
+      pads: shipControls[i],
       level: () => feeds[i].level,
       sounding: () => soundingIds.value.has(sound.id),
       peaks: (n: number) => peaksOf(sound, n),
       bpm: () => board.bpm,
+      garden: {
+        g: () => slots.value[i]?.garden ?? null,
+        ring: () => garden.ringOf(i),
+        progress: () => garden.runFor(i)?.progress ?? 0,
+        moved: (p: { x: number; y: number }) => {
+          garden.gardenOf(i)
+          const r = garden.ringOf(i)
+          if (r) setRingPoint(r, p)
+        },
+        next: () => garden.nextRing(i),
+        grows: (kind: PadId) => garden.growsPad(i, kind),
+        toggleGrow: (kind: PadId) => garden.toggleGrowPad(i, kind),
+        auto: (kind: PadId) => !!garden.lfoOf(i, kind),
+        lfoAt: (kind: PadId, phase: number) => {
+          const l = garden.lfoOf(i, kind)
+          return l ? lfoAt(l, phase) : null
+        },
+        lfoPhase: (kind: PadId) => garden.lfoPhaseOf(i, kind),
+        autoClick: (kind: PadId, x: number, y: number) => openLfo(i, kind, x, y),
+        autoToggle: (kind: PadId) => {
+          if (!garden.lfoOf(i, kind)) return garden.startLfo(i, kind)
+          garden.stopLfo(i, kind)
+          if (lfoFor.value?.vco === i && lfoFor.value.pad === kind) lfoFor.value = null
+        },
+      },
     }
   }),
 )
@@ -187,17 +243,8 @@ function spawn(t: number, ports: Port[]) {
   const port = ports[vco]
   const A = size.w / Math.max(1, size.h)
   const seed = Math.random()
-  let payload: Rock['payload']
-  if (growing(vco)) {
-    const prompt = garden.runFor(vco)?.next?.prompt ?? ''
-    payload = { kind: 'pod', label: prompt.split(',')[0].trim().slice(0, 22).toUpperCase() || 'POD' }
-  } else {
-    const here = slots.value[vco]?.layer.soundId
-    const choices = pool.value.filter((s) => s.id !== here)
-    const s = choices[Math.floor(Math.random() * choices.length)]
-    if (!s) return
-    payload = { kind: 'sound', soundId: s.id, label: s.settings.name.slice(0, 22).toUpperCase() }
-  }
+  const payload = payloadFor(vco)
+  if (!payload) return
   // a line that passes near the port -- or not quite: about half come close enough
   const y = Math.min(0.94, Math.max(0.06, port.y + (Math.random() - 0.5) * 0.5))
   field.add({
@@ -214,8 +261,27 @@ function spawn(t: number, ports: Port[]) {
   void t
 }
 
+/**
+ * What a new rock for VCO `vco` carries: the garden's next clip (a POD) while it grows and one's waiting, else a sound
+ * from the samples list other than the one playing (null: nothing for it now).
+ */
+function payloadFor(vco: number): Rock['payload'] | null {
+  if (!layerOf(vco) || !prefs.beams[vco]) return null
+  if (growing(vco)) {
+    if (!podReady(vco)) return null
+    const prompt = garden.runFor(vco)?.next?.prompt ?? ''
+    return { kind: 'pod', label: prompt.split(',')[0].trim().slice(0, 22).toUpperCase() || 'POD' }
+  }
+  const here = slots.value[vco]?.layer.soundId
+  const choices = pool.value.filter((s) => s.id !== here)
+  const s = choices[Math.floor(Math.random() * choices.length)]
+  return s ? { kind: 'sound', soundId: s.id, label: s.settings.name.slice(0, 22).toUpperCase() } : null
+}
+/** a VCO's port can take a catch now (on, resting no longer) */
+const portOpen = (vco: number) => !!layerOf(vco) && prefs.beams[vco] && t >= cooldown[vco]
+
 /** A rock in: its sound into its VCO, crossfaded; a pod, the garden's next clip now. */
-function caught(r: Rock, t: number) {
+function caught(r: Pick<Rock, 'vco' | 'x' | 'y' | 'payload'>, t: number) {
   const i = r.vco
   const slot = slots.value[i]
   flashes[i] = [r.x, r.y, 0, 1]
@@ -303,8 +369,10 @@ function loop(now: number) {
     const [x, y] = toScreen(p.x, p.y)
     return { vco: p.vco, x, y, open: !!layerOf(p.vco) && prefs.beams[p.vco] && t >= cooldown[p.vco] }
   })
+  const inside = prefs.view === 'cockpit'
+  if (inside) field.rocks = []
   spawnIn -= dt
-  if (spawnIn <= 0) {
+  if (spawnIn <= 0 && !inside) {
     spawn(t, ports)
     spawnIn = (9 - prefs.density * 7) * (0.6 + Math.random() * 0.8)
   }
@@ -336,8 +404,9 @@ function loop(now: number) {
     sp.frame({
       time: t,
       px: (canvas.value?.width ?? size.w) / Math.max(1, size.w),
-      ship: [pose.x, pose.y, shipK / Math.max(1, size.h), pose.tilt],
-      ports: ports.map((p) => [p.x, p.y, beaming[p.vco] ? 1 : 0, p.open ? 1 : 0]),
+      // (from the cockpit: no ship out there -- it's round you -- and no ports)
+      ship: inside ? [-50, -50, 0.0001, 0] : [pose.x, pose.y, shipK / Math.max(1, size.h), pose.tilt],
+      ports: inside ? ports.map(() => [-50, -50, 0, 0]) : ports.map((p) => [p.x, p.y, beaming[p.vco] ? 1 : 0, p.open ? 1 : 0]),
       flashes,
       levels: lv,
       bass,
@@ -346,7 +415,7 @@ function loop(now: number) {
         a: [r.x, r.y, r.r, r.angle],
         b: [r.vco, r.beam, r.seed, (r.payload.kind === 'pod' ? 1 : 0) + (ports[r.vco].open ? 2 : 0)],
       })),
-      wake: [prop[0], prop[1], lv[2], layerOf(2) ? Math.min(1, controls[2].pointOf('grain').y) : 0.2],
+      wake: inside ? [-50, -50, 0, 0] : [prop[0], prop[1], lv[2], layerOf(2) ? Math.min(1, controls[2].pointOf('grain').y) : 0.2],
       palette: E.palettes.flatMap((p) => p.gl),
       sky: E.sky,
       skyColors: E.sky.colors.map(rgb),
@@ -356,6 +425,22 @@ function loop(now: number) {
       trails: prefs.trails,
     })
   } else if (sp?.lost) glOk.value = false
+  // outside, the same air and film as inside (the era's cockpit's): shafts of sun, dust, grain, interference
+  if (!inside && air.value && !air.value.lost) {
+    const at = cockpit.value.atmosphere
+    const k = (airEl.value?.width ?? size.w) / Math.max(1, size.w)
+    air.value.frame({
+      time: t,
+      sun: [(cockpit.value.sun.x / 1600) * size.w * k, (cockpit.value.sun.y / 900) * size.h * k],
+      sunC: [1, 0.9, 0.72],
+      dust: at.dust * prefs.amount * 0.7,
+      shafts: at.shafts * prefs.amount,
+      grain: at.grain * prefs.amount,
+      emf: at.emf * prefs.amount,
+      trip: at.trip * prefs.amount,
+      level: Math.max(...lv),
+    })
+  }
   // the rocks' names
   for (let i = 0; i < MAX_ROCKS; i++) {
     const el = labelEls[i]
@@ -395,17 +480,31 @@ function skyDown(e: PointerEvent) {
   lastCatch.value = !prefs.beams[r.vco] ? `VCO ${r.vco + 1}'s beam is off` : `VCO ${r.vco + 1}'s port is resting — ${Math.ceil(Math.max(0, cooldown[r.vco] - t))} s`
 }
 
+// ── a part's LFO (its automation badge: PadLfoPanel.vue in a box beside it) ──
+const lfoFor = ref<{ vco: number; pad: PadId; name: string; x: number; y: number } | null>(null)
+function openLfo(vco: number, pad: PadId, x: number, y: number) {
+  if (!layerOf(vco)) return
+  if (!garden.lfoOf(vco, pad)) garden.startLfo(vco, pad)
+  const box = root.value?.getBoundingClientRect()
+  const name = era.value.parts.find((p) => p.vco === vco && p.kind === pad)?.name ?? pad.toUpperCase()
+  lfoFor.value = { vco, pad, name, x: Math.max(8, Math.min(x - (box?.left ?? 0), size.w - 230)), y: Math.max(8, Math.min(y - (box?.top ?? 0) + 12, size.h - 200)) }
+  settingsFor.value = null
+}
+
 // ── a part's settings ──
 const settingsFor = ref<{ part: Part; x: number; y: number } | null>(null)
 function openSettings(part: Part, x: number, y: number) {
   if (!layerOf(part.vco)) return
-  settingsFor.value = { part, x: Math.min(x, size.w - 300), y: Math.min(y, size.h - 320) }
+  // (the garden's settings are the tallest)
+  const tall = part.kind === 'garden' ? Math.min(560, size.h * 0.8) : 320
+  settingsFor.value = { part, x: Math.max(8, Math.min(x, size.w - 300)), y: Math.max(8, Math.min(y, size.h - tall - 8)) }
 }
 const hovered = ref<Part | null>(null)
 const exit = () => (board.master.playMode = 'pads')
 function onKey(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
-  if (settingsFor.value) settingsFor.value = null
+  if (lfoFor.value) lfoFor.value = null
+  else if (settingsFor.value) settingsFor.value = null
   else exit()
 }
 
@@ -419,6 +518,10 @@ function resize() {
   const k = Math.min(2, window.devicePixelRatio || 1) * 0.55
   c.width = Math.max(1, Math.round(size.w * k))
   c.height = Math.max(1, Math.round(size.h * k))
+  if (airEl.value) {
+    airEl.value.width = Math.max(1, Math.round(size.w * 0.5))
+    airEl.value.height = Math.max(1, Math.round(size.h * 0.5))
+  }
 }
 onMounted(() => {
   resize()
@@ -426,6 +529,7 @@ onMounted(() => {
   ro.observe(root.value!)
   try {
     space.value = Space.create(canvas.value!)
+    air.value = airEl.value ? Air.create(airEl.value) : null
   } catch (e) {
     console.warn('[voyage]', e)
     space.value = null
@@ -441,6 +545,7 @@ onBeforeUnmount(() => {
   unwatch.forEach((u) => u())
   voyageFades.clear()
   space.value?.dispose()
+  air.value?.dispose()
 })
 
 /** the HUD, dressed for the era */
@@ -464,8 +569,33 @@ const vcoName = (i: number) => {
 }
 const pct = (v: number) => `${Math.round(v * 100)}%`
 const secs = (v: number) => `${v.toFixed(1)}s`
+const cockpitHint = ref<string | null>(null)
+const airEl = ref<HTMLCanvasElement>()
+const air = shallowRef<Air | null>(null)
+const noiseTile = texture('noise')
+/** in the cockpit the HUD gets out of the way: the top's comes back with the pointer near the top, the rest near the bottom */
+const reveal = reactive({ top: false, bottom: false })
+function revealAt(e: PointerEvent) {
+  if (prefs.view !== 'cockpit') return
+  const box = root.value?.getBoundingClientRect()
+  if (!box) return
+  const y = e.clientY - box.top
+  // (just the very edges: the dash's own controls run right up to them)
+  reveal.top = y < (reveal.top ? 110 : 8)
+  reveal.bottom = y > box.height - (reveal.bottom ? 130 : 8)
+}
 const caption = computed(() => {
+  if (prefs.view === 'cockpit') {
+    if (cockpitHint.value) return { head: cockpit.value.title, body: cockpitHint.value }
+    if (lastCatch.value) return { head: 'TRACTOR BEAM', body: lastCatch.value }
+    return { head: cockpit.value.title, body: 'every control is a VCO\'s: drag it · knobs up / down, cranks and wheels round, chains down, leads from jack to jack · rocks coming at you beam into their intake (or click one)' }
+  }
   const p = hovered.value
+  if (p?.kind === 'garden') {
+    const g = slots.value[p.vco]?.garden
+    const words = g?.history[0]?.prompt
+    return { head: `${PALETTES_OF()[p.vco].name} · VCO ${p.vco + 1} — ${p.name}${g?.subject ? ` · from “${g.subject}”` : ''}`, body: words && g?.on ? `now: ${words} — ${PART_HELP.garden}` : PART_HELP.garden }
+  }
   if (p) return { head: `${PALETTES_OF()[p.vco].name} · VCO ${p.vco + 1} — ${p.name} (${p.kind.toUpperCase()})`, body: PART_HELP[p.kind] }
   if (lastCatch.value) return { head: 'TRACTOR BEAM', body: lastCatch.value }
   return {
@@ -477,9 +607,32 @@ const caption = computed(() => {
 
 <template>
   <Teleport to="body">
-    <div ref="root" class="voyage" :style="hudVars" @contextmenu.prevent>
-      <canvas ref="canvas" class="sky" :class="{ off: !glOk }" />
-      <svg class="stage" :viewBox="`0 0 ${size.w} ${size.h}`" @pointerdown="skyDown">
+    <div
+      ref="root"
+      class="voyage"
+      :class="{ inside: prefs.view === 'cockpit', 'show-top': reveal.top, 'show-bottom': reveal.bottom, hinting: !!cockpitHint }"
+      :style="hudVars"
+      @contextmenu.prevent
+      @pointermove="revealAt"
+      @pointerleave="reveal.top = reveal.bottom = false"
+    >
+      <canvas ref="canvas" class="sky" :class="{ off: !glOk }" :style="prefs.view === 'cockpit' ? { filter: `blur(${cockpit.atmosphere.depth}px)` } : undefined" />
+      <CockpitView
+        v-if="prefs.view === 'cockpit'"
+        :key="cockpit.era"
+        :era="era"
+        :design="cockpit"
+        :vcos="vcos"
+        :open="portOpen"
+        :payload-for="payloadFor"
+        :density="prefs.density"
+        :amount="prefs.amount"
+        :bpm="board.bpm"
+        @catch="(vco: number, payload: Rock['payload']) => caught({ vco, x: 0, y: 0, payload }, t)"
+        @hover="(h: string | null) => (cockpitHint = h)"
+        @grab="setGrab"
+      />
+      <svg v-else class="stage" :viewBox="`0 0 ${size.w} ${size.h}`" @pointerdown="skyDown">
         <!-- the rocks' names (under the ship: the rocks pass behind it) -->
         <g class="labels">
           <g v-for="i in MAX_ROCKS" :key="i" :ref="(el) => (labelEls[i - 1] = el as SVGGElement)" style="opacity: 0">
@@ -501,6 +654,13 @@ const caption = computed(() => {
         </g>
       </svg>
 
+      <div v-show="prefs.view !== 'cockpit'" class="film-outside">
+        <canvas ref="airEl" class="air" />
+        <div class="film vignette" :style="{ opacity: cockpit.atmosphere.vignette * (0.4 + 0.6 * prefs.amount) * 0.85 }" />
+        <div class="film scan" :style="{ opacity: cockpit.atmosphere.scanlines * prefs.amount }" />
+        <div class="film tint" :style="{ background: `rgb(${cockpit.atmosphere.tint.map((v) => Math.round(v * 255)).join(',')})`, opacity: 0.18 * prefs.amount }" />
+        <div class="film grain" :style="{ opacity: cockpit.atmosphere.grain * prefs.amount * 0.28, backgroundImage: `url(${noiseTile})` }" />
+      </div>
       <header class="hud" @pointerdown.stop>
         <div class="brand">
           <b>VOYAGE</b>
@@ -522,6 +682,7 @@ const caption = computed(() => {
             >
               <v-icon size="16" icon="mdi-magnet-on" />
             </button>
+            <GardenBar v-if="slots[i]" class="hud-garden" :x="slots[i]!" :slot="i" compact />
             <i class="rest" :style="{ transform: `scaleX(${cool[i]})` }" />
           </div>
         </div>
@@ -531,6 +692,7 @@ const caption = computed(() => {
           <Knob v-model="prefs.fade" label="XFADE" :min="0.1" :max="10" :default="DEFAULTS.fade" :format="secs" :size="26" title="How long a caught sound takes to crossfade in (a growing VCO keeps its garden's)" />
           <Knob v-model="prefs.amount" label="FX" :min="0" :max="1" :default="DEFAULTS.amount" :format="pct" :size="26" title="How much light, film and print there is" />
           <Knob v-model="prefs.trails" label="TRAILS" :min="0" :max="1" :default="DEFAULTS.trails" :format="pct" :size="26" title="How long the light lingers" />
+          <button class="tog" :class="{ on: prefs.view === 'cockpit' }" title="COCKPIT: the voyage from the pilot's seat — every VCO's controls on the dash, the rocks coming at you (click again for the ship from outside)" @click="prefs.view = prefs.view === 'cockpit' ? 'ship' : 'cockpit'">{{ prefs.view === 'cockpit' ? 'EXTERIOR' : 'COCKPIT' }}</button>
           <button class="tog" :class="{ on: prefs.steady }" title="STEADY: the ship stops bobbing (it always steadies while you're at its controls)" @click="prefs.steady = !prefs.steady">STEADY</button>
           <button class="exit" title="Back to the pads (Esc)" @click="exit"><v-icon size="16" icon="mdi-view-grid-outline" /> PADS</button>
         </div>
@@ -566,6 +728,7 @@ const caption = computed(() => {
       <div
         v-if="settingsFor && vcos[settingsFor.part.vco]"
         class="pop"
+        :class="{ tall: settingsFor.part.kind === 'garden' }"
         :style="{ left: `${settingsFor.x}px`, top: `${settingsFor.y}px`, '--line': PALETTES_OF()[settingsFor.part.vco].hi, '--lcd-bg': PALETTES_OF()[settingsFor.part.vco].deep }"
         @pointerdown.stop
         @click.stop
@@ -574,8 +737,43 @@ const caption = computed(() => {
           <b>{{ settingsFor.part.name }}</b>
           <small>VCO {{ settingsFor.part.vco + 1 }} · {{ settingsFor.part.kind.toUpperCase() }}</small>
         </div>
-        <PadSettings :kind="settingsFor.part.kind" :sound="vcos[settingsFor.part.vco]!.sound" :slot="settingsFor.part.vco" :pads="controls[settingsFor.part.vco]" />
+        <GardenSettings v-if="settingsFor.part.kind === 'garden'" :slot="settingsFor.part.vco" />
+        <template v-else>
+          <div class="row">
+            <button
+              class="grows"
+              :class="{ on: vcos[settingsFor.part.vco]!.garden.grows(settingsFor.part.kind) }"
+              title="GROW: each new clip from the garden walks this part somewhere new (with an LFO on, its centre)"
+              @click="vcos[settingsFor.part.vco]!.garden.toggleGrow(settingsFor.part.kind as PadId)"
+            >
+              <v-icon size="13" icon="mdi-sprout" /> GROW
+            </button>
+            <button
+              class="grows"
+              :class="{ on: vcos[settingsFor.part.vco]!.garden.auto(settingsFor.part.kind) }"
+              title="LFO: a shape traced round this part's point (its panel)"
+              @click="openLfo(settingsFor.part.vco, settingsFor.part.kind as PadId, settingsFor.x, settingsFor.y)"
+            >
+              <v-icon size="13" icon="mdi-chart-timeline-variant" /> LFO
+            </button>
+          </div>
+          <PadSettings :kind="settingsFor.part.kind" :sound="vcos[settingsFor.part.vco]!.sound" :slot="settingsFor.part.vco" :pads="controls[settingsFor.part.vco]" />
+        </template>
         <button class="done" @click="settingsFor = null">DONE</button>
+      </div>
+      <div
+        v-if="lfoFor && vcos[lfoFor.vco]"
+        class="pop lfo-pop"
+        :style="{ left: `${lfoFor.x}px`, top: `${lfoFor.y}px`, '--line': PALETTES_OF()[lfoFor.vco].hi, '--lcd-bg': PALETTES_OF()[lfoFor.vco].deep }"
+        @pointerdown.stop
+        @click.stop
+        @contextmenu.prevent.stop
+      >
+        <div class="pop-head">
+          <b>{{ lfoFor.name }}</b>
+          <small>VCO {{ lfoFor.vco + 1 }} · {{ lfoFor.pad.toUpperCase() }} · drag the part: the shape's centre</small>
+        </div>
+        <div class="lfo-face"><PadLfoPanel :slot="lfoFor.vco" :pad="lfoFor.pad" @close="lfoFor = null" /></div>
       </div>
       <span class="sr" aria-live="polite">{{ caption.head }}: {{ caption.body }}</span>
     </div>
@@ -910,6 +1108,31 @@ const caption = computed(() => {
   border: 3px solid var(--line);
   box-shadow: 5px 5px 0 var(--hud-bg);
 }
+.pop.tall {
+  width: 320px;
+  max-height: min(560px, 80vh);
+}
+.grows {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 10px;
+  border-radius: 10px;
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  color: color-mix(in srgb, var(--line) 75%, transparent);
+  background: color-mix(in srgb, var(--line) 10%, var(--lcd-bg));
+  border: 1px solid color-mix(in srgb, var(--line) 45%, transparent);
+}
+.grows.on {
+  color: #05030a;
+  background: #7dff6a;
+  border-color: #7dff6a;
+  box-shadow: 0 0 8px rgba(125, 255, 106, 0.5);
+}
+.hud-garden {
+  flex: none;
+}
 .pop-head {
   display: flex;
   flex-direction: column;
@@ -945,6 +1168,88 @@ const caption = computed(() => {
 @media (max-width: 760px) {
   .caption span {
     display: none;
+  }
+}
+.lfo-pop {
+  width: 240px;
+  max-height: none;
+}
+.lfo-face {
+  position: relative;
+  align-self: stretch;
+  flex-shrink: 0;
+  height: 170px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line) 40%, transparent);
+}
+.pop .row {
+  display: flex;
+  gap: 6px;
+}
+/* the cockpit: the HUD out of the way of the dash until the pointer comes near its edge */
+.voyage.inside .hud,
+.voyage.inside .eras,
+.voyage.inside .caption {
+  transition: opacity 0.35s, transform 0.35s;
+}
+.voyage.inside:not(.show-top) .hud {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.35s, visibility 0s 0.35s;
+}
+.voyage.inside:not(.show-bottom) .eras,
+.voyage.inside:not(.show-bottom) .caption {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.35s, visibility 0s 0.35s;
+}
+/* (its hint line still shows while a control's under the pointer, small and low) */
+.voyage.inside.hinting:not(.show-bottom) .caption {
+  opacity: 0.85;
+  visibility: visible;
+  pointer-events: none;
+}
+/* outside: the cockpit's air and film over the sky and the ship (added light; never in the pointer's way) */
+.film-outside,
+.air,
+.film {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.air {
+  mix-blend-mode: screen;
+}
+.film.vignette {
+  background: radial-gradient(ellipse at 50% 45%, transparent 50%, rgba(0, 0, 0, 0.5) 85%, rgba(0, 0, 0, 0.85) 115%);
+}
+.film.scan {
+  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.18) 0 1px, transparent 1px 3px);
+  mix-blend-mode: multiply;
+}
+.film.tint {
+  mix-blend-mode: soft-light;
+}
+.film.grain {
+  background-size: 256px 256px;
+  mix-blend-mode: overlay;
+  animation: vgrain 0.5s steps(5) infinite;
+}
+@keyframes vgrain {
+  20% {
+    background-position: -40px 30px;
+  }
+  40% {
+    background-position: 60px -20px;
+  }
+  60% {
+    background-position: -30px -50px;
+  }
+  80% {
+    background-position: 20px 60px;
   }
 }
 </style>

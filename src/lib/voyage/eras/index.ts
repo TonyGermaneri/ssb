@@ -11,8 +11,9 @@ import { E2000 } from './e2000'
 import { E2010 } from './e2010'
 import { E2020 } from './e2020'
 import { E2030 } from './e2030'
-import type { Era } from '../ship'
+import { withGarden, type Era } from '../ship'
 
-export const ERAS: Era[] = [E1950, E1960, E1970, E1980, E1990, E2000, E2010, E2020, E2030]
+/** (each with its VCOs' GARDENs: half of each fin, withGarden) */
+export const ERAS: Era[] = [E1950, E1960, E1970, E1980, E1990, E2000, E2010, E2020, E2030].map((e) => ({ ...e, parts: withGarden(e.parts) }))
 export const DEFAULT_ERA = '1960'
 export const eraOf = (id: string): Era => ERAS.find((e) => e.id === id) ?? ERAS.find((e) => e.id === DEFAULT_ERA)!

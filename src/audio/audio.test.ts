@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { computePeaks } from './peaks'
-import { clipBounds, cycleSeconds, glideSemis, playSeconds, tailSeconds } from './timing'
+import { clipBounds, cycleSeconds, glideSemis, hasTail, loopedClipSeconds, playSeconds, samplePlaySeconds, tailSeconds } from './timing'
 import { envLevel } from './envelope'
 import { keyToMidi } from '../lib/piano'
 import { defaultSettings, GRAIN_DEFAULTS, migratePresetSettings, migrateSettings } from '../types'
@@ -18,8 +18,26 @@ describe('computePeaks', () => {
 
 describe('timing', () => {
   it('bounds the clip and tolerates crossed points', () => {
-    expect(clipBounds(S({ clipIn: 0.25, clipOut: 0.75 }), 4)).toEqual({ clipIn: 1, clipOut: 3, clipLen: 2 })
+    expect(clipBounds(S({ clipIn: 0.25, clipOut: 0.75 }), 4)).toEqual({ clipIn: 1, clipOut: 3, clipLen: 2, loopIn: 1, loopOut: 3 })
     expect(clipBounds(S({ clipIn: 0.8, clipOut: 0.2 }), 10).clipIn).toBe(2)
+  })
+
+  it('loop markers: held inside START..END (defaults: the clip itself), crossed ones tolerated', () => {
+    expect(clipBounds(S({ loopStart: 0.25, loopEnd: 0.5 }), 4)).toMatchObject({ clipIn: 0, clipOut: 4, loopIn: 1, loopOut: 2 })
+    expect(clipBounds(S({ clipIn: 0.5, loopStart: 0.25, loopEnd: 0.9, clipOut: 0.75 }), 4)).toMatchObject({ loopIn: 2, loopOut: 3 })
+    expect(clipBounds(S({ loopStart: 0.5, loopEnd: 0.25 }), 4)).toMatchObject({ loopIn: 1, loopOut: 2 })
+    expect(hasTail(clipBounds(S(), 4))).toBe(false)
+    expect(hasTail(clipBounds(S({ loopEnd: 0.5 }), 4))).toBe(true)
+  })
+
+  it('loop markers: START into the loop, its passes, the tail to END', () => {
+    const c = clipBounds(S({ loopStart: 0.25, loopEnd: 0.5 }), 4) // 1 s in, a 1 s loop, a 2 s tail
+    expect(loopedClipSeconds(c, 1)).toBe(4)
+    expect(loopedClipSeconds(c, 3)).toBe(6)
+    expect(loopedClipSeconds(c, 0)).toBe(Infinity)
+    expect(samplePlaySeconds(S({ repeat: 3, loopStart: 0.25, loopEnd: 0.5, pitch: 12 }), c)).toBe(3)
+    // at the defaults, N passes of the clip, as before
+    expect(samplePlaySeconds(S({ repeat: 3 }), clipBounds(S(), 2))).toBe(playSeconds(S({ repeat: 3 }), 2, false))
   })
 
   it('plays N repeats; 0 loops forever', () => {

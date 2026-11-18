@@ -44,3 +44,33 @@ describe('errorMessage', () => {
     expect(errorMessage(undefined)).toBe('undefined')
   })
 })
+
+describe('ACE-Step: a model that sings', () => {
+  it('is found by name, and a request to it carries the lyrics (others leave them out)', async () => {
+    const { requestFor } = await import('./soundHost')
+    const { soundModelFrom } = await import('./soundModels')
+    const ace = soundModelFrom('ACE-Step')!
+    expect(ace).toMatchObject({ id: 'ace-step-1.5-turbo-bf16', family: 'ace_step', lyrics: true, gated: false })
+    // the BF16 package: a fully quantised ACE-Step's planner samples another song
+    expect(ace.files[0].url).toMatch(/turbo-bf16\.gguf$/)
+    const r = requestFor(ace, { prompt: 'dreamy female vocals', lyrics: '  [verse]\nmisty trolls  ', seconds: 10 }, 7)
+    expect(r).toMatchObject({ text: 'dreamy female vocals', seed: 7, options: { lyrics: '[verse]\nmisty trolls', duration_sec: 10, num_inference_steps: 8 } })
+    expect(requestFor(ace, { prompt: 'x', lyrics: '   ' }, 1).options).not.toHaveProperty('lyrics')
+    expect(requestFor(SOUND_MODELS[1], { prompt: 'x', lyrics: 'la la' }, 1).options).not.toHaveProperty('lyrics')
+  })
+  it('a custom ACE-Step GGUF is read as one', async () => {
+    const { soundModelFrom } = await import('./soundModels')
+    const m = soundModelFrom('https://huggingface.co/someone/ACE-Step-1.5-GGUF/blob/main/ace-step-xl-turbo.gguf')!
+    expect(m).toMatchObject({ family: 'ace_step', lyrics: true, tag: 'ace-step', custom: true })
+  })
+})
+
+describe('the sound helper build', () => {
+  it('compiles in every model family the catalog runs in audio.cpp', async () => {
+    const { readFileSync } = await import('node:fs')
+    const cmake = readFileSync(new URL('../../../native/cmake/SoundHelper.cmake', import.meta.url), 'utf8')
+    const built = cmake.match(/-DAUDIOCPP_MODELS=([\w,]+)/)![1].split(',')
+    // (a family left out loads as "unsupported model family hint", and the helper quits)
+    for (const m of SOUND_MODELS) if (!m.page) expect(built, `${m.label}: ${m.family}`).toContain(m.family)
+  })
+})

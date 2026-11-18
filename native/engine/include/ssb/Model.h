@@ -125,6 +125,9 @@ struct Settings
     float pitch { 0 }, fine { 0 }, speed { 1 };
     bool stretch { false };     // timeMode 'stretch': speed and pitch independent (grains)
     float clipIn { 0 }, clipOut { 1 };
+    // the sustain loop inside START..END (types.ts loopStart / loopEnd; 0 and 1: the clip itself): tape playback goes
+    // from START into it, round it (repeat passes; 0: while held), then through the tail to END
+    float loopStart { 0 }, loopEnd { 1 };
     float attack { 0.001f }, decay { 0.2f }, sustain { 1 }, release { 0.02f };
     FilterType filterType { FilterType::lowpass };
     uint8_t svfType { 0 };          // 0: the biquad above; 1..9: Granulator III's (svfMath.ts SVF_TYPES order)

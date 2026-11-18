@@ -1,16 +1,19 @@
 /**
- * The NOUGHTIES: a jelly-bean pod ship of translucent candy plastic -- a Bondi-blue bow, a lime orb amidships in a
- * brushed-aluminium bezel, a tangerine stern -- with white pearl bellies, big specular gloss and a BETA sticker,
- * gliding over a gleaming Aqua planet. Original Y2K / Web 2.0; nose to the right.
+ * The NOUGHTIES: the AQUAPOD as candy you want to eat -- one long jelly bean of translucent gel plastic, Bondi blue
+ * at the bow and tangerine at the stern, a lime orb set amidships in a fat brushed-aluminium bezel, a pearl-white
+ * pinstriped belly under a brushed seam, bubbles caught in the gel, huge wet speculars, a pill of a canopy like the
+ * flight pod's, aluminium caps and collars, a BETA starburst, and the Aqua planet shining back off its belly. Glossy,
+ * clean, delicious; original Y2K. Nose to the right.
  */
 import Hull2000 from '../../../components/voyage/Hull2000.vue'
+import Overlay2000 from '../../../components/voyage/Overlay2000.vue'
 import { pal, part, type Era } from '../ship'
 
 export const E2000: Era = {
   id: '2000',
   label: '00s',
   title: 'AQUAPOD 2.0 BETA',
-  blurb: 'a candy-gloss jelly pod, forever in beta',
+  blurb: 'a jelly-bean pod of candy gel, forever in beta',
   palettes: [
     pal('BOW', '#1aaee6', '#5fd4ff', '#effbff', '#08375e', '#8ff3ff'),
     pal('MIDSHIPS', '#8acf1c', '#c8f24e', '#f7ffe8', '#1f4a07', '#d9ff7a'),
@@ -18,43 +21,48 @@ export const E2000: Era = {
   ],
   ink: '#1c3b5a',
   stroke: 0.5,
+  partStroke: 0.32,
+  glass: { fill: '#bfefff', opacity: 0.35, highlight: true },
+  stripes: 'palette',
   parts: [
-    // ── BOW · VCO 1: the Bondi-blue egg ──
-    part(0, 'perform', 'JELLY VIEWPORT', [330, -75, 630, 55], 'capsule'),
-    part(0, 'grain', 'CANDY SPINNER', [690, -60, 810, 60], 'pinwheel'),
-    part(0, 'lfo', 'BLINK ARM', [650, -330, 750, -125], 'arm'),
-    part(0, 'fx', 'GEL BUBBLE', [420, -340, 600, -170], 'bubble'),
-    part(0, 'pitch', 'THRUSTER TRIO', [380, 150, 580, 280], 'bells', { n: 3, dir: 112 }),
-    part(0, 'texture', 'FIZZ STRIP', [340, 75, 600, 135], 'row', { dir: 100 }),
-    part(0, 'echo', 'FEED WHISKER', [250, -360, 370, -140], 'whisker'),
-    part(0, 'tone', 'NOSE FIN', [600, 110, 780, 280], 'delta', { flip: 'x' }),
-    // ── MIDSHIPS · VCO 2: the lime orb ──
-    part(1, 'perform', 'ORB WINDOW', [-180, -95, 95, 60], 'round'),
-    part(1, 'grain', 'HALO RING', [-190, 90, 150, 170], 'ring'),
-    part(1, 'lfo', 'GLO LANTERN', [-60, 200, 60, 370], 'lantern', { dir: 90 }),
-    part(1, 'fx', 'GUMDROP DOME', [-100, -390, 90, -205], 'bubble'),
-    part(1, 'pitch', 'GLOSS STACKS', [130, -310, 240, -120], 'stacks', { n: 2 }),
-    part(1, 'texture', 'BUBBLE TUBE', [100, -110, 190, 80], 'column', { dir: -60 }),
-    part(1, 'echo', 'SIGNAL MAST', [-250, -370, -140, -140], 'mast'),
-    part(1, 'tone', 'JELLY KEEL', [160, 110, 330, 290], 'keel'),
-    // ── STERN · VCO 3: the tangerine pod ──
-    part(2, 'perform', 'CANDY CAPSULE', [-620, -75, -330, 55], 'capsule'),
-    part(2, 'grain', 'ION TURBINE', [-820, -80, -670, 70], 'turbine'),
-    part(2, 'lfo', 'TAIL FLAP', [-720, -340, -610, -100], 'flap'),
-    part(2, 'fx', 'FIZZ DOME', [-560, -320, -390, -150], 'bubble'),
-    part(2, 'pitch', 'TWIN JETS', [-700, 110, -570, 240], 'bells', { n: 2, dir: 118 }),
-    part(2, 'texture', 'BUBBLE WAKE', [-560, 75, -330, 135], 'row', { dir: 170 }),
-    part(2, 'echo', 'PODCAST DISH', [-390, -360, -260, -140], 'dish'),
+    // ── BOW · VCO 1: the Bondi-blue gel ──
+    part(0, 'perform', 'PILL CANOPY', [356, -152, 700, 10], 'capsule'),
+    part(0, 'grain', 'CANDY SPINNER', [712, -58, 820, 50], 'pinwheel'),
+    part(0, 'lfo', 'BLINK ARM', [620, -344, 720, -176], 'arm'),
+    part(0, 'fx', 'GEL BUBBLE', [420, -360, 590, -206], 'bubble'),
+    part(0, 'pitch', 'THRUSTER TRIO', [380, 150, 580, 280], 'bells', { n: 3, dir: 108 }),
+    part(0, 'texture', 'FIZZ STRIP', [380, 30, 620, 90], 'row', { dir: 100 }),
+    part(0, 'echo', 'FEED WHISKER', [262, -372, 380, -196], 'whisker'),
+    part(0, 'tone', 'NOSE FIN', [600, 112, 780, 282], 'delta', { flip: 'x' }),
+    // ── MIDSHIPS · VCO 2: the lime orb in its aluminium bezel ──
+    part(1, 'perform', 'ORB WINDOW', [-180, -136, 100, 120], 'round'),
+    part(1, 'grain', 'HALO RING', [-196, 144, 116, 212], 'ring'),
+    part(1, 'lfo', 'GLO LANTERN', [-100, 244, 20, 396], 'lantern', { dir: 90 }),
+    part(1, 'fx', 'GUMDROP DOME', [-140, -428, 60, -276], 'bubble'),
+    part(1, 'pitch', 'GLOSS STACKS', [136, -336, 246, -186], 'stacks', { n: 2 }),
+    part(1, 'texture', 'BUBBLE TUBE', [220, -150, 312, 100], 'column', { dir: -70 }),
+    part(1, 'echo', 'SIGNAL MAST', [-300, -404, -190, -190], 'mast'),
+    part(1, 'tone', 'JELLY KEEL', [170, 124, 340, 300], 'keel'),
+    // ── STERN · VCO 3: the tangerine gel ──
+    part(2, 'perform', 'CANDY CAPSULE', [-650, -132, -330, 30], 'capsule'),
+    part(2, 'grain', 'ION TURBINE', [-820, -76, -680, 64], 'turbine'),
+    part(2, 'lfo', 'TAIL FLAP', [-720, -352, -610, -142], 'flap'),
+    part(2, 'fx', 'FIZZ DOME', [-574, -350, -404, -196], 'bubble'),
+    part(2, 'pitch', 'TWIN JETS', [-700, 112, -570, 242], 'bells', { n: 2, dir: 116 }),
+    part(2, 'texture', 'BUBBLE WAKE', [-566, 48, -336, 108], 'row', { dir: 170 }),
+    part(2, 'echo', 'PODCAST DISH', [-404, -384, -308, -190], 'dish'),
     part(2, 'tone', 'TAIL FIN', [-540, 150, -370, 310], 'tail'),
   ],
   ports: [
-    { vco: 0, x: 510, y: -340 },
-    { vco: 1, x: -5, y: -390 },
-    { vco: 2, x: -475, y: -320 },
+    { vco: 0, x: 505, y: -360 },
+    { vco: 1, x: -40, y: -428 },
+    { vco: 2, x: -489, y: -350 },
   ],
-  wake: [-815, -5],
-  aura: [0, 0, 800, 260],
+  wake: [-815, -6],
+  aura: [0, 0, 800, 270],
   hull: Hull2000,
+  overlay: Overlay2000,
+  finish: { shade: 0.75, tintMax: 0.3 },
   sky: {
     mode: 5,
     colors: ['#0a3a8c', '#4fb4ff', '#0b2f73', '#9fe9ff', '#c8ff6a'],

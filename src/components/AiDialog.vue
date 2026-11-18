@@ -9,6 +9,8 @@ import { preview } from '../audio/engine'
 import { mcpSaved, mcpStatus } from '../lib/ai/mcpStatus'
 import { newMcpToken, setMcp, setMcpPort } from '../lib/ai/mcpHost'
 import { inNative } from '../native/bridge'
+import { WORD_MODELS, wordModelBytes } from '../lib/garden/wordModels'
+import { checkWordModel, chooseWordModel, downloadWordModel, removeWordModel, riffModel, riffState, setRiffOn, wordsFor } from '../lib/garden/riff'
 
 /**
  * The AI patch maker: a conversation with a model that makes, changes, studies and tidies the board's patches with
@@ -122,6 +124,31 @@ const taskLine = computed(() => {
   if (t.kind === 'load') return `Loading ${who}… ${Math.round(t.elapsed)} s`
   return `Generating with ${who}… ${Math.round(t.elapsed)} s`
 })
+// ── the garden's word model (lib/garden/riff.ts): the rings' words from a prompt, in the page, offline once downloaded ──
+const confirmWords = ref(false)
+const wordTest = ref('')
+const wordPick = computed(() => riffModel())
+const wordBusy = computed(() => riffState.status === 'downloading' || riffState.status === 'loading')
+const wordLine = computed(() => {
+  const pct = `${Math.round(riffState.progress * 100)} %`
+  if (riffState.status === 'downloading') return `Downloading ${wordPick.value.label}: ${fmtBytes(riffState.doneBytes)} of ${fmtBytes(riffState.totalBytes)} · ${pct}`
+  if (riffState.status === 'loading') return riffState.totalBytes && riffState.progress < 1 ? `Fetching ${wordPick.value.label}… ${pct}` : `Loading ${wordPick.value.label}…`
+  if (riffState.status === 'ready') return `✓ Ready${riffState.last ? ` · last words in ${riffState.lastMs} ms` : ''}`
+  return ''
+})
+function getWords() {
+  confirmWords.value = false
+  void downloadWordModel()
+}
+async function testWords() {
+  wordTest.value = '…'
+  const scene = 'in the depths of moria and in the misty mountains'
+  const r = await wordsFor(scene, 'noun').catch(() => [] as string[])
+  wordTest.value = r.length ? `“${scene}” → ${r.join(', ')}` : '✗ nothing came back'
+}
+watch(() => riffState.id, () => ((confirmWords.value = false), (wordTest.value = '')))
+void checkWordModel()
+
 function loadSound() {
   confirmDownload.value = false
   if (toDownload.value !== 0 && !soundLoaded.value) return void (confirmDownload.value = true)
@@ -382,6 +409,46 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
             <p v-if="ai.soundError" class="err">{{ ai.soundError }}</p>
             <p v-else-if="sound?.error && sound.error.message !== 'cancelled'" class="err">{{ labelOf(sound.error.model) }}: {{ sound.error.message }}</p>
           </template>
+
+          <h4 class="mcp-head">WORD MODEL</h4>
+          <p class="hint">
+            A tiny language model the PROMPT GARDEN's words come from: a prompt you type for a VCO (its wave prompt, or the GARDEN pad's) and it lists
+            words of each ring's kind for it — nouns, verbs, places — which become the rings' words. It runs in SSB on this computer, offline once
+            downloaded. Without it the rings keep the words they have.
+          </p>
+          <label class="row">
+            <input type="checkbox" :checked="riffState.on" @change="setRiffOn(($event.target as HTMLInputElement).checked)" />
+            <span>THE RINGS' WORDS FROM IT</span>
+          </label>
+          <label>
+            MODEL
+            <select :value="riffState.id" :disabled="wordBusy" @change="chooseWordModel(($event.target as HTMLSelectElement).value)">
+              <option v-for="m in WORD_MODELS" :key="m.id" :value="m.id">{{ m.label }} · {{ fmtBytes(wordModelBytes(m)) }} · {{ m.note }}</option>
+            </select>
+          </label>
+          <p class="hint">
+            <a :href="`https://huggingface.co/${wordPick.repo}`" target="_blank" rel="noopener">{{ wordPick.repo }}</a> · Apache 2.0 · int8 ONNX, run by
+            transformers.js<template v-if="!inNative()"> · in a browser tab it's kept in the browser's cache</template>
+          </p>
+          <p v-if="riffState.downloaded === false && riffState.status !== 'downloading'" class="warn">
+            ⚠ It downloads <b>{{ fmtBytes(wordModelBytes(wordPick)) }}</b> once, <template v-if="inNative()">into SSB's folder on this computer</template><template v-else>into this browser</template>.
+          </p>
+          <div v-if="confirmWords" class="confirm-dl">
+            <v-icon icon="mdi-download" color="secondary" />
+            <span>Download {{ fmtBytes(wordModelBytes(wordPick)) }} for {{ wordPick.label }}? It's once.</span>
+            <button class="hw-btn lit" @click="getWords">DOWNLOAD</button>
+            <button class="hw-btn" @click="confirmWords = false">CANCEL</button>
+          </div>
+          <div class="row">
+            <button v-if="riffState.downloaded !== true" class="hw-btn" :disabled="wordBusy" @click="confirmWords = true">DOWNLOAD</button>
+            <button v-else-if="riffState.status !== 'ready'" class="hw-btn" :disabled="wordBusy" title="Load it now (it loads by itself the first time a prompt asks it for words)" @click="getWords">LOAD</button>
+            <button v-if="riffState.status === 'ready'" class="hw-btn" title="Ask it for a ring's words once" @click="testWords">TEST</button>
+            <button v-if="riffState.downloaded === true" class="hw-btn" :disabled="wordBusy" title="Delete its files (it downloads again when needed)" @click="removeWordModel">DELETE FILES</button>
+            <span class="test" :class="{ err: wordTest.startsWith('✗') }">{{ wordLine }}</span>
+          </div>
+          <div v-if="wordBusy && riffState.progress > 0" class="bar"><i :style="{ width: `${Math.round(riffState.progress * 100)}%` }" /></div>
+          <p v-if="wordTest" class="hint">{{ wordTest }}</p>
+          <p v-if="riffState.error" class="err">{{ riffState.error }}</p>
 
           <h4 class="mcp-head">MCP SERVER</h4>
           <p class="hint">

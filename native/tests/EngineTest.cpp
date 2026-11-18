@@ -369,6 +369,65 @@ TEST ("engine: REPEAT 2 plays the clip twice and stops")
     CHECK (rig.rms (0.52, 0.7) < 1e-4);
 }
 
+/** A sample in parts of `seconds` each, a sine of its own frequency in each (whole cycles: no clicks between them). */
+ssb::SamplePtr parts (std::initializer_list<double> hzs, double seconds)
+{
+    auto s = std::make_shared<ssb::Sample>();
+    s->rate = rate;
+    const auto n = (size_t) (seconds * rate);
+    s->channels.assign (1, {});
+    for (const double hz : hzs)
+        for (size_t i = 0; i < n; ++i)
+            s->channels[0].push_back ((float) std::sin (2 * ssb::dsp::pi * hz * (double) i / rate));
+    return s;
+}
+
+TEST ("engine: loop markers -- START into the loop, REPEAT passes round it, then the tail to END")
+{
+    Rig rig;
+    rig.add ("a", parts ({ 200, 400, 800 }, 0.1), [] (auto& s) { s.repeat = 3; s.release = 0.005f; s.loopStart = 1 / 3.0f; s.loopEnd = 2 / 3.0f; });
+    rig.commit();
+    rig.press ("a");
+    rig.render (0.7);
+    CHECK_NEAR (rig.hz (0.01, 0.09), 200.0, 4.0);
+    CHECK_NEAR (rig.hz (0.11, 0.39), 400.0, 4.0);   // three passes of the loop
+    CHECK_NEAR (rig.hz (0.41, 0.49), 800.0, 8.0);   // the tail
+    CHECK (rig.rms (0.52, 0.7) < 1e-4);
+}
+
+TEST ("engine: loop markers -- held (REPEAT ∞), it goes round the loop; released, it plays the tail and stops at END")
+{
+    Rig rig;
+    rig.add ("a", parts ({ 200, 400, 800 }, 0.1), [] (auto& s) {
+        s.repeat = 0; s.release = 2.0f; s.mode = ssb::TriggerMode::hold; s.loopStart = 1 / 3.0f; s.loopEnd = 2 / 3.0f;
+    });
+    rig.commit();
+    rig.press ("a");
+    rig.render (0.55);
+    CHECK_NEAR (rig.hz (0.11, 0.54), 400.0, 4.0);
+    rig.engine.post (ssb::Command::make (ssb::Command::Type::release, "a"));
+    rig.render (0.4);
+    // what was left of the loop pass (under 0.1 s), then the 800 Hz tail, then nothing though the release is long
+    double tailFrom = -1;
+    for (double t = 0; t < 0.2 && tailFrom < 0; t += 0.005)
+        if (std::abs (rig.hz (t, t + 0.02) - 800.0) < 10) tailFrom = t;
+    CHECK (tailFrom >= 0);
+    CHECK (rig.rms (tailFrom + 0.12, 0.4) < 1e-4);
+    CHECK (rig.engine.activeVoices() == 0);
+}
+
+TEST ("engine: loop markers at their defaults (0 and 1) loop the clip as before")
+{
+    Rig rig;
+    rig.add ("a", parts ({ 200, 400 }, 0.1), [] (auto& s) { s.repeat = 2; s.release = 0.005f; });
+    rig.commit();
+    rig.press ("a");
+    rig.render (0.6);
+    CHECK_NEAR (rig.hz (0.21, 0.29), 200.0, 4.0);   // the second pass starts at START again
+    CHECK_NEAR (rig.hz (0.31, 0.39), 400.0, 4.0);
+    CHECK (rig.rms (0.42, 0.6) < 1e-4);
+}
+
 TEST ("engine: trigger modes -- STOP releases on a second press, choke groups cut each other")
 {
     Rig rig;

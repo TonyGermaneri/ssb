@@ -25,6 +25,7 @@ juce::String mimeFor (const juce::String& path)
         { ".png",  "image/png" },        { ".jpg",   "image/jpeg" },
         { ".ico",  "image/x-icon" },     { ".map",   "application/json" },
         { ".wav",  "audio/wav" },        { ".txt",   "text/plain" },
+        { ".wasm", "application/wasm" }, { ".onnx",  "application/octet-stream" },
     };
     for (const auto& [suffix, mime] : table)
         if (path.endsWithIgnoreCase (suffix))
@@ -659,10 +660,27 @@ std::optional<juce::WebBrowserComponent::Resource> SsbEditor::provideAudio (cons
     return juce::WebBrowserComponent::Resource { std::move (out), "application/octet-stream" };
 }
 
+/** A downloaded model's file (SoundHost's models folder: the garden's word model, read by transformers.js in the page's
+    riff worker), memory-mapped so a few hundred MB are copied once, into the response. */
+std::optional<juce::WebBrowserComponent::Resource> SsbEditor::provideModelFile (const juce::String& rel)
+{
+    const auto root = ssb::SoundHost::modelsDirectory();
+    const auto file = root.getChildFile (rel);
+    if (rel.contains ("..") || ! file.isAChildOf (root) || ! file.existsAsFile() || file.getFileExtension() == ".part")
+        return std::nullopt;
+    juce::MemoryMappedFile mapped (file, juce::MemoryMappedFile::readOnly);
+    if (mapped.getData() == nullptr)
+        return std::nullopt;
+    const auto* data = static_cast<const std::byte*> (mapped.getData());
+    return juce::WebBrowserComponent::Resource { std::vector<std::byte> (data, data + mapped.getSize()), mimeFor (file.getFileName()) };
+}
+
 std::optional<juce::WebBrowserComponent::Resource> SsbEditor::provide (const juce::String& path)
 {
     if (const auto rel = path.fromFirstOccurrenceOf ("/", false, false); rel.startsWith ("ssb-audio/"))
         return provideAudio (juce::URL::removeEscapeChars (rel.fromFirstOccurrenceOf ("ssb-audio/", false, false).upToFirstOccurrenceOf ("?", false, false)));
+    else if (rel.startsWith ("ssb-models/"))
+        return provideModelFile (juce::URL::removeEscapeChars (rel.fromFirstOccurrenceOf ("ssb-models/", false, false).upToFirstOccurrenceOf ("?", false, false)));
 
     const auto root = ssb::webRoot();
     const auto relative = path == "/" ? juce::String ("index.html") : path.fromFirstOccurrenceOf ("/", false, false);

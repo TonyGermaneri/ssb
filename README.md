@@ -39,7 +39,9 @@ Two catalogs, each with card and grid views and its own tag filter, shown by the
   and its **MPE bindings** (what an MPE controller's surfaces do to it, see [MPE](#mpe)). Selecting a patch loads those
   header settings. Clicking a patch card loads it and plays it (so it sounds with its own header); **☰** (or
   right-click) loads it and shows the rack, the one place a patch is edited — its title row has the name, tags, ♥,
-  **SAVE**, **REVERT**, **DUPLICATE** (the rack then shows the copy) and **DELETE** (then the next patch).
+  **SAVE**, **REVERT**, **DUPLICATE** (the copy goes at the end of the list, and the rack shows it) and **DELETE** (then the next patch). The header's
+  **new patch** button copies the patch open on a click (at the end of the list, like DUPLICATE); held for 1.5 s (a green bar fills under it) it makes a new
+  patch whose first VCO is the saw wavetable.
 
 **Saving patches**: editing a patch doesn't save it. Its VCOs, header knobs, matrix and MPE bindings play as you change
 them, and a dot on the header's patch display and a lit **SAVE** (there and in the rack) say it has edits. **SAVE** keeps
@@ -113,17 +115,20 @@ AKWF waves.
 
 The **rack** under the header shows the selected patch's three slots as tabs (**1 2 3**, each named after its sound,
 its LED lit while it sounds, MOD on a silent modulator), one at a time with its sound's full panel across the width.
-Clicking a VCO in the header opens its tab; a sound dragged over a tab opens it, and dropped there fills that slot.
-- **Fill a slot** by dragging a sound card by its ⋮⋮ grip (or a grid row by its ⠿) into it, or onto that VCO in the
-  header, or pressing **1 / 2 / 3** on the card or in the grid's 1 2 3 columns (the number lights while the sound
+A sound dragged over a tab opens it, and dropped there fills that slot.
+- **Fill a slot** by dragging a sound card by its ⋮⋮ grip (or a grid row by its ⠿) into it, or pressing **1 / 2 / 3** on the card or in the grid's 1 2 3 columns (the number lights while the sound
   sits in that slot, and pressing it again takes it out; the previous sound is replaced). With no patch selected this
   starts one.
 - **REMOVE** empties a slot.
 - **Prompt a wave** (the app and the plugin, with a sound model downloaded): the field under a slot's bar asks the
-  sound model picked in ⚙ ▸ SOUND MODEL for a clip from a few words (*a warm sustained cello note, C3*; *glass
-  harmonica, airy*), and the clip becomes that slot's sound: trimmed, faded and normalised, tuned from its pitch when it
-  holds a note, added to the board tagged `vco`. No conversation, and nothing downloads from here (a model not yet
-  downloaded says so; ⚙ fetches it); ■ stops it. With no patch selected this starts one.
+  VCO's sound model (its **☰ › SOUND MODEL**, beside GROW — the same one its garden grows with) for a clip from a few
+  words (*a warm sustained cello note, C3*; *glass harmonica, airy*), and the clip becomes that slot's sound: trimmed,
+  faded and normalised, tuned from its pitch when it holds a note, added to the board tagged `vco`. **➤** (or Enter)
+  sends the words as typed; the **automation button** beside it has the word model write them out first — a fuller
+  caption, and for a model that sings, the words to sing. The line under it shows the model and what was sent. Choosing
+  another model in ☰ takes effect at once (a clip the old one made, not yet in, is let go). No conversation, and nothing
+  downloads from here (a model not yet downloaded says so; ⚙ fetches it); ■ stops it. With no patch selected this
+  starts one.
 - **VCO 1** is the main voice. VCOs 2–3 have **MIX / MOD** (heard, or a silent modulator only), **TRACK / FIXED**
   (follow the played key keeping TRANS / FINE, or always play NOTE) and **LEVEL**.
 - **Tuning** (the **ET** chip, on every VCO): equal temperament, or **adaptive just intonation**, which retunes that
@@ -179,7 +184,7 @@ Clicking a VCO in the header opens its tab; a sound dragged over a tab opens it,
     and kept by the page (not the patch). Off, or without WebGL2, the pads draw their pictures alone.
   - **VOYAGE** (VCO 1's PERFORM ⚙ › PLAY MODE): the PLAY view goes full screen as a technicolor ship bobbing through
     a field of rocks, and its working parts are the pads — all 24, the same settings, each VCO a section in its own
-    colours. The BOW (VCO 1): VIEWPORT (PERFORM), NOSE SPINNER (GRAIN), PERISCOPE (LFO), CRYSTAL DOME (FILTER · REVERB),
+    colours — and each VCO's **GARDEN** (a strip of step lamps set into the foot of its window). The BOW (VCO 1): VIEWPORT (PERFORM), NOSE SPINNER (GRAIN), PERISCOPE (LFO), CRYSTAL DOME (FILTER · REVERB),
     SPIRAL HORN (PITCH), BUBBLE JETS (TEXTURE), WHISKER AERIAL (ECHO), KEEL FIN (TONE). MIDSHIPS (VCO 2): BRIDGE WINDOW,
     PADDLE WHEEL, SWING LANTERN, SONAR BUBBLE, CANDY STACKS, FIZZ PORTS, GRAMOPHONE, SIDE WING. The STERN (VCO 3): STERN
     PORTS, PROPELLER, RUDDER, LAVA DOME, EXHAUST PIPES, BUBBLE WAKE, SPRING AERIAL, TAIL FIN. Drag across a part as across
@@ -188,7 +193,14 @@ Clicking a VCO in the header opens its tab; a sound dragged over a tab opens it,
     swingers swing with the LFO; domes ripple with the reverb, tinted warm (low-pass) to icy (high-pass); funnels'
     stripes run with the pitch (backwards, stopped) and puff smoke rings with the ring mod; vents bubble with SPRAY and
     split into two colours with DETUNE; aerials ring once per echo, fading by the feedback; fins' stripes warm or cool
-    with the tilt, the middle band swelling with the mids. The ship steadies while you're at its controls.
+    with the tilt, the middle band swelling with the mids. The GARDEN strip is the GARDEN pad without its circles:
+    the picked ring's steps as a row of lamps (its hits lit, the step playing bright, a bar sweeping on to the next), a
+    pip per ring and a seed lamp at the end, green while the garden grows; the word playing shows on hover; drag ←→ its STEPS and
+    ↑↓ its HITS, double-click for the next ring, right-click for its PROMPT and the rest. Every other part has two green
+    badges (on its corner while you're over it, always while on; or in its right-click settings), as the PLAY pads'
+    buttons below: the sprout is its **GROW**; the other turns on its **LFO** and opens its panel beside it (a right-click
+    turns it on or off). Each VCO's chip in the HUD has its **◀ GROW ☰ ▶**, as its bar in PLAY. The ship steadies
+    while you're at its controls.
     Rocks drift by, each meant for one VCO (in its colours) and carrying a sound from the samples list as it's filtered.
     One that passes near its VCO's tractor port (the top of the bow's and the stern's domes, the bottom of the sonar
     bubble) is beamed in and becomes that VCO's wave, crossfaded into what's sounding (**XFADE**); a click on a rock
@@ -198,9 +210,35 @@ Clicking a VCO in the header opens its tab; a sound dragged over a tab opens it,
     striped sun, oil-wheel blobs, parallax stars and rocks, rainbow poster outlines round the ship, beams and wakes
     leaving hue-shifting trails, then a misregistered three-strip split, halftone, grain, gate weave and dust.
     **PADS** (or Esc) goes back.
-    **A ship for every decade**: the timeline over the caption (or ‹ ›) picks the era — the 50s' atomic saucer, the
-    60s' technicolor sub, the 70s' deep-space hauler, the 80s' neon interceptor, the 90s' CGI cruiser, the 00s' glossy
-    pod, the 10s' flat liner, the 20s' glass nomad and the 30s' steel starship. Each is its own hull with the same 24
+    **COCKPIT** (beside STEADY) puts you in the pilot's seat: the era's cockpit round you, the same sky through its
+    windscreen (out of focus behind the glass), stars streaking past and the rocks coming at you. Every VCO's controls
+    are on the dash — its 15 pad axes and the garden's STEPS and HITS, 51 in all — built the way the era would have
+    built them: knobs, throttles, sliders, cranks and valve wheels to wind, chains to pull, a stick for PITCH, nixie or
+    flip digits for the garden, and patch leads you drag from jack to jack for the stepped ones (LFO RATE and ECHO time
+    on the tempo's divisions, GRAIN under SYNC). A control reads its pad, so one an LFO moves turns by itself. Its
+    screens show what the PLAY pads draw, its gauges the VCOs' levels; a rock meant for an open intake is beamed down
+    into that VCO's intake on the dash once it's near (or click it). Over it all: light shafts with dust turning in
+    them, film grain, scanlines, interference and the era's vignette and tint. The HUD gets out of the way — it comes
+    back with the pointer at the very top or bottom edge. Every decade has its own: the 50s' steam-age brass flight
+    deck (a mahogany switchboard of frayed leads overhead, pull-chains hanging in front of the glass, oxblood leather,
+    green televisors, valve wheels, steam off the sill pipe); the 60s' psychedelic eye (an almond windscreen in op-art
+    bands, lava-lamp sliders, flower consoles of jelly knobs round a petal wheel, mandalas and diamonds); the 70s'
+    walnut and harvest-gold hauler (chicken-head selectors overhead, amber CRTs, chrome T-handle throttles, a hi-fi
+    tuning dial for POS); the 80s' neon wedge (vector CRTs, a HUD and a sliced sun on the glass, lit faders, a neon
+    patch bay); the 90s' candy-and-chrome bubble (see-through plastic pods over circuit boards, chrome selectors); the
+    00s' jelly pod (gel everything, a ball-chain pull, a lime orb of knobs round a round screen, a wet floor); the 10s'
+    flat cards with 45° long shadows; the 20s' frosted-glass cards under an aurora; and the 30s' steel and carbon
+    (guarded toggles, a throttle quadrant, a side-stick, Earth's limb under the glass).
+    **EXTERIOR** goes back outside.
+    **A ship for every decade**: the timeline over the caption (or ‹ ›) picks the era — each ship built to match its cockpit — the 50s'
+    steam-age atomic saucer (riveted iron and brass, copper pipes, green-glowing portholes, a three-pane bridge,
+    steam), the 60s' psychedelic eye-ship (op-art candy lacquer, an almond eye for a bridge, mandalas, diamonds,
+    daisies), the 70s' weathered industrial hauler (painted plating, stencilled cargo containers, an amber-lit wedge
+    bridge, heat-stained nozzles), the 80s' neon black wedge (a laser grid, chrome bead lines, neon edges), the 90s'
+    ray-traced chrome and candy-plastic cruiser (circuit boards glowing through), the 00s' jelly pod, the 10s' flat
+    poster liner with its long shadows, the 20s' frosted-glass nomad and the 30s' stainless deep-space ship (hex heat
+    tiles, weld seams, harsh sun, Earth-light beneath). Outside, the sky, the air and the film are the cockpit's own:
+    the same light shafts and dust, grain, interference and tint. Each is its own hull with the same 27
     parts placed and named its own way, in its own colours, and its own sky: pulp print with a ringed planet,
     screenprint bands, airbrushed nebulae and a gas giant, a synthwave grid, a dithered warp field, aqua gloss and
     bokeh, flat planets with long shadows, dark-mode mesh gradients, or black space over the Earth's limb — each with
@@ -213,10 +251,10 @@ Clicking a VCO in the header opens its tab; a sound dragged over a tab opens it,
 - The header's **VIEW** group has three toggles for what's under the header: **RACK**, **PATCHES** and **SAMPLES**
   (one always stays on). With the rack, the lists go beside it: they start at a third of the window; drag the divider
   to resize them (double-click = 33%). Patches and samples together stack, patches above; drag the split between them
-  (double-click = half and half). Clicking a VCO in the header shows the rack too. Each list's own bar shows it as
+  (double-click = half and half). Each list's own bar shows it as
   **CARDS** or a **GRID** (each keeps its own) and sizes the cards (− 100% +).
-- Each panel section has a **fold** triangle (top right) that shrinks it to its title. EQ, DELAY and REVERB start
-  folded; folds are shared by every panel and saved.
+- Each panel section has a **fold** triangle (top right) that shrinks it to its title; folds are shared by every
+  panel and saved.
 
 ### Adaptive just intonation
 
@@ -288,9 +326,18 @@ DAW. Nothing to install: pick a model and press **DOWNLOAD + LOAD**.
 | [Stable Audio 3 Small Music](https://huggingface.co/stabilityai/stable-audio-3-small-music) | 1.7 GB | loops at a BPM, notes, pads, textures; seconds a clip | stereo 44.1 kHz |
 | [Stable Audio 3 Small SFX](https://huggingface.co/stabilityai/stable-audio-3-small-sfx) | 1.7 GB | quick stereo effects | stereo 44.1 kHz |
 | [Stable Audio Open 1.0](https://huggingface.co/stabilityai/stable-audio-open-1.0) | 5.3 GB | the original: samples and loops | stereo 44.1 kHz, ≤ 47 s; gated (accept its licence, paste a Hugging Face token) |
+| [ACE-Step 1.5 Turbo](https://huggingface.co/ACE-Step/Ace-Step1.5) | 10.1 GB | music with **singing**: it sings the lyrics given (50+ languages), or hums and oohs | stereo 48 kHz, ≤ 60 s, MIT; about 12 GB of memory |
+| [MusicGen Small](https://huggingface.co/facebook/musicgen-small) | 660 MB | instrumental phrases and grooves from a description; no singing. Runs in SSB itself (transformers.js, one core): 5 s in about 20 s | mono 32 kHz, ≤ 30 s; **CC-BY-NC 4.0, non-commercial only** |
 
-The Stable Audio models are under the Stability AI Community License. The **MODEL** field is a combobox: pick one, or
-paste the Hugging Face URL of another GGUF (a MOSS-SoundEffect or Stable Audio model for audio.cpp). Before anything
+The Stable Audio models are under the Stability AI Community License. MusicGen isn't an audio.cpp model: SSB downloads its ONNX files the same way and runs it in the page, in a
+worker; loading it unloads the helper's model, and the reverse (one at a time), and a stopped MusicGen clip loads it
+again. Its weights are for non-commercial use. ACE-Step is the BF16 package: audio.cpp's
+Q8 one quantises its planner, which then writes a different song. You keep typing short prompts: with ACE-Step as a
+VCO's ☰ model, the prompt's automation button (and the garden) has the word model write four lines to sing about the
+prompt — or the garden's caption — and ACE-Step sings them (10 s clips; a garden's AVOID words for voices let go; with
+no word model the prompt's own words are sung); **➤** sings the words as typed. **☰ › LYRICS › OWN WORDS** (advanced)
+takes the words from you instead, and ☰ shows the words sung last. The agent's make_sound takes `lyrics` too. The **MODEL** field is a combobox: pick one, or
+paste the Hugging Face URL of another GGUF (a MOSS-SoundEffect, Stable Audio or ACE-Step model for audio.cpp). Before anything
 downloads it says how much, and how much memory the model takes while loaded; **DOWNLOAD + LOAD** asks once more, shows
 progress, and **CANCEL** stops it (a download resumes later). Models go to
 `~/Library/Application Support/WaveContour/SSB/sound/models` (**DELETE FILES** removes one). One model is loaded at a
@@ -320,17 +367,30 @@ Contract tests against the real APIs: `SSB_AI_LIVE=1 npx vitest run src/lib/ai/p
 
 ### Prompt garden
 
-**GROW** on a VCO (its tab's bar, or its column in PLAY) lets that VCO regrow its own sample while it plays; while a
-clip is being made the chip fills as its progress bar. Beside it, each VCO has its own **XFADE**, **OFFSET** and
-**LOOPS** knobs (in PLAY, its **VOL** too), **⏸**, which pauses its growth (the clip playing loops on; nothing new is
-made or stitched in), **💾**, which saves the clip playing into the samples (tagged `generated`), and in PLAY, while it
-grows, a green **↻** (GROW NOW): the clip ready goes in at once, or a new one is made now and goes in when it's done:
+Each VCO can regrow its own sample while it plays. Its bar (its tab's, or its column's in PLAY) has its own **XFADE**,
+**OFFSET** and **LOOPS** knobs (in PLAY, its **VOL** too), then **◀ GROW ☰ ▶**: **GROW** — the automation icon — turns
+growth on (green; while a clip is being made it fills as its progress bar), **◀ ▶** step back and forth through the
+clips it has grown (stitched in at once), and **☰** holds the **SOUND MODEL** and the words to **AVOID** (the negative
+prompt). After them **↻** (in PLAY, while it grows: the clip ready goes in at once, or a new one is made now), **⏸**,
+which pauses its growth (the clip playing loops on), and **💾**, which saves the clip playing into the samples (tagged
+`generated`).
 
-- **Rings** of words (adjectives, nouns, verbs, textures, instruments, places, your own) each turn a Euclidean rhythm,
-  HITS spread over STEPS and ROTATEd. Every new clip is one step of all of them: a ring that hits moves on to its next
-  word (CYCLE), a random one (RANDOM) or a neighbour (WALK); between hits it HOLDs its word or DROPs out. LOCK freezes
-  one. The words make the caption — "warm bells humming" — and the **chips** (genre, mood, style) and **grids**
-  (tempo, key, scale, length; the lit cells take turns) go on every one.
+- **The GARDEN pad** (in PLAY, beside TONE) shows the VCO's **rings** of words (adjectives, nouns, verbs, textures,
+  instruments, places, your own), each turning a Euclidean rhythm, HITS spread over STEPS. The bright ring is on the
+  pad: left / right its **STEPS** (1 to 32), up / down its **HITS**; a double-click picks the next ring. Every new clip
+  is one step of all of them: a ring that hits moves on to its next word (CYCLE), a random one (RANDOM) or a neighbour
+  (WALK); between hits it HOLDs its word or DROPs out. The words make the caption — "eerie trolls echoing in a mithril
+  mine". Its **⚙** has the rest: the PROMPT, the rings (add, remove, kind, LOCK, MUTE, ROTATE, CYCLE / RANDOM / WALK,
+  HOLD / DROP), BACK, PAD STEP, REUSE and the SEED.
+- **The words come from a word model** (AI settings › WORD MODEL): a tiny language model — SmolLM2 360M (365 MB) or
+  135M (140 MB), Apache 2.0, run in SSB by transformers.js on WebAssembly in a worker, offline once downloaded. Type a
+  prompt — the VCO's wave prompt, or the GARDEN pad's ⚙ › PROMPT — and it lists words of each ring's kind for it, which
+  become that ring's words as each list comes ("in the depths of moria and in the misty mountains" → trolls, elves,
+  mages, misty, echoing, in a mithril mine…). LOCKed rings keep theirs. A list takes a few seconds per ring kind; the
+  clip already made from the old words is let go. In the app and the plugin it downloads into SSB's models folder; in a
+  browser tab, into the browser's cache.
+- **AVOID**: a clip whose caption asks for one of the words it avoids gets it anyway — monks chanting aren't steered
+  off "speech, vocals" for that clip.
 - **Growing**: once the VCO sounds, the next clip is made in the background — Stable Audio 3 Small (8 steps, seconds)
   by default, which must be downloaded (AI settings › SOUND MODEL); SKETCH, a little synth that plays the words, needs
   nothing and is what a browser tab uses. After **LOOPS** passes of the clip (2 s at least) the new one is **stitched**
@@ -344,19 +404,27 @@ grows, a green **↻** (GROW NOW): the clip ready goes in at once, or a new one 
   kicked by the audio. Either way in film-stock colours with an anamorphic streak, lens ghosts, colour slipping apart, halation,
   grain and a little gate weave. A new prompt's words fade in one by one as the old ones go. PERFORM's ⚙ › GARDEN WORDS
   turns them off, picks SCROLL or DRIFT, and sets AMT, FLARE and AGE (how old the lens and film are).
-- **The pads grow too** (GROWTH › PADS GROW TOO): at each new clip, the PLAY view's pads chosen (all but PERFORM and
-  PITCH to begin with) step somewhere new — their x and y, up to 16 parameters a VCO — a seeded walk of up to AMOUNT from
-  where they are, so the same seed and step move them the same way. The move starts OFFSET loops after the clip comes
-  in (wrapped to land before the next one; OFFSET 0: with it) and glides over XFADE, as the clips crossfade. They're
-  the pads' own writes, so the knobs and crosshairs follow; a garden move never turns an ECHO on.
-- **It loops, sometimes**: everything follows from the SEED and the step, so cycling rings come round again (the
-  RINGS tab says after how many steps), and with **REUSE** a caption that comes up again plays the clip it made then.
-  **BACK** is the chance a step returns to an earlier clip instead. HISTORY plays any take (hold ▶) or goes back to
-  it (↺). Every take is also a sound in the list, tagged `garden`.
-- **GAME**: three 20 s rounds — ORBIT (fling comets through the VCO's gravity at orbiting words), RAIN (catch falling
-  words on a paddle in a shifting wind), MAGNET (pull drifting words into a portal) — the VCO's output driving the
-  physics. GROW THE CATCH NEXT makes the next caption from what you caught; LOCK RINGS TO IT freezes each ring on the
-  word caught from it.
+- **Pad LFOs**: each PLAY pad (PERFORM too) has a small automation button beside its ⚙. A click turns it on (green) and
+  opens its **LFO** panel on the pad's face, micro faders over the picture: **SHAPE** (top to bottom CIRCLE, EIGHT,
+  SQUARE, TRIANGLE, LINE, morphing from one to the next between them), **ASPECT**
+  (taller down, wider up; the middle 1:1), **FREQ** (how fast it goes round, 50 s to 8 Hz) and **AMP** (how far from the
+  centre). It's drawn as part of the picture: a comet gliding round the shape in the pad's colour, its tail behind it,
+  throwing off sparks, a soft ripple where a snapping pad's setting steps (the settings still snap where the pad snaps:
+  the LFO pad's tempo divisions, the echo's, a scale's notes). Left alone, that's all a pad shows: its crosshair, path,
+  centre and bright buttons fade out, and come back under the pointer, while you drag and while its panel is open (on
+  the ship, each part an LFO moves gets the comet too, its marker and badges fading the same way); dragging the pad (where
+  no fader is, panel open or not) moves the centre. Past an edge it's held at the edge, so a big AMP squares off. **×**
+  closes the panel and the LFO keeps running; **OFF** turns it off and closes it (or right-click the button: a right-click turns it on or off, without the panel), leaving
+  the pad at its centre. Its moves are heard by both engines but aren't edits: they don't mark the patch edited, save
+  or make undo steps (the faders and the centre are, and are kept with the patch).
+- **The pads grow too**: each pad's **GROW** button (🌱, left of the LFO's; on the ship, a sprout badge) turns it on: at
+  each new clip that pad (with its LFO on, the LFO's centre) steps somewhere new — its x and y — a seeded walk of up to PAD STEP (the GARDEN pad's ⚙) from
+  where it is, so the same seed and step move it the same way. The move starts OFFSET loops after the clip comes in
+  (wrapped to land before the next one; OFFSET 0: with it) and glides over XFADE, as the clips crossfade. They're the
+  pads' own writes, so the knobs and crosshairs follow; a garden move never turns an ECHO on.
+- **It loops, sometimes**: everything follows from the SEED and the step, so cycling rings come round again, and with
+  **REUSE** a caption that comes up again plays the clip it made then. **BACK** is the chance a step returns to an
+  earlier clip instead. Every take is also a sound in the list, tagged `garden`; the latest 6 keep their audio.
 
 The garden is saved with the patch slot. In the plugin the engine stitches on its own as the VCO's new audio arrives.
 
@@ -391,8 +459,8 @@ in rolidrummer: each text is embedded once, a few synth words are spelt out befo
 
 ### Starting up
 
-Every launch starts as a **soundboard**: the samples as a grid, the VCO rack and the patches put away (**VIEW → RACK**
-and **PATCHES** bring them back; a plugin instance reopens as it was left).
+Every launch starts in the **VCO rack**, alone: the patches and the samples put away (**VIEW → PATCHES** and
+**SAMPLES** bring them back; a plugin instance reopens as it was left).
 
 ### Tags
 
@@ -420,13 +488,20 @@ session, stay small; clicking a sound the engine hasn't got waits for it to arri
 
 PLAY (vol, pan, level by key, repeat, choke) · TUNE (pitch, fine, speed + TAPE/STRETCH) · WAVETABLE (WT, WT BLEND;
 on a wavetable) · KEYS (root note, velocity
-amount, bend range) · CLIP · ADSR (+ key scaling) · FILTER (LP/HP/BP, and Granulator III's nine types with
-WIDTH; key tracking) · FILTER ADSR (+ key scaling) · EQ · GRAIN (Granulator II: grain rate and key tracking, pos, spray, scan, window, spread, random pitch / rate, flux / void, FM;
-Granulator III: CLASSIC / LOOP / CLOUD modes, skew, density, reverse, variation, detune, per-note random pitch) · DELAY · REVERB ·
+amount, bend range) · CLIP (START, LOOP, L.END, END) · ADSR (+ key scaling) · FILTER (LP/HP/BP, and Granulator III's nine types with
+WIDTH; key tracking) · FILTER ADSR (+ key scaling) · GRAIN (Granulator II: grain rate and key tracking, pos, spray, scan, window, spread, random pitch / rate, flux / void, FM;
+Granulator III: CLASSIC / LOOP / CLOUD modes, skew, density, reverse, variation, detune, per-note random pitch) · FX (EQ, RING, DELAY and REVERB as one block) ·
 MODE (STOP / RESTART / STACK / HOLD) · MIDI LEARN · MATRIX · PRESETS (save / load / copy / paste) · RESET ·
 duplicate · delete.
 
 - **RPT**: `1` = once, `N` = N times, `0` = loop forever.
+- **CLIP** has a sampler's four markers: **START** and **END** (where the sample starts and stops), and inside them
+  **LOOP** and **L.END**, the loop. A note plays from START into the loop and goes round it RPT times (∞: while
+  held), then plays on through the *tail* (L.END → END) and stops; released while looping at ∞, it leaves the loop for
+  the tail (and stops at END, however long its release). With LOOP and L.END at their defaults (the clip's own ends)
+  the clip loops whole, as before. On the waveform, START / END are the solid markers with flags at the top (drag the
+  top half), LOOP / L.END the dashed green ones with flags at the bottom (drag the bottom half). They apply to a
+  sample played on tape: GRAIN, STRETCH, wavetables and SFZ zones (which have their own loops) keep START..END.
 - **TAPE**: pitch and speed both change playback rate, like a sampler. **STRETCH**: granular; speed changes length, pitch stays put.
 - STOP re-press, HOLD release and MIDI note-off run the ADSR release and let FX tails ring. PANIC / choke / RESTART cut instantly.
 - **K>VOL**: level by key, dB an octave from ROOT (±3). **KEY** on the ADSR and the FILTER ADSR: higher notes run them
@@ -557,7 +632,7 @@ instance in its own colour (hue by note, brightness by velocity) with a label: a
 voices, and for clouds each grain over the part of the sample it plays, at its pan (left up, right down), as tall as
 it is loud, hue-shifted by its pitch, notched when reversed, fading out after it ends.
 
-Its view picker (top right; on the SCOPE, the set's channel plate; the header's VCO scopes follow it) chooses what it
+Its view picker (top right; on the SCOPE, the set's channel plate) chooses what it
 shows. Three views draw what the sound's voices play, live (post-filter, summed — as a VCO feeds the matrix; in the
 plugin the engine sends it ~30 times a second):
 
@@ -644,8 +719,8 @@ included in exports.
 
 ### Header
 
-OUTPUT + vertical VU · PATCH (◀ selected ▶, new, PLAY, POLY/MONO, HLD, MPE, octave, GLIDE) · VCO (the patch's three
-slots) · VIEW (RACK, PATCHES, SAMPLES toggles) · PERFORM (SUS, global MATRIX) · TEMPO · MIDI · global CHORUS /
+OUTPUT + vertical VU · VIEW (RACK, PATCHES, SAMPLES toggles) · PATCH (◀ selected ▶, new, PLAY, POLY/MONO, HLD,
+MPE, octave, GLIDE; the patch's name widens into the room the folded groups leave) · PERFORM (SUS, global MATRIX) · TEMPO · MIDI · global CHORUS /
 DELAY / REVERB · BOARD (undo, redo, and **+**: add files or a folder, browse waves or the library, restore built-ins,
 export / import the board). PERFORM, TEMPO · MIDI and the effects fold sideways (◀); PERFORM and the three effects
 start folded. The rest always show. Wraps into rows on narrow windows.

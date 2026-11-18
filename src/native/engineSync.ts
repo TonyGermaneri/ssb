@@ -244,9 +244,9 @@ export function startEngineSync(board: Board) {
   })
 
   // anything that changes what a note sounds like, or which note plays what: a write to any sound or patch
-  // (board.changes), the header, the tempo, what the keyboard plays, which pads MIDI notes reach
+  // (board.changes, and a pad's LFO: board.modulations), the header, the tempo, what the keyboard plays, which pads MIDI notes reach
   watch(
-    () => [board.changes, board.master, board.bpm, board.playable?.id, board.noteFor],
+    () => [board.changes, board.modulations, board.master, board.bpm, board.playable?.id, board.noteFor],
     schedule,
     { deep: true, immediate: true },
   )

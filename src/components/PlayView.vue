@@ -4,23 +4,28 @@ import { activeVoices, clock, getBuffer, readSound, SCOPE_SAMPLES, soundSounding
 import { useBoard } from '../stores/board'
 import { lfoHz, type Sound } from '../types'
 import { echoDivisions, GRAIN_SYNC_BANDS, SYNC_TOP, type Point } from '../lib/play/pads'
-import { lfoRouteOf, padControl } from '../lib/play/padControl'
+import { lfoRouteOf, PAD_IDS, padControl, type PadId } from '../lib/play/padControl'
+import { lfoAt, type PadLfo } from '../lib/play/padLfo'
 import {
-  crosshair, drawClip, drawEcho, drawFx, drawGrain, drawLfo, drawPerformOverlay, drawPitch, drawSyncBands, drawTexture, drawTone,
+  crosshair, drawClip, drawLfoFx, type Ripple, type Spark, drawEcho, drawFx, drawGrain, drawLfo, drawPerformOverlay, drawPitch, drawSyncBands, drawTexture, drawTone,
   grainLit, lfoOffset, lfoSwing, type Colors, type GrainDot,
 } from '../lib/play/draw'
 import { pitchMultiplier } from '../lib/play/pads'
 import { AudioFeed, registerVco, shaderPrefs, stageStatus, type PadKind, type StagePad } from '../lib/play/shaders'
 import { waveMorph } from '../lib/waveMorph'
 import PadSettings from './PadSettings.vue'
+import PadLfoPanel from './PadLfoPanel.vue'
 import LiveView from './LiveView.vue'
 import PlayPad from './PlayPad.vue'
+import GardenPad from './GardenPad.vue'
+import { useGarden } from '../stores/garden'
 import WaveViewPicker from './WaveViewPicker.vue'
 
 /**
  * A VCO slot's Play view: the clip big, played by dragging where the grains fire (left / right) and how loud (up /
  * down), and seven pads -- GRAIN, LFO, FILTER · REVERB, PITCH · RING, TEXTURE, ECHO, TONE (lib/play/pads.ts says what each axis does; draw.ts
- * how each looks). Everything here is the layer's own settings: the knobs show the same. Behind them all, the shader
+ * how each looks) -- with the GARDEN pad beside TONE (GardenPad.vue: the VCO's prompt garden, its rings' steps and
+ * hits on X / Y). Each pad's automation button turns on its LFO (PadLfoPanel.vue: a shape its point traces), its GROW button its walk with the garden's clips. Everything here is the layer's own settings: the knobs show the same. Behind them all, the shader
  * stage (lib/play/shaders.ts, mounted by the rack) reads this VCO's pads and audio through registerVco.
  *
  * Kept off the reactive path where it can be: a pointer's moves are held here and written to the settings once a
@@ -54,7 +59,15 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 
 // ── the pads as controls (lib/play/padControl.ts: the VOYAGE ship's parts are the same) ──
 const pads = padControl({ sound: () => props.sound, bpm: () => board.bpm, changed: () => kick() })
-const { tableOf, durationNow, pointOf, moved, ended, reset } = pads
+const { tableOf, durationNow, moved, ended, reset } = pads
+const garden = useGarden()
+/**
+ * Where a pad's crosshair is drawn: where its settings put it -- or, while its LFO moves it, where the LFO is along
+ * its shape, gliding, though the settings it writes snap (the LFO pad's tempo divisions, the echo's, a scale's notes).
+ */
+const pointOf = (id: PadId, r?: Settings) => garden.lfoNow(props.slot, id) ?? pads.pointOf(id, r)
+/** a pad's LFO is moving it: the pictures follow it every frame */
+const lfoMoving = () => PAD_IDS.some((id) => garden.lfoDrives(props.slot, id))
 
 /** min / max per column of the clip, for the big view (cached by what it depends on) */
 let clipCache: { key: string; peaks: Float32Array } | null = null
@@ -131,28 +144,33 @@ const drawers = {
     const lit = grainLit({ freq: r.grainFreq, y: at.y, now: clock.value, sounding: sounding.value })
     drawGrain(g, w, h, { duty: r.grainLength ?? 1, y: at.y, lit, colors: colors.value, dpr })
     if (r.grainSync) drawSyncBands(g, w, h, { bands: GRAIN_SYNC_BANDS.length, top: SYNC_TOP, at, colors: colors.value, dpr })
-    crosshair(g, w, h, at, colors.value, dpr)
+    trace('grain', g, w, h, dpr)
+    cross('grain', g, w, h, at, dpr)
   },
   lfo: (g: CanvasRenderingContext2D, w: number, h: number, dpr: number) => {
     const r = raw()
     drawLfo(g, w, h, { lfo: r.mod.lfo2, ...lfoRouteOf(r), bpm: board.bpm, now: frozen, colors: colors.value, dpr })
-    crosshair(g, w, h, pointOf('lfo', r), colors.value, dpr)
+    trace('lfo', g, w, h, dpr)
+    cross('lfo', g, w, h, pointOf('lfo', r), dpr)
   },
   fx: (g: CanvasRenderingContext2D, w: number, h: number, dpr: number) => {
     const r = raw()
     drawFx(g, w, h, { s: r, colors: colors.value, dpr })
-    crosshair(g, w, h, pointOf('fx', r), colors.value, dpr)
+    trace('fx', g, w, h, dpr)
+    cross('fx', g, w, h, pointOf('fx', r), dpr)
   },
   pitch: (g: CanvasRenderingContext2D, w: number, h: number, dpr: number) => {
     const r = raw()
     const at = pointOf('pitch', r)
     drawPitch(g, w, h, { at, ring: r.ringMix ?? 0, tick: pitchTick, colors: colors.value, dpr })
-    crosshair(g, w, h, at, colors.value, dpr)
+    trace('pitch', g, w, h, dpr)
+    cross('pitch', g, w, h, at, dpr)
   },
   texture: (g: CanvasRenderingContext2D, w: number, h: number, dpr: number) => {
     const at = pointOf('texture', raw())
     drawTexture(g, w, h, { at, t: frozen, colors: colors.value, dpr })
-    crosshair(g, w, h, at, colors.value, dpr)
+    trace('texture', g, w, h, dpr)
+    cross('texture', g, w, h, at, dpr)
   },
   echo: (g: CanvasRenderingContext2D, w: number, h: number, dpr: number) => {
     const r = raw()
@@ -160,12 +178,14 @@ const drawers = {
     const divs = echoDivisions(board.bpm)
     const lit = divs.findIndex((d) => Math.abs(d.seconds - r.delayTime) < 1e-3)
     drawEcho(g, w, h, { at, feedback: r.delayFeedback, mix: r.delayMix, divisions: divs.map((d) => d.x), lit, colors: colors.value, dpr })
-    crosshair(g, w, h, at, colors.value, dpr)
+    trace('echo', g, w, h, dpr)
+    cross('echo', g, w, h, at, dpr)
   },
   tone: (g: CanvasRenderingContext2D, w: number, h: number, dpr: number) => {
     const r = raw()
     drawTone(g, w, h, { s: r, colors: colors.value, dpr })
-    crosshair(g, w, h, pointOf('tone', r), colors.value, dpr)
+    trace('tone', g, w, h, dpr)
+    cross('tone', g, w, h, pointOf('tone', r), dpr)
   },
 }
 type PadRef = { paint(): void; el(): HTMLElement | undefined } | undefined
@@ -180,7 +200,7 @@ const padRefs = { grain: grainPad, lfo: lfoPad, fx: fxPad, pitch: pitchPad, text
 /** what each picture shows, as text: a pad repaints when its changes */
 function looks(id: keyof typeof padRefs, r: Settings): string {
   const at = pointOf(id, r)
-  const p = `${at.x.toFixed(4)},${at.y.toFixed(4)}|${colors.value.line}`
+  const p = `${at.x.toFixed(4)},${at.y.toFixed(4)}|${colors.value.line}|${traceLooks(id)}`
   if (id === 'grain') return `${p}|${r.grainFreq}|${r.grainLength}|${r.grainSync}|${r.grainBeats}|${grainLit({ freq: r.grainFreq, y: at.y, now: clock.value, sounding: sounding.value })}`
   if (id === 'lfo') {
     const { amount, unipolar } = lfoRouteOf(r)
@@ -207,7 +227,7 @@ function performLooks(r: Settings): string {
   if (clipMorph.moving()) return `morph${performance.now()}`
   const at = pointOf('perform', r)
   const lfo = lfoRouteOf(r)
-  return `${at.x},${at.y}|${live.value}|${props.sound.audioId}|${r.clipIn}|${r.clipOut}|${r.wt}|${r.wtBlend}|${lfo.amount}|${lfo.unipolar}|${r.grainPos}|${performSize.value.w}x${performSize.value.h}|${colors.value.line}`
+  return `${at.x},${at.y}|${traceLooks('perform')}|${live.value}|${props.sound.audioId}|${r.clipIn}|${r.clipOut}|${r.wt}|${r.wtBlend}|${lfo.amount}|${lfo.unipolar}|${r.grainPos}|${performSize.value.w}x${performSize.value.h}|${colors.value.line}`
 }
 function paintPerform() {
   const c = performCanvas.value
@@ -233,7 +253,9 @@ function paintPerform() {
     grains: table ? [] : grainDots(clock.value),
     colors: colors.value,
     dpr,
+    crossAlpha: crossAlpha('perform'),
   })
+  trace('perform', g, w, h, dpr)
 }
 
 // one loop: the pointers' latest moves go in, then the pictures that changed repaint -- every frame while the sound
@@ -257,12 +279,12 @@ function tick() {
     shown.perform = k
     paintPerform()
   }
-  if (visible && (sounding.value || pads.sinceTouch() < 1500 || pads.isHeld() || clipMorph.moving())) raf = requestAnimationFrame(tick)
+  if (visible && (sounding.value || pads.sinceTouch() < 1500 || pads.isHeld() || clipMorph.moving() || lfoMoving())) raf = requestAnimationFrame(tick)
 }
 function kick() {
   if (!raf && visible) raf = requestAnimationFrame(tick)
 }
-watch(() => [board.changes, board.bpm, board.master.waveView, sounding.value, props.slot, props.sound.id, props.sound.audioId], kick)
+watch(() => [board.changes, board.modulations, board.bpm, board.master.waveView, sounding.value, props.slot, props.sound.id, props.sound.audioId], kick)
 
 // ── the big view as a pad ──
 let performBox: DOMRect | null = null
@@ -273,15 +295,15 @@ const performPointAt = (e: PointerEvent): Point => {
 function performDown(e: PointerEvent) {
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
   performBox = perform.value!.getBoundingClientRect()
-  moved('perform', performPointAt(e))
+  padMove('perform', performPointAt(e))
 }
 function performMove(e: PointerEvent) {
-  if (performBox && (e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) moved('perform', performPointAt(e))
+  if (performBox && (e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) padMove('perform', performPointAt(e))
 }
 function performUp() {
   if (!performBox) return
   performBox = null
-  ended('perform')
+  padEnd('perform')
 }
 
 let ro: ResizeObserver | undefined
@@ -372,6 +394,129 @@ onBeforeUnmount(() => {
 
 // PERFORM's settings: STEREO PHASE, the sample's tuning, its shader
 const performSettings = ref(false)
+
+// ── each pad's GROW button: it walks with the garden's clips (its LFO's centre, with one on) ──
+const growsPad = (id: PadId) => garden.growsPad(props.slot, id)
+const toggleGrowPad = (id: PadId) => garden.toggleGrowPad(props.slot, id)
+
+// ── each pad's automation: its LFO (lib/play/padLfo.ts, run by the garden store) ──
+/** whose LFO panel is open on its pad (one at a time) */
+const lfoOpen = ref<PadId | null>(null)
+const autoOn = (id: PadId) => !!garden.lfoOf(props.slot, id)
+/** the button: on (a circle round where the pad is) if it's off, and its panel open */
+function autoClick(id: PadId) {
+  if (!autoOn(id)) garden.startLfo(props.slot, id)
+  lfoOpen.value = id
+  kick()
+}
+/** a right-click on it: on or off, without its panel (off closes it) */
+function autoToggle(id: PadId) {
+  if (autoOn(id)) {
+    garden.stopLfo(props.slot, id)
+    if (lfoOpen.value === id) lfoOpen.value = null
+  } else garden.startLfo(props.slot, id)
+  kick()
+}
+/** a drag on a pad whose LFO moves it moves the shape's centre instead */
+function padMove(id: PadId, p: Point) {
+  touchedAt.set(id, performance.now())
+  if (garden.lfoDrives(props.slot, id)) {
+    garden.setLfoCenter(props.slot, id, p)
+    kick()
+  } else moved(id, p)
+}
+function padEnd(id: PadId) {
+  if (!garden.lfoDrives(props.slot, id)) ended(id)
+}
+function padReset(id: PadId) {
+  reset(id)
+  if (garden.lfoDrives(props.slot, id)) garden.setLfoCenter(props.slot, id, pads.pointOf(id))
+}
+// ── a pad's LFO in the picture (draw.ts drawLfoFx): its comet, its sparks and ripples; its guides only while you're at it ──
+interface LfoFx {
+  sparks: Spark[]
+  ripples: Ripple[]
+  last: number
+  head: { x: number; y: number } | null
+  /** the setting's point last frame (a snapping pad: a ripple when it steps) */
+  snapped: string
+  emit: number
+  /** when the last ripple went out */
+  rippled: number
+  /** the guides (crosshair, path, centre): 1 while you're at it, fading to 0 after */
+  ui: number
+}
+const lfoFx = new Map<PadId, LfoFx>()
+/** the pad under the pointer, and when each was last dragged */
+const hoverPad = ref<PadId | null>(null)
+const touchedAt = new Map<PadId, number>()
+/** a pad its LFO moves, left alone: its bright buttons dim (they come back under the pointer) */
+const quiet = (id: PadId) => autoOn(id) && hoverPad.value !== id && lfoOpen.value !== id
+const atIt = (id: PadId) => hoverPad.value === id || lfoOpen.value === id || performance.now() - (touchedAt.get(id) ?? -1e9) < 1500
+/** how much of a pad's crosshair shows: all of it, unless its LFO moves it and no one's at it */
+const crossAlpha = (id: PadId) => (garden.lfoDrives(props.slot, id) ? (lfoFx.get(id)?.ui ?? 1) : 1)
+function cross(id: PadId, g: CanvasRenderingContext2D, w: number, h: number, at: Point, dpr: number) {
+  const k = crossAlpha(id)
+  if (k < 0.02) return
+  g.globalAlpha = k
+  crosshair(g, w, h, at, colors.value, dpr)
+  g.globalAlpha = 1
+}
+const rand = (a: number, b: number) => a + Math.random() * (b - a)
+function spark(f: LfoFx, x: number, y: number, l: PadLfo, speed: number) {
+  // thrown outward, away from the centre, with a scatter
+  const a = Math.atan2(y - l.cy, x - l.cx) + rand(-0.9, 0.9)
+  const v = rand(0.05, 0.18) + speed * 0.15
+  const span = rand(0.45, 1.1)
+  f.sparks.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, span, size: rand(0.8, 2.2) })
+}
+/** a frame of a pad's LFO: its sparks and ripples moved on, new ones thrown, then drawn over its picture */
+function trace(id: PadId, g: CanvasRenderingContext2D, w: number, h: number, dpr: number) {
+  const l = garden.lfoOf(props.slot, id)
+  if (!l) {
+    lfoFx.delete(id)
+    return
+  }
+  let f = lfoFx.get(id)
+  if (!f) lfoFx.set(id, (f = { sparks: [], ripples: [], last: performance.now(), head: null, snapped: '', emit: 0, rippled: 0, ui: 1 }))
+  const now = performance.now()
+  const dt = Math.min(0.1, Math.max(0, (now - f.last) / 1000))
+  f.last = now
+  f.ui += ((atIt(id) ? 1 : 0) - f.ui) * Math.min(1, dt * (atIt(id) ? 10 : 2.5))
+  const phase = garden.lfoPhaseOf(props.slot, id)
+  const head = lfoAt(l, phase)
+  const speed = f.head && dt > 0 ? Math.hypot(head.x - f.head.x, head.y - f.head.y) / dt : 0
+  f.head = head
+  // sparks: a few always, more the faster it goes
+  f.emit += dt * Math.min(90, 10 + speed * 70)
+  for (; f.emit >= 1; f.emit--) if (f.sparks.length < 120) spark(f, head.x, head.y, l, speed)
+  // a snapping pad's setting stepping: a ripple there, and a burst
+  const at = pads.pointOf(id)
+  const key = `${at.x.toFixed(3)},${at.y.toFixed(3)}`
+  // (one every 180 ms at most: a pad that steps often -- TONE's half dBs -- would fill with rings)
+  if (f.snapped && key !== f.snapped && now - f.rippled > 180 && f.ripples.length < 4) {
+    f.rippled = now
+    f.ripples.push({ x: at.x, y: at.y, age: 0 })
+    for (let i = 0; i < 4; i++) spark(f, at.x, at.y, l, 0.4)
+  }
+  f.snapped = key
+  for (const s of f.sparks) {
+    s.x += s.vx * dt
+    s.y += s.vy * dt
+    s.vx *= 1 - 1.5 * dt
+    s.vy *= 1 - 1.5 * dt
+    s.life -= dt / s.span
+  }
+  f.sparks = f.sparks.filter((s) => s.life > 0)
+  for (const r of f.ripples) r.age += dt / 0.7
+  f.ripples = f.ripples.filter((r) => r.age < 1)
+  drawLfoFx(g, w, h, { at: (p) => lfoAt(l, p), phase, color: colors.value.line, ui: f.ui, center: { x: l.cx, y: l.cy }, sparks: f.sparks, ripples: f.ripples, dpr })
+}
+/** what the trace shows, as text (a pad repaints when it changes; a running LFO changes every frame) */
+function traceLooks(id: PadId): string {
+  const l = garden.lfoOf(props.slot, id)
+  return l ? `${garden.lfoPhaseOf(props.slot, id)}|${l.shape}|${l.aspect}|${l.amp}|${l.cx}|${l.cy}|${hoverPad.value === id}|${lfoOpen.value === id}` : ''
+}
 </script>
 
 <template>
@@ -380,6 +525,9 @@ const performSettings = ref(false)
       <div
         ref="perform"
         class="perform"
+        :class="{ quiet: quiet('perform') }"
+        @pointerenter="hoverPad = 'perform'"
+        @pointerleave="hoverPad === 'perform' && (hoverPad = null)"
         :title="s.wtSize > 0 ? 'A wavetable — drag: left / right moves through its waves (WT, and WT BLEND between them), up / down how loud (VOL). Its grains, when on, play the wave chosen' : 'Drag: left / right is where in the clip the grains fire (POS), up / down how loud (VOL). The diamonds are the grains as they play'"
         @pointerdown="performDown"
         @pointermove="performMove"
@@ -410,9 +558,31 @@ const performSettings = ref(false)
         </div>
         <WaveViewPicker class="picker" @pointerdown.stop />
         <span class="label">PERFORM</span>
+        <button
+          class="perform-grow"
+          :class="{ on: growsPad('perform') }"
+          :aria-pressed="growsPad('perform')"
+          :title="growsPad('perform') ? 'GROW on: each new clip from the garden walks where the grains fire and how loud somewhere new (with an LFO on, its centre) — click to hold it still' : 'GROW: each new clip from the garden walks where the grains fire and how loud somewhere new (with an LFO on, its centre)'"
+          @pointerdown.stop
+          @click.stop="toggleGrowPad('perform')"
+        >
+          <v-icon size="11" icon="mdi-sprout" />
+        </button>
+        <button
+          class="perform-auto"
+          :class="{ on: autoOn('perform') }"
+          :aria-pressed="autoOn('perform')"
+          :title="autoOn('perform') ? 'LFO on: where the grains fire and how loud trace its shape — click for its panel, right-click to turn it off' : 'LFO: a shape traced round where the grains fire and how loud — click to turn it on and open its panel, right-click to turn it on'"
+          @pointerdown.stop
+          @click.stop="autoClick('perform')"
+          @contextmenu.prevent.stop="autoToggle('perform')"
+        >
+          <v-icon size="11" icon="mdi-chart-timeline-variant" />
+        </button>
         <button class="perform-gear" :class="{ on: performSettings }" title="Settings: stereo phase, the sample's tuning, the shader" @pointerdown.stop @click.stop="performSettings = !performSettings">
           <v-icon size="12" icon="mdi-cog" />
         </button>
+        <PadLfoPanel v-if="lfoOpen === 'perform'" class="perform-lfo" :slot="slot" pad="perform" @close="lfoOpen = null" />
         <div v-if="performSettings" class="perform-settings" @pointerdown.stop @click.stop>
           <PadSettings kind="perform" :sound="sound" :slot="slot" :pads="pads" @changed="kick" />
           <button class="done" @click="performSettings = false">DONE</button>
@@ -428,10 +598,22 @@ const performSettings = ref(false)
           :color="colors.line"
           :draw="drawers.grain"
           square
-          @move="(p: Point) => moved('grain', p)"
-          @end="ended('grain')"
-          @reset="reset('grain')"
+          :grows="growsPad('grain')"
+          @grow="toggleGrowPad('grain')"
+          :auto="autoOn('grain')"
+          :quiet="quiet('grain')"
+          @pointerenter="hoverPad = 'grain'"
+          @pointerleave="hoverPad === 'grain' && (hoverPad = null)"
+          :lfo-open="lfoOpen === 'grain'"
+          @auto="autoClick('grain')"
+          @auto-toggle="autoToggle('grain')"
+          @move="(p: Point) => padMove('grain', p)"
+          @end="padEnd('grain')"
+          @reset="padReset('grain')"
         >
+          <template #lfo>
+            <PadLfoPanel :slot="slot" pad="grain" @close="lfoOpen = null" />
+          </template>
           <template #settings>
             <PadSettings kind="grain" :sound="sound" :slot="slot" :pads="pads" @changed="kick" />
           </template>
@@ -444,10 +626,22 @@ const performSettings = ref(false)
           :color="colors.line"
           :draw="drawers.lfo"
           square
-          @move="(p: Point) => moved('lfo', p)"
-          @end="ended('lfo')"
-          @reset="reset('lfo')"
+          :grows="growsPad('lfo')"
+          @grow="toggleGrowPad('lfo')"
+          :auto="autoOn('lfo')"
+          :quiet="quiet('lfo')"
+          @pointerenter="hoverPad = 'lfo'"
+          @pointerleave="hoverPad === 'lfo' && (hoverPad = null)"
+          :lfo-open="lfoOpen === 'lfo'"
+          @auto="autoClick('lfo')"
+          @auto-toggle="autoToggle('lfo')"
+          @move="(p: Point) => padMove('lfo', p)"
+          @end="padEnd('lfo')"
+          @reset="padReset('lfo')"
         >
+          <template #lfo>
+            <PadLfoPanel :slot="slot" pad="lfo" @close="lfoOpen = null" />
+          </template>
           <template #settings>
             <PadSettings kind="lfo" :sound="sound" :slot="slot" :pads="pads" @changed="kick" />
           </template>
@@ -460,10 +654,22 @@ const performSettings = ref(false)
           :color="colors.line"
           :draw="drawers.fx"
           square
-          @move="(p: Point) => moved('fx', p)"
-          @end="ended('fx')"
-          @reset="reset('fx')"
+          :grows="growsPad('fx')"
+          @grow="toggleGrowPad('fx')"
+          :auto="autoOn('fx')"
+          :quiet="quiet('fx')"
+          @pointerenter="hoverPad = 'fx'"
+          @pointerleave="hoverPad === 'fx' && (hoverPad = null)"
+          :lfo-open="lfoOpen === 'fx'"
+          @auto="autoClick('fx')"
+          @auto-toggle="autoToggle('fx')"
+          @move="(p: Point) => padMove('fx', p)"
+          @end="padEnd('fx')"
+          @reset="padReset('fx')"
         >
+          <template #lfo>
+            <PadLfoPanel :slot="slot" pad="fx" @close="lfoOpen = null" />
+          </template>
           <template #settings>
             <PadSettings kind="fx" :sound="sound" :slot="slot" :pads="pads" @changed="kick" />
           </template>
@@ -476,10 +682,22 @@ const performSettings = ref(false)
           :color="colors.line"
           :draw="drawers.pitch"
           square
-          @move="(p: Point) => moved('pitch', p)"
-          @end="ended('pitch')"
-          @reset="reset('pitch')"
+          :grows="growsPad('pitch')"
+          @grow="toggleGrowPad('pitch')"
+          :auto="autoOn('pitch')"
+          :quiet="quiet('pitch')"
+          @pointerenter="hoverPad = 'pitch'"
+          @pointerleave="hoverPad === 'pitch' && (hoverPad = null)"
+          :lfo-open="lfoOpen === 'pitch'"
+          @auto="autoClick('pitch')"
+          @auto-toggle="autoToggle('pitch')"
+          @move="(p: Point) => padMove('pitch', p)"
+          @end="padEnd('pitch')"
+          @reset="padReset('pitch')"
         >
+          <template #lfo>
+            <PadLfoPanel :slot="slot" pad="pitch" @close="lfoOpen = null" />
+          </template>
           <template #settings>
             <PadSettings kind="pitch" :sound="sound" :slot="slot" :pads="pads" @changed="kick" />
           </template>
@@ -492,10 +710,22 @@ const performSettings = ref(false)
           :color="colors.line"
           :draw="drawers.texture"
           square
-          @move="(p: Point) => moved('texture', p)"
-          @end="ended('texture')"
-          @reset="reset('texture')"
+          :grows="growsPad('texture')"
+          @grow="toggleGrowPad('texture')"
+          :auto="autoOn('texture')"
+          :quiet="quiet('texture')"
+          @pointerenter="hoverPad = 'texture'"
+          @pointerleave="hoverPad === 'texture' && (hoverPad = null)"
+          :lfo-open="lfoOpen === 'texture'"
+          @auto="autoClick('texture')"
+          @auto-toggle="autoToggle('texture')"
+          @move="(p: Point) => padMove('texture', p)"
+          @end="padEnd('texture')"
+          @reset="padReset('texture')"
         >
+          <template #lfo>
+            <PadLfoPanel :slot="slot" pad="texture" @close="lfoOpen = null" />
+          </template>
           <template #settings>
             <PadSettings kind="texture" :sound="sound" :slot="slot" :pads="pads" @changed="kick" />
           </template>
@@ -508,10 +738,22 @@ const performSettings = ref(false)
           :color="colors.line"
           :draw="drawers.echo"
           square
-          @move="(p: Point) => moved('echo', p)"
-          @end="ended('echo')"
-          @reset="reset('echo')"
+          :grows="growsPad('echo')"
+          @grow="toggleGrowPad('echo')"
+          :auto="autoOn('echo')"
+          :quiet="quiet('echo')"
+          @pointerenter="hoverPad = 'echo'"
+          @pointerleave="hoverPad === 'echo' && (hoverPad = null)"
+          :lfo-open="lfoOpen === 'echo'"
+          @auto="autoClick('echo')"
+          @auto-toggle="autoToggle('echo')"
+          @move="(p: Point) => padMove('echo', p)"
+          @end="padEnd('echo')"
+          @reset="padReset('echo')"
         >
+          <template #lfo>
+            <PadLfoPanel :slot="slot" pad="echo" @close="lfoOpen = null" />
+          </template>
           <template #settings>
             <PadSettings kind="echo" :sound="sound" :slot="slot" :pads="pads" @changed="kick" />
           </template>
@@ -523,14 +765,27 @@ const performSettings = ref(false)
           title="TONE — this VCO's EQ: left / right tilts it darker (more bass, less treble) or brighter, up / down pushes or scoops the mids; flat in the middle. Double-click: flat"
           :color="colors.line"
           :draw="drawers.tone"
-          @move="(p: Point) => moved('tone', p)"
-          @end="ended('tone')"
-          @reset="reset('tone')"
+          :grows="growsPad('tone')"
+          @grow="toggleGrowPad('tone')"
+          :auto="autoOn('tone')"
+          :quiet="quiet('tone')"
+          @pointerenter="hoverPad = 'tone'"
+          @pointerleave="hoverPad === 'tone' && (hoverPad = null)"
+          :lfo-open="lfoOpen === 'tone'"
+          @auto="autoClick('tone')"
+          @auto-toggle="autoToggle('tone')"
+          @move="(p: Point) => padMove('tone', p)"
+          @end="padEnd('tone')"
+          @reset="padReset('tone')"
         >
+          <template #lfo>
+            <PadLfoPanel :slot="slot" pad="tone" @close="lfoOpen = null" />
+          </template>
           <template #settings>
             <PadSettings kind="tone" :sound="sound" :slot="slot" :pads="pads" @changed="kick" />
           </template>
         </PlayPad>
+        <GardenPad class="a-garden" :slot="slot" :colors="colors" />
       </div>
     </div>
   </div>
@@ -651,7 +906,7 @@ const performSettings = ref(false)
   /* tall: two by four */
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-rows: repeat(4, minmax(0, 1fr));
-  grid-template-areas: 'grain lfo' 'fx pitch' 'texture echo' 'tone tone';
+  grid-template-areas: 'grain lfo' 'fx pitch' 'texture echo' 'tone garden';
   gap: 8px;
 }
 /* the pads take the cells they're given: a little stretched rather than squeezed out of view */
@@ -666,10 +921,9 @@ const performSettings = ref(false)
 .a-pitch { grid-area: pitch; }
 .a-texture { grid-area: texture; }
 .a-echo { grid-area: echo; }
-/* TONE lies wide (the EQ's curve reads across), two pads' width and one's height */
-.a-tone {
-  grid-area: tone;
-}
+.a-tone { grid-area: tone; }
+/* the GARDEN pad: the other half of the row TONE once had to itself */
+.a-garden { grid-area: garden; }
 .knobs .dim {
   opacity: 0.4;
 }
@@ -692,6 +946,58 @@ const performSettings = ref(false)
 .perform-gear:hover,
 .perform-gear.on {
   opacity: 1;
+}
+.perform-auto {
+  position: absolute;
+  right: 26px;
+  bottom: 4px;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 50%;
+  color: color-mix(in srgb, var(--line) 70%, transparent);
+  background: color-mix(in srgb, var(--lcd-bg) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 35%, transparent);
+  opacity: 0.6;
+}
+.perform-grow {
+  position: absolute;
+  right: 47px;
+  bottom: 4px;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 50%;
+  color: color-mix(in srgb, var(--line) 70%, transparent);
+  background: color-mix(in srgb, var(--lcd-bg) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 35%, transparent);
+  opacity: 0.6;
+}
+.perform-auto:hover {
+  opacity: 1;
+}
+.perform-grow:hover {
+  opacity: 1;
+}
+.perform-auto.on {
+  opacity: 1;
+  color: #05030a;
+  background: #7dff6a;
+  border-color: #7dff6a;
+  box-shadow: 0 0 6px rgba(125, 255, 106, 0.6);
+}
+.perform-grow.on {
+  opacity: 1;
+  color: #05030a;
+  background: #7dff6a;
+  border-color: #7dff6a;
+  box-shadow: 0 0 6px rgba(125, 255, 106, 0.6);
 }
 .perform-settings {
   position: absolute;
@@ -746,7 +1052,7 @@ const performSettings = ref(false)
     flex-grow: 2.4;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     grid-template-rows: repeat(2, minmax(0, 1fr));
-    grid-template-areas: 'grain lfo fx pitch' 'texture echo tone tone';
+    grid-template-areas: 'grain lfo fx pitch' 'texture echo tone garden';
   }
 }
 /* wide (a column of a stacked rack): the clip beside a single row of all eight */
@@ -763,7 +1069,16 @@ const performSettings = ref(false)
     flex: 6 1 0;
     grid-template-columns: repeat(8, minmax(0, 1fr));
     grid-template-rows: minmax(0, 1fr);
-    grid-template-areas: 'grain lfo fx pitch texture echo tone tone';
+    grid-template-areas: 'grain lfo fx pitch texture echo tone garden';
   }
+}
+.perform .perform-auto,
+.perform .perform-grow {
+  transition: opacity 0.6s, box-shadow 0.6s;
+}
+.perform.quiet .perform-auto.on,
+.perform.quiet .perform-grow.on {
+  opacity: 0.14;
+  box-shadow: none;
 }
 </style>

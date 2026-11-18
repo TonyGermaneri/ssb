@@ -168,7 +168,7 @@ onMounted(() => {
   // for SSB_PROBE scripts (the native page has no inspector in a release build) and for poking at a dev server
   if (inNative() || import.meta.env.DEV) {
     const w = window as unknown as { __ssb: unknown }
-    w.__ssb = { board, audio: () => getCtx().state, voices: () => activeVoices.value.length, activeVoices, levels, mcp: () => import('./lib/ai/mcpHost'),
+    w.__ssb = { board, audio: () => getCtx().state, voices: () => activeVoices.value.length, activeVoices, levels, mcp: () => import('./lib/ai/mcpHost'), riff: () => import('./lib/garden/riff'),
       // what a live view reads for a sound (for probes: the scopes' data path, page engine or plugin)
       scope: (id: string) => {
         const buf = new Float32Array(SCOPE_SAMPLES)

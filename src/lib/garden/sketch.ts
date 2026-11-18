@@ -3,7 +3,9 @@
  * the plugin). Not a model -- a little synth the caption plays: its words pick a chord, a timbre, a Euclidean pulse,
  * noise and shimmer, always the same for the same caption, so a garden can be grown and heard (and tested) anywhere.
  */
-import { ENUM_GRIDS, euclid, hash32, rand01 } from './garden'
+import { euclid, hash32, rand01 } from './garden'
+
+const KEYS = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B']
 
 const NOISY = /rain|thunder|tide|static|hiss|crackle|furnace|wind|engine|field|storm|surf|water/i
 const BRIGHT = /glass|bells|icy|metallic|shimmer|wire|kalimba|marimba|gong|bleep/i
@@ -21,7 +23,7 @@ export function sketchClip(prompt: string, seconds: number, rate = 44100): Float
   const h = (s: string | number) => rand01(prompt, s)
   // the root: the caption's key when it names one, else from its words
   const keyMatch = prompt.match(/\bin ([A-G][b#]?)\b/)
-  const keyIdx = keyMatch ? (ENUM_GRIDS.key as readonly string[]).indexOf(keyMatch[1]) : -1
+  const keyIdx = keyMatch ? KEYS.indexOf(keyMatch[1]) : -1
   const semis = keyIdx >= 0 ? keyIdx : hash32(prompt, 'root') % 12
   const minor = /minor|dark|melancholy|eerie|tense|phrygian/i.test(prompt) || (!/major|euphoric|playful/i.test(prompt) && h('mode') < 0.5)
   const root = 110 * 2 ** (semis / 12) * (DARK.test(prompt) ? 0.5 : BRIGHT.test(prompt) ? 2 : 1)

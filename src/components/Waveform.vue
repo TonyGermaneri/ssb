@@ -399,6 +399,34 @@ function draw2d(g: CanvasRenderingContext2D, W: number, p: Float32Array | undefi
   g.lineTo(b, 6)
   g.fill()
 
+  // loop markers: dashed, their flags at the bottom, the loop's stretch underlined
+  if (loopShown()) {
+    const lp = loopSpan()
+    const la = lp.a * W
+    const lb = lp.b * W
+    g.fillStyle = th.success + '55'
+    g.fillRect(la, H - 3, lb - la, 3)
+    g.strokeStyle = th.success
+    g.lineWidth = 1.5
+    g.setLineDash([3, 3])
+    g.beginPath()
+    g.moveTo(la, 0)
+    g.lineTo(la, H)
+    g.moveTo(lb, 0)
+    g.lineTo(lb, H)
+    g.stroke()
+    g.setLineDash([])
+    g.fillStyle = th.success
+    g.beginPath()
+    g.moveTo(la, H)
+    g.lineTo(la + 7, H)
+    g.lineTo(la, H - 7)
+    g.moveTo(lb, H)
+    g.lineTo(lb - 7, H)
+    g.lineTo(lb, H - 7)
+    g.fill()
+  }
+
   const list = voices.value
   if (!list.length) return
   const now = clock.value
@@ -587,6 +615,15 @@ function drawIso(g: CanvasRenderingContext2D, W: number, p: Float32Array | undef
     const top = at(t, 1, 1)
     poly([top, [top[0] + 6 * dir, top[1]], [top[0], top[1] + 6]])
   }
+  // loop markers: lines across the floor
+  if (loopShown()) {
+    const lp = loopSpan()
+    g.strokeStyle = th.success
+    g.lineWidth = 1.5
+    g.setLineDash([3, 3])
+    for (const t of [lp.a, lp.b]) line(at(t, 0, -1), at(t, 1, -1))
+    g.setLineDash([])
+  }
 
   const list = voices.value
   if (!list.length) return
@@ -678,12 +715,23 @@ onBeforeUnmount(() => {
   sideMorphs.forEach((m) => m.stop())
 })
 
+// ── the loop markers (LOOP, L.END: types.ts loopStart / loopEnd): a sample played on tape only ──
+const loopShown = () => {
+  const s = props.sound.settings
+  return !s.grain && s.timeMode !== 'stretch' && !(s.wtSize > 0) && !props.sound.zones?.length
+}
+/** where the loop plays, 0..1 (held inside the clip, as the engines hold it) */
+function loopSpan() {
+  const c = clipBounds(props.sound.settings, 1)
+  return { a: c.loopIn, b: c.loopOut }
+}
+
 // ── dragging ─────────────────────────────────────────────────────────────────────
 // Without grains: the nearest clip marker. With them: the grain -- its middle moves POS, its sides set its length
 // (GRAIN), anywhere else puts it there; shift-drag (or a marker's flag, flat) moves the clip instead.
 
 type Drag =
-  | { kind: 'clip'; which: 'clipIn' | 'clipOut' }
+  | { kind: 'clip'; which: 'clipIn' | 'clipOut' | 'loopStart' | 'loopEnd' }
   | { kind: 'grain'; part: 'move' | 'left' | 'right'; grab: number; a0: number; b0: number }
 let drag: Drag | null = null
 const cursor = ref('ew-resize')
@@ -702,7 +750,15 @@ function hit(e: PointerEvent): Drag {
   const { x, y } = local(e)
   const f = timeAt(x)
   const s = props.sound.settings
-  const clip = (): Drag => ({ kind: 'clip', which: Math.abs(f - s.clipIn) <= Math.abs(f - s.clipOut) ? 'clipIn' : 'clipOut' })
+  // the top half takes START / END, the bottom half (where their flags are) LOOP / L.END
+  const lower = loopShown() && y >= H / 2
+  const clip = (): Drag => {
+    if (lower) {
+      const lp = loopSpan()
+      return { kind: 'clip', which: Math.abs(f - lp.a) <= Math.abs(f - lp.b) ? 'loopStart' : 'loopEnd' }
+    }
+    return { kind: 'clip', which: Math.abs(f - s.clipIn) <= Math.abs(f - s.clipOut) ? 'clipIn' : 'clipOut' }
+  }
   const gs = grainSpan()
   if (!gs || e.shiftKey) return clip()
   const near = EDGE_PX / pxPerSample()
@@ -758,8 +814,14 @@ function onMove(e: PointerEvent) {
   const s = props.sound.settings
   const f = timeAt(local(e).x)
   if (d.kind === 'clip') {
+    const lp = loopSpan()
+    const lo = Math.min(s.clipIn, s.clipOut)
+    const hi = Math.max(s.clipIn, s.clipOut)
     if (d.which === 'clipIn') s.clipIn = Math.min(f, s.clipOut - 0.001)
-    else s.clipOut = Math.max(f, s.clipIn + 0.001)
+    else if (d.which === 'clipOut') s.clipOut = Math.max(f, s.clipIn + 0.001)
+    // (the loop inside the clip)
+    else if (d.which === 'loopStart') s.loopStart = Math.min(Math.max(f, lo), lp.b - 0.001)
+    else s.loopEnd = Math.max(Math.min(f, hi), lp.a + 0.001)
     return
   }
   const gs = grainSpan()

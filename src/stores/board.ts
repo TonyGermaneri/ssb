@@ -181,12 +181,32 @@ export const useBoard = defineStore('board', () => {
   const savedTick = shallowRef(0)
   /** ids of patches written to since their body was saved or put back (only these can have edits) */
   const touched = new Set<string>()
+  /**
+   * Writes made inside `modulate` (a pad's LFO, lib/play/padLfo.ts) are modulation, not edits: the engines hear them
+   * (`modulations`), but they don't mark the patch edited, save the board or make an undo step -- an LFO writing all
+   * the time would otherwise hold those back for as long as it ran.
+   */
+  const modulations = shallowRef(0)
+  let modulating = false
+  function modulate(fn: () => void) {
+    modulating = true
+    try {
+      fn()
+    } finally {
+      modulating = false
+    }
+  }
   /** A sound or patch whose writes mark it changed. */
   function tracked<T extends object>(item: T): T {
     const raw = untrack(item)
     // (a patch has slots: its writes may be edits, which wait for SAVE)
     const patchId = 'slots' in raw ? (raw as unknown as Patch).id : null
     return track(item, () => {
+      // (a pad's LFO moving it: heard, not an edit -- nothing to save or undo)
+      if (modulating) {
+        modulations.value++
+        return
+      }
       texts.delete(raw)
       semantic.forget(raw)
       if (patchId) touched.add(patchId)
@@ -620,8 +640,8 @@ export const useBoard = defineStore('board', () => {
       if (!saved && inNative()) saved = (await mergeLegacyBoards()) ?? undefined
       if (saved) {
         Object.assign(master, migrateMaster(saved.master))
-        // every launch starts as a soundboard: the samples as a grid, the VCO rack and the patches put away
-        Object.assign(master, { rack: false, view: 'grid', patchView: 'grid', showPatches: false, showSamples: true, tab: 'sounds', gridPanel: false })
+        // every launch starts in the VCO rack, alone: the patches and the samples put away (the VIEW chips bring them)
+        Object.assign(master, { rack: true, view: 'grid', patchView: 'grid', showPatches: false, showSamples: false, tab: 'sounds', gridPanel: false })
         // 0.20: PERFORM, TEMPO · MIDI and BOARD start folded (once: a group opened since stays open)
         // garden takes were named with a sprout before: their names without it
         for (const s of sounds.value) if (s.settings.name.startsWith('🌱')) s.settings.name = s.settings.name.replace(/^🌱\s*/u, '')
@@ -959,6 +979,7 @@ export const useBoard = defineStore('board', () => {
     },
     { deep: 1 },
   )
+  watch(modulations, () => engine.refreshVoices())
   watch(changes, () => {
     engine.refreshVoices()
     scheduleSave()
@@ -1795,6 +1816,18 @@ export const useBoard = defineStore('board', () => {
     return patches.value[patches.value.length - 1]
   }
 
+  /** A new patch whose first VCO plays the saw wavetable (AKWF's saw, on its category's table). */
+  async function newSawPatch() {
+    await loadAkwf()
+    const sp = waveSpot('AKWF_saw')
+    const table = sp ? tableFor(sp.folder) : undefined
+    const p = newPatch(table?.id, `Patch ${patches.value.length + 1}`)
+    const x = p.slots[0]
+    if (x && sp) Object.assign(x.layer.settings, { wt: sp.index, wtBlend: 0 })
+    return p
+  }
+
+  /** A copy of patch `id`, at the end of the list, selected. */
   function duplicatePatch(id: string) {
     const i = patches.value.findIndex((p) => p.id === id)
     if (i < 0) return
@@ -1802,9 +1835,10 @@ export const useBoard = defineStore('board', () => {
     copy.id = uid()
     copy.name = `${copy.name} copy`
     for (const x of copy.slots) if (x) x.layer.id = uid()
-    patches.value.splice(i + 1, 0, copy)
+    patches.value.push(copy)
     // edit the copy, not the original
     selectPatch(copy.id)
+    toast.value = `Duplicated: "${copy.name}"`
   }
 
   const removePatch = (id: string) => (id === candidate.value?.id ? discardCandidate() : removePatches([id]))
@@ -2820,7 +2854,7 @@ export const useBoard = defineStore('board', () => {
   )
 
   return {
-    sounds, master, listViewOf, setListView, openPanels, view, pressed, tagFilter, peaks, peaksOf, changes, setEngineGate, loaded, toast, midi, heldNotes,
+    sounds, master, listViewOf, setListView, openPanels, view, pressed, tagFilter, peaks, peaksOf, changes, modulations, modulate, setEngineGate, loaded, toast, midi, heldNotes,
     perform, presets, clipboard, matrixScope, canUndo, canRedo, tempo, bpm, noteFor, theme, cycleTheme,
     undo, redo, savePreset, loadPreset, deletePreset, copySettings, pasteSettings, openMatrix, onMidi,
     patches, patchTagFilter, patchTags, visiblePatches, patchFacets, togglePatchTag,
@@ -2829,7 +2863,7 @@ export const useBoard = defineStore('board', () => {
     selectedPatch, patchMain, playable, patchNumber, resolveSound, layerSound, patchLayerIds, vcoLinks, tunedSlots, patchById, layerHeard,
     semantic, similarTo, showSimilar, showMatching, clearSimilar, soundScores, patchScores, shownSounds, shownPatches,
     candidate, candidateInfo, describePatch, rerollCandidate, saveCandidate, discardCandidate,
-    installFactory, addFactoryPatch, selectPatch, editPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, removePatches, assignSlot, slotsOf, toggleSlot, toggleFav,
+    installFactory, addFactoryPatch, selectPatch, editPatch, selectPatchStep, newPatch, newSawPatch, duplicatePatch, removePatch, removePatches, assignSlot, slotsOf, toggleSlot, toggleFav,
     patchEdited, isEdited, isBuiltIn, savePatch, revertPatch,
     pressPatch, releasePatch, patchIdOfLayer, soundRef, resolveSoundRef, addAgentPatch, replacePatch, renderOffline,
     tags, visible, facets, peaksVersion, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,

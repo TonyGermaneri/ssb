@@ -8,7 +8,6 @@ import Knob from './Knob.vue'
 import VuMeter from './VuMeter.vue'
 import ThemePicker from './ThemePicker.vue'
 import StripSection from './StripSection.vue'
-import VcoScopes from './VcoScopes.vue'
 import ExportDialog from './ExportDialog.vue'
 import { callNative, nativeEngine } from '../native/bridge'
 import { mcpStatus } from '../lib/ai/mcpStatus'
@@ -64,6 +63,34 @@ function toggleView(id: ViewPart) {
  * The patch LCD: a click shows the patches solo (the patch browser alone, full width: no rack, no samples); a click
  * while they are brings back the view before (or, with none remembered, the rack beside them).
  */
+/** NEW PATCH: a click copies the patch open; held for NEW_HOLD_MS, a fresh patch on the saw wavetable */
+const NEW_HOLD_MS = 1500
+const holding = ref(false)
+let holdTimer: ReturnType<typeof setTimeout> | null = null
+function newDown(e: PointerEvent) {
+  if (e.button !== 0) return
+  newCancel()
+  holding.value = true
+  holdTimer = setTimeout(() => {
+    holdTimer = null
+    holding.value = false
+    void board.newSawPatch()
+  }, NEW_HOLD_MS)
+}
+function newUp(e: PointerEvent | null) {
+  // (a hold that already made its patch: the release does nothing)
+  if (e && !holding.value) return
+  newCancel()
+  const p = board.selectedPatch
+  if (p && board.patches.some((x) => x.id === p.id)) board.duplicatePatch(p.id)
+  else void board.newSawPatch()
+}
+function newCancel() {
+  if (holdTimer) clearTimeout(holdTimer)
+  holdTimer = null
+  holding.value = false
+}
+
 const patchesSolo = computed(() => board.master.showPatches && !board.master.showSamples && !board.master.rack)
 let beforeSolo: Pick<typeof board.master, ViewPart> | null = null
 function togglePatchesSolo() {
@@ -164,8 +191,18 @@ function onImport(e: Event) {
       </div>
     </StripSection>
 
-    <StripSection id="patch" title="PATCH" fixed>
-      <button class="hw-btn icon" title="New patch: an empty one, its three VCOs waiting for sounds" @click="board.newPatch()">
+    <!-- (it takes the header's room as the groups after it fold: its name's LCD widens into it) -->
+    <StripSection id="patch" class="patch-group" title="PATCH" fixed>
+      <button
+        class="hw-btn icon new-patch"
+        :class="{ holding }"
+        title="Click: a copy of this patch, at the end of the list · hold 1.5 s: a new patch, its first VCO the saw wavetable"
+        @pointerdown="newDown"
+        @pointerup="newUp"
+        @pointerleave="newCancel"
+        @pointercancel="newCancel"
+        @keydown.enter.prevent="newUp(null)"
+      >
         <v-icon size="16" icon="mdi-plus-box-multiple" />
       </button>
       <i class="vdiv" />
@@ -247,10 +284,6 @@ function onImport(e: Event) {
         <span class="chip dim" title="Computer-keyboard octave (- / = keys)">{{ octaveLabel }}</span>
       </div>
       <Knob v-model="board.master.glide" label="GLIDE" :min="0" :max="2" :step="0.005" :default="0" :format="fmtSec" :size="K" />
-    </StripSection>
-
-    <StripSection id="vco" title="VCO" fixed>
-      <VcoScopes />
     </StripSection>
 
 
@@ -429,6 +462,28 @@ function onImport(e: Event) {
 </template>
 
 <style scoped>
+/* NEW PATCH held: a bar fills under it over the 1.5 s, then the saw patch comes */
+.new-patch {
+  position: relative;
+  overflow: hidden;
+}
+.new-patch::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  width: 0;
+  background: rgb(var(--v-theme-success));
+}
+.new-patch.holding::after {
+  animation: hold-fill 1.5s linear forwards;
+}
+@keyframes hold-fill {
+  to {
+    width: 100%;
+  }
+}
 .strip {
   z-index: 10;
   display: flex;
@@ -553,10 +608,13 @@ function onImport(e: Event) {
   background: radial-gradient(circle, transparent 55%, rgba(0, 0, 0, 0.45) 60%) 0 0 / 3px 3px;
   pointer-events: none;
 }
+.patch-group {
+  flex: 1 1 auto;
+}
 .lcd {
-  /* the patch's name: twice the 104 px it once had */
-  width: 208px;
-  flex: none;
+  /* the patch's name: 208 px at least, and whatever room the header has spare */
+  flex: 1 1 208px;
+  min-width: 208px;
   color: var(--c-secondary);
   text-shadow: 0 0 6px color-mix(in srgb, var(--c-secondary) 80%, transparent);
   text-overflow: ellipsis;

@@ -1,17 +1,18 @@
 /**
  * The PROMPT GARDEN: a VCO that keeps regrowing its own sample. Rings of words (nouns, verbs, textures...) each turn a
  * Euclidean rhythm, k hits spread over n steps; every generation is one step of all of them, and a ring that hits on
- * that step moves on to its next word (or, set to DROP, is only heard on its hits). The words that come up, with the
- * chips (genre, mood, style) and the enum grids (tempo, key, length) always there, are the next caption for the sound
- * model, which makes the next clip in the background while this one plays; after LOOPS passes of the clip the new one
- * is stitched in at a loop boundary (engine.stitch, Engine.cpp's stitch), so the voice never stops.
+ * that step moves on to its next word (or, set to DROP, is only heard on its hits). The words that come up are the
+ * next caption for the sound model, which makes the next clip in the background while this one plays; after LOOPS
+ * passes of the clip the new one is stitched in at a loop boundary (engine.stitch, Engine.cpp's stitch), so the voice never stops.
  *
  * It is all a function of the garden's seed and its step: rings that cycle come round again (the whole garden repeats
  * every lcm of their periods), and a caption that has come up before plays the clip it made then -- so a garden drifts
  * through one semantic space, mostly, and sometimes loops. BACK sends it to an earlier clip at random, too.
  *
- * Pure: no Vue, no stores (stores/garden.ts runs it; GardenDialog.vue shows it).
+ * The rings' words come from a prompt someone typed: the word model lists words of each ring's kind for it
+ * (lib/garden/riff.ts). Pure: no Vue, no stores (stores/garden.ts runs it; GardenPad.vue shows it in the PLAY view).
  */
+import type { PadLfo } from '../play/padLfo'
 
 // ── Euclidean rhythms ──────────────────────────────────────────────────────────────────────────────────────────────
 /**
@@ -90,17 +91,8 @@ export interface Ring {
   off?: boolean
 }
 
-export const CHIP_GROUPS = ['genre', 'mood', 'style'] as const
-export type ChipGroup = (typeof CHIP_GROUPS)[number]
-
-/** the enum grids: values the caption takes one of each step (cycling through the ones lit) */
-export const ENUM_GRIDS = {
-  bpm: [60, 70, 80, 90, 100, 110, 120, 128, 140, 160, 174],
-  key: ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'],
-  scale: ['major', 'minor', 'dorian', 'phrygian', 'pentatonic'],
-  seconds: [1, 2, 3, 4, 6, 8, 12],
-} as const
-export type EnumGrid = keyof typeof ENUM_GRIDS
+/** how long a clip the garden asks for, s */
+export const CLIP_SECONDS = 4
 
 export interface GardenTake {
   /** the board sound the clip is */
@@ -134,10 +126,6 @@ export interface Garden {
   /** the step the clip playing was made for */
   step: number
   rings: Ring[]
-  /** the chips lit, by group */
-  chips: Record<ChipGroup, string[]>
-  /** each grid's values lit (none: the grid stays out of the caption) */
-  grids: { bpm: number[]; key: string[]; scale: string[]; seconds: number[] }
   /** passes of the clip before the next one is stitched in */
   loops: number
   /** the crossfade at the stitch, seconds (up to FADE_MAX: a long one overlaps several loops of the old clip and the new) */
@@ -152,34 +140,40 @@ export interface Garden {
   reuse: boolean
   /** the sound model's id ('' = the fastest one there: Stable Audio 3 Small Music) */
   model: string
-  /** what the model is steered away from */
+  /** AVOID: what the model is steered away from */
   negative: string
-  /** words before / after every caption */
-  prefix: string
-  suffix: string
   /** the clips it has made, newest first (only the latest TAKES_KEPT keep their audio) */
   history: GardenTake[]
   /** the takes SAVEd into the samples, oldest first */
   saved: SavedTake[]
   /** the PLAY view's pads grow too: at each new clip, the pads chosen walk somewhere new (PadGrowth) */
   pads: PadGrowth
+  /** the prompt the rings' words were last listed for (by the word model) */
+  subject: string
+  /** a singing model's words: the word model writes them from the prompt, unless OWN WORDS (☰'s advanced) gives them */
+  ownLyrics: boolean
+  lyrics: string
 }
 
 /**
- * The pads growing with the clips: each time a new clip is stitched in, every pad in `pads` steps to a new point (its
- * x and y: 16 parameters for all eight), a seeded walk of up to `amount` from where it is -- the same garden, seed
+ * The pads growing with the clips: each time a new clip is stitched in, every pad in `pads` (each pad's automation
+ * toggle in the PLAY view) steps to a new point (its x and y), a seeded walk of up to `amount` from where it is -- the same garden, seed
  * and step move them the same way. The move starts OFFSET loops after the stitch and glides over XFADE.
  */
 export interface PadGrowth {
-  on: boolean
   /** 0..1: how far a pad can step at once (of its whole width / height) */
   amount: number
   /** the pads that move (PadId: perform, grain, lfo, fx, pitch, texture, echo, tone) */
   pads: string[]
+  /**
+   * each pad's LFO (lib/play/padLfo.ts), by PadId: its automation button's panel. A pad whose SHAPE is GROW is the
+   * one in `pads` (kept in step by the garden store); one in `pads` with none here is an older GROW.
+   */
+  lfo: Record<string, PadLfo>
 }
 export const PAD_GROWTH_PADS = ['perform', 'grain', 'lfo', 'fx', 'pitch', 'texture', 'echo', 'tone'] as const
-/** the pads that move to begin with: not the level (PERFORM) nor the pitch, which would be jarring to have wander */
-export const defaultPadGrowth = (): PadGrowth => ({ on: false, amount: 0.25, pads: ['grain', 'lfo', 'fx', 'texture', 'echo', 'tone'] })
+/** none move until their automation is turned on */
+export const defaultPadGrowth = (): PadGrowth => ({ amount: 0.25, pads: [], lfo: {} })
 
 /** Where a pad steps to at `step`: from `from`, up to `amount` each way on each axis, folded back in at the edges. */
 export function padTarget(seed: number, step: number, pad: string, from: { x: number; y: number }, amount: number): { x: number; y: number } {
@@ -221,13 +215,7 @@ export const WORD_BANKS: Record<RingKind, string[]> = {
   custom: ['dream', 'static', 'pulse'],
 }
 
-export const CHIPS: Record<ChipGroup, string[]> = {
-  genre: ['ambient', 'techno', 'dub', 'drone', 'lo-fi hip hop', 'idm', 'house', 'cinematic', 'glitch', 'gamelan', 'krautrock', 'vaporwave', 'jungle', 'trip hop'],
-  mood: ['dreamy', 'tense', 'euphoric', 'melancholy', 'eerie', 'playful', 'hypnotic', 'dark', 'serene', 'chaotic'],
-  style: ['seamless loop', 'one-shot', 'texture', 'drone', 'arpeggio', 'chord stab', 'drum loop', 'field recording', 'bassline', 'melody'],
-}
-
-/** each ring's colour, by its place (GardenRings.vue, GardenDialog.vue) */
+/** each ring's colour, by its place (drawRings.ts, GardenPad.vue) */
 export const RING_COLORS = ['#ff4fd8', '#3ef0ff', '#ffd23e', '#7dff6a', '#ff8a3e', '#a98bff', '#ff3e6c', '#3effb5']
 
 let ringSeq = 0
@@ -260,8 +248,6 @@ export function defaultGarden(): Garden {
       newRing('verb', { k: 5, n: 8, rot: 1 }),
       newRing('texture', { k: 1, n: 4, drop: true }),
     ],
-    chips: { genre: ['ambient'], mood: ['dreamy'], style: ['seamless loop'] },
-    grids: { bpm: [], key: [], scale: [], seconds: [4] },
     loops: 4,
     fade: 0.08,
     offset: 0,
@@ -270,11 +256,12 @@ export function defaultGarden(): Garden {
     reuse: true,
     model: '',
     negative: 'speech, vocals, low quality, clipping',
-    prefix: '',
-    suffix: '',
     history: [],
     saved: [],
     pads: defaultPadGrowth(),
+    subject: '',
+    ownLyrics: false,
+    lyrics: '',
   }
 }
 
@@ -282,15 +269,24 @@ export function defaultGarden(): Garden {
 export function migrateGarden(g: Partial<Garden> | null | undefined): Garden {
   const d = defaultGarden()
   if (!g) return d
+  // (an older garden's chips, grids, words before / after and TELEPHONE are let go; its pads grew only with PADS GROW on)
+  const { chips: _c, grids: _g, prefix: _p, suffix: _s, telephone: tel, ...rest } = g as Partial<Garden> & Record<string, unknown> & { telephone?: { chain?: string[] } }
+  const oldPads = g.pads as (PadGrowth & { on?: boolean }) | undefined
+  const pads = oldPads
+    ? {
+        amount: oldPads.amount ?? d.pads.amount,
+        pads: oldPads.on === false ? [] : [...(oldPads.pads ?? [])],
+        lfo: oldPads.lfo && typeof oldPads.lfo === 'object' ? oldPads.lfo : {},
+      }
+    : d.pads
   return {
     ...d,
-    ...g,
+    ...rest,
     rings: (g.rings ?? d.rings).map((r) => ({ ...newRing(r.kind ?? 'custom'), ...r })),
-    chips: { ...d.chips, ...(g.chips ?? {}) },
-    grids: { ...d.grids, ...(g.grids ?? {}) },
     history: (g.history ?? []).slice(0, HISTORY_MAX),
     saved: g.saved ?? [],
-    pads: { ...d.pads, ...(g.pads ?? {}) },
+    pads,
+    subject: g.subject ?? tel?.chain?.at(-1) ?? '',
   }
 }
 
@@ -312,17 +308,24 @@ export function ringWordIndex(r: Ring, step: number, seed: number): number {
   return h % len
 }
 
+/** the most steps a ring takes on the GARDEN pad's X (and the ship's rings) */
+export const STEPS_MAX = 32
+/** Where a ring sits on the GARDEN pad: x its STEPS (1 at the left, STEPS_MAX at the right), y its HITS of them. */
+export const ringPoint = (r: Ring): { x: number; y: number } => ({ x: (r.n - 1) / (STEPS_MAX - 1), y: r.n ? r.k / r.n : 0 })
+/** A point on the GARDEN pad, into the ring: STEPS from x, HITS from y (its rotation kept inside its steps). */
+export function setRingPoint(r: Ring, p: { x: number; y: number }) {
+  const n = Math.max(1, Math.min(STEPS_MAX, 1 + Math.round(Math.min(1, Math.max(0, p.x)) * (STEPS_MAX - 1))))
+  r.n = n
+  r.k = Math.round(Math.min(1, Math.max(0, p.y)) * n)
+  if (r.rot >= n) r.rot %= n
+}
+
 /** Whether a ring is in the caption at `step`: on a hit, or between them unless it DROPs. */
 export function ringSounds(r: Ring, step: number): boolean {
   if (r.off || !r.words.length) return false
   if (!r.drop || r.locked) return true
   const p = ringPattern(r)
   return p[((step % p.length) + p.length) % p.length]
-}
-
-/** the value a grid gives at `step`: its lit values, one a step in turn */
-export function gridValue<T>(lit: readonly T[], step: number): T | undefined {
-  return lit.length ? lit[((step % lit.length) + lit.length) % lit.length] : undefined
 }
 
 export interface Caption {
@@ -336,37 +339,16 @@ export interface Caption {
 /** the order words take in the phrase before the commas: "warm glass bells swelling" */
 const PHRASE: RingKind[] = ['adjective', 'texture', 'instrument', 'noun', 'verb', 'place']
 
-/**
- * The caption for `step`: the phrase the rings make (adjectives, then what, then doing what, then where), the custom
- * rings', then the chips and the grids' values; or `override` words (the game's catch) in place of the rings'.
- */
-export function composeCaption(g: Garden, step: number, override?: string[]): Caption {
+/** The caption for `step`: the phrase the rings make (adjectives, then what, then doing what, then where), then the custom rings'. */
+export function composeCaption(g: Garden, step: number): Caption {
   const words: Record<string, string> = {}
   for (const r of g.rings) {
     const i = ringSounds(r, step) ? ringWordIndex(r, step, g.seed) : -1
     words[r.id] = i >= 0 ? r.words[i].trim() : ''
   }
-  let phrase: string
-  let extra: string[] = []
-  if (override?.length) phrase = override.join(' ')
-  else {
-    const byKind = (k: RingKind) => g.rings.filter((r) => r.kind === k && words[r.id]).map((r) => words[r.id])
-    phrase = PHRASE.flatMap(byKind).join(' ')
-    extra = byKind('custom')
-  }
-  const bpm = gridValue(g.grids.bpm, step)
-  const key = gridValue(g.grids.key, step)
-  const scale = gridValue(g.grids.scale, step)
-  const parts = [
-    g.prefix.trim(),
-    phrase,
-    ...extra,
-    ...CHIP_GROUPS.flatMap((c) => g.chips[c] ?? []),
-    bpm ? `${bpm} BPM` : '',
-    key ? `in ${key}${scale ? ` ${scale}` : ''}` : scale ? `${scale} scale` : '',
-    g.suffix.trim(),
-  ].filter(Boolean)
-  return { prompt: parts.join(', '), seconds: gridValue(g.grids.seconds, step) ?? 4, words }
+  const byKind = (k: RingKind) => g.rings.filter((r) => r.kind === k && words[r.id]).map((r) => words[r.id])
+  const parts = [PHRASE.flatMap(byKind).join(' '), ...byKind('custom')].filter(Boolean)
+  return { prompt: parts.join(', '), seconds: CLIP_SECONDS, words }
 }
 
 /** the clip's seed: the same caption makes the same clip (a garden that comes round sounds as it did) */
@@ -399,16 +381,16 @@ export type NextPlan =
  * What the next clip is, for the step after `g.step`: BACK's roll sends it to an earlier take; a caption made before
  * (REUSE) plays that take; else a new clip to make. `alive` says whether a take's sound is still on the board.
  */
-export function planNext(g: Garden, alive: (soundId: string) => boolean, override?: string[]): NextPlan {
+export function planNext(g: Garden, alive: (soundId: string) => boolean): NextPlan {
   const step = g.step + 1
   const takes = g.history.filter((t) => alive(t.soundId))
   // BACK: never the clip playing (history[0]), a step's roll decides
-  if (!override?.length && takes.length > 1 && rand01(g.seed, 'back', step) < g.back) {
+  if (takes.length > 1 && rand01(g.seed, 'back', step) < g.back) {
     const pick = takes[1 + (hash32(g.seed, 'pick', step) % (takes.length - 1))]
     return { kind: 'again', take: pick, step, prompt: pick.prompt }
   }
-  const c = composeCaption(g, step, override)
-  if (g.reuse && !override?.length) {
+  const c = composeCaption(g, step)
+  if (g.reuse) {
     const same = takes.find((t) => t.prompt === c.prompt)
     if (same && same !== takes[0]) return { kind: 'again', take: same, step, prompt: c.prompt }
   }

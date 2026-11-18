@@ -31,6 +31,7 @@ private:
     std::optional<juce::WebBrowserComponent::Resource> provide (const juce::String& path);
     /** a cached sample for the page, as binary (rate, channels, frames, planar float32): "ssb-audio/<audioId>" */
     std::optional<juce::WebBrowserComponent::Resource> provideAudio (const juce::String& audioId);
+    std::optional<juce::WebBrowserComponent::Resource> provideModelFile (const juce::String& relativePath);
 
     /** The page's samples on their way in, a chunk at a time (ssbAudioBegin / Chunk / End): each chunk's base64 is
         decoded on the sample store's worker threads, so no single call holds the message thread -- the host's. */

@@ -408,7 +408,7 @@ export function drawPerformOverlay(
   g: G,
   w: number,
   h: number,
-  o: { at: Point; fireX: number | null; grains: GrainDot[]; colors: Colors; dpr: number },
+  o: { at: Point; fireX: number | null; grains: GrainDot[]; colors: Colors; dpr: number; crossAlpha?: number },
 ) {
   if (o.fireX !== null) {
     // where the LFO has the grains firing: a bracket top and bottom
@@ -443,7 +443,11 @@ export function drawPerformOverlay(
     g.closePath()
     g.fill()
   }
+  const k = o.crossAlpha ?? 1
+  if (k < 0.02) return
+  g.globalAlpha = k
   crosshair(g, w, h, o.at, o.colors, o.dpr)
+  g.globalAlpha = 1
 }
 
 // ── TEXTURE: grains as pollen; SPRAY scatters them across, DETUNE splits them into a low strand and a high one ──
@@ -565,4 +569,123 @@ export function drawTone(g: G, w: number, h: number, o: { s: Pick<SoundSettings,
     g.arc(x, y, 2 * o.dpr, 0, Math.PI * 2)
     g.fill()
   }
+}
+
+/** a spark thrown off a pad's LFO: where (0..1, y up), how fast, how much life is left (1 → 0), how big */
+export interface Spark {
+  x: number
+  y: number
+  vx: number
+  vy: number
+  life: number
+  /** seconds it lives in all */
+  span: number
+  size: number
+}
+/** a ripple where a snapping pad's setting stepped: where, and how far through its life (0 → 1) */
+export interface Ripple {
+  x: number
+  y: number
+  age: number
+}
+
+/**
+ * A pad's LFO (lib/play/padLfo.ts) as part of the picture: a comet going round its shape -- a hot head, its tail
+ * along the path behind it, sparks thrown off it and ripples where a snapping pad's setting steps -- in the pad's own
+ * colour, added light over the picture. `ui` (0..1) brings up the guides only while someone's at it: the path drawn
+ * out, and its centre (the pad's X / Y) as a diamond. `at(phase)` is the LFO's point at a phase (turns).
+ */
+export function drawLfoFx(
+  g: G,
+  w: number,
+  h: number,
+  o: { at: (phase: number) => Point; phase: number; color: string; ui: number; center: Point; sparks: Spark[]; ripples: Ripple[]; dpr: number },
+) {
+  const { dpr, color } = o
+  const X = (p: Point) => p.x * w
+  const Y = (p: Point) => (1 - p.y) * h
+  g.save()
+  // the path: a faint glow always, drawn out while someone's at it
+  g.lineCap = 'round'
+  g.lineJoin = 'round'
+  g.strokeStyle = alpha(color, 0.07 + 0.3 * o.ui)
+  g.lineWidth = (1 + o.ui) * dpr
+  g.beginPath()
+  for (let i = 0; i <= 96; i++) {
+    const p = o.at(i / 96)
+    if (i) g.lineTo(X(p), Y(p))
+    else g.moveTo(X(p), Y(p))
+  }
+  g.stroke()
+
+  g.globalCompositeOperation = 'lighter'
+  // ripples: a setting stepping (the LFO pad's tempo divisions, the echo's, a scale's notes)
+  for (const r of o.ripples) {
+    const k = r.age
+    g.strokeStyle = alpha(color, 0.35 * (1 - k))
+    g.lineWidth = (1.6 * (1 - k) + 0.4) * dpr
+    g.beginPath()
+    g.arc(r.x * w, (1 - r.y) * h, (3 + 15 * Math.sqrt(k)) * dpr, 0, Math.PI * 2)
+    g.stroke()
+  }
+  // the tail, behind the head along the path: thicker and brighter toward it
+  const TAIL = 0.16
+  const N = 28
+  g.shadowColor = color
+  g.shadowBlur = 8 * dpr
+  let prev = o.at(o.phase - TAIL)
+  for (let i = 1; i <= N; i++) {
+    const k = i / N
+    const p = o.at(o.phase - TAIL * (1 - k))
+    g.strokeStyle = alpha(color, 0.05 + 0.75 * k * k)
+    g.lineWidth = (0.6 + 4.2 * k) * dpr
+    g.beginPath()
+    g.moveTo(X(prev), Y(prev))
+    g.lineTo(X(p), Y(p))
+    g.stroke()
+    prev = p
+  }
+  g.shadowBlur = 0
+  // sparks
+  for (const s of o.sparks) {
+    const r = s.size * (0.4 + 0.6 * s.life) * dpr
+    g.fillStyle = alpha(color, 0.85 * s.life)
+    g.beginPath()
+    g.arc(s.x * w, (1 - s.y) * h, r, 0, Math.PI * 2)
+    g.fill()
+  }
+  // the head: a white-hot core in a glow of the pad's colour
+  const head = o.at(o.phase)
+  const hx = X(head)
+  const hy = Y(head)
+  const R = 11 * dpr
+  const glow = g.createRadialGradient(hx, hy, 0, hx, hy, R)
+  glow.addColorStop(0, 'rgba(255, 255, 255, 0.95)')
+  glow.addColorStop(0.25, alpha(color, 0.85))
+  glow.addColorStop(1, alpha(color, 0))
+  g.fillStyle = glow
+  g.beginPath()
+  g.arc(hx, hy, R, 0, Math.PI * 2)
+  g.fill()
+  g.globalCompositeOperation = 'source-over'
+
+  // the centre, while someone's at it
+  if (o.ui > 0.02) {
+    const x = X(o.center)
+    const y = Y(o.center)
+    const r = 4 * dpr
+    g.globalAlpha = o.ui
+    g.fillStyle = color
+    g.strokeStyle = 'rgba(0, 0, 0, 0.6)'
+    g.lineWidth = dpr
+    g.beginPath()
+    g.moveTo(x, y - r)
+    g.lineTo(x + r, y)
+    g.lineTo(x, y + r)
+    g.lineTo(x - r, y)
+    g.closePath()
+    g.fill()
+    g.stroke()
+  }
+  g.restore()
 }

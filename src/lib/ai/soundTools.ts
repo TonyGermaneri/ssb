@@ -11,6 +11,7 @@ import { clipAsync } from '../analysis'
 import type { clipPitch } from './audio'
 import { DEFAULT_SOUND_MODEL, downloadBytes, fmtBytes, SOUND_MODELS, soundModelFrom, type SoundModelInfo } from './soundModels'
 import { generateWithStop, loadAndWait, NativeSoundHost, type SoundHostApi, type SoundStatus } from './soundHost'
+import { routedSoundHost } from './pageSound'
 import { defaultSoundSettings, errorMessage, type SoundSettings } from './types'
 
 type Board = ReturnType<typeof useBoard>
@@ -39,6 +40,7 @@ const describe = (m: SoundModelInfo) => ({
   sample_rate: m.sampleRate,
   channels: m.channels === 2 ? 'stereo' : 'mono',
   default_steps: m.defaultSteps,
+  ...(m.lyrics ? { sings: 'yes: pass lyrics to make_sound' } : {}),
 })
 
 /** a model by name for the agent (the settings' pick when none is named) */
@@ -88,6 +90,8 @@ export interface MakeSoundInput {
   name?: string
   tags?: string
   root_note?: number
+  /** words to sing (a model that sings: ACE-Step) */
+  lyrics?: string
 }
 
 /** A clip a sound model made, on the board as a sound. */
@@ -123,7 +127,7 @@ export async function makeSound(
   }
   const { switched } = await ensureLoaded(agent, m, signal)
   const seconds = Math.min(input.seconds ?? 5, m.maxSeconds)
-  const clip = await generateWithStop(host, m, { prompt: input.prompt, negative_prompt: input.negative_prompt, seconds, steps: input.steps, guidance: input.guidance, seed: input.seed }, signal)
+  const clip = await generateWithStop(host, m, { prompt: input.prompt, negative_prompt: input.negative_prompt, seconds, steps: input.steps, guidance: input.guidance, seed: input.seed, lyrics: input.lyrics }, signal)
   // read, trimmed, normalised and its pitch found in a worker (lib/analysis.ts): never a stalled frame
   const shaped = await clipAsync(clip.wav, seconds + 0.5)
   if (!shaped.ok && shaped.why === 'unreadable') throw new Error('the clip came back in a form that could not be read (not a PCM WAV)')
@@ -147,16 +151,30 @@ export async function makeSound(
 
 /** How long a VCO wave prompt asks for: a few seconds, room for a note's attack, body and tail. */
 export const VCO_PROMPT_SECONDS = 4
+/** a wave with words to sing: long enough to sing a line */
+export const VCO_SUNG_SECONDS = 10
 
 /**
  * The VCO wave prompt: the sound model picked in the AI settings makes a clip from the prompt, which lands on the board
  * as a sound and goes straight into patch slot `slot` (a patch starts when none is selected), replacing what was there.
  * The same pipeline as make_sound, without the conversation; it never starts a download.
  */
-export async function promptSlotWave(board: Board, agent: SoundAgent, slot: number, prompt: string, signal?: AbortSignal): Promise<MadeSound> {
+export async function promptSlotWave(
+  board: Board, agent: SoundAgent, slot: number, prompt: string, signal?: AbortSignal,
+  opts: { lyrics?: string; model?: string; negative?: string } = {},
+): Promise<MadeSound> {
   const text = prompt.trim()
   if (!text) throw new Error('say what the wave should be')
-  const made = await makeSound(board, agent, { prompt: text, seconds: VCO_PROMPT_SECONDS, tags: 'vco' }, signal, { requireDownloaded: true })
+  // a sung wave gets room for its words (a line or two)
+  const { lyrics, model, negative } = opts
+  const sung = !!lyrics?.trim()
+  const made = await makeSound(
+    board,
+    agent,
+    { prompt: text, seconds: sung ? VCO_SUNG_SECONDS : VCO_PROMPT_SECONDS, tags: 'vco', ...(model ? { model } : {}), ...(negative ? { negative_prompt: negative } : {}), ...(sung ? { lyrics } : {}) },
+    signal,
+    { requireDownloaded: true },
+  )
   board.assignSlot(slot, made.snd.id)
   return made
 }
@@ -278,6 +296,11 @@ export function createSoundTools(board: Board, agent: SoundAgent): AgentTool[] {
           name: { type: 'string', description: 'the sound\'s name, UPPER CASE (e.g. "STEEL DOOR SLAM"); a clip that holds a note gets the note added' },
           tags: { type: 'string', description: 'comma separated (e.g. "sfx, impact, metal")' },
           root_note: { type: 'integer', minimum: 0, maximum: 127, description: 'the MIDI note it sounds at, when you know better than the detection (default: the detected steady pitch, else 60)' },
+          lyrics: {
+            type: 'string',
+            description:
+              'words to sing, for a model that sings (ACE-Step 1.5 Turbo; others ignore them): lines, optionally under [verse] / [chorus]; "[instrumental]" for none. Wordless singing: write the sounds ("ooh, aah, mmm"). Allow about 3 s a short line in seconds',
+          },
         },
         required: ['prompt'],
         additionalProperties: false,
@@ -320,9 +343,19 @@ export function createSoundTools(board: Board, agent: SoundAgent): AgentTool[] {
 }
 
 /** the sound agent over settings read when each tool runs (the dialog's live settings, or the stored ones for MCP) */
+let shared: SoundHostApi | null = null
+let sharedToken: () => string = () => ''
+/** the page's one sound host (its token: the latest settings asking for it) */
+function sharedSoundHost(token: () => string): SoundHostApi {
+  sharedToken = token
+  return (shared ??= routedSoundHost(new NativeSoundHost(() => sharedToken())))
+}
+
 export function soundAgentFrom(settings: () => SoundSettings | null | undefined, hooks: Pick<SoundAgent, 'onLoaded' | 'onStatus'> = {}, host?: SoundHostApi): SoundAgent {
   const s = () => ({ ...defaultSoundSettings(), ...(settings() ?? {}) })
-  const native = host ?? new NativeSoundHost(() => s().hfToken)
+  // (MusicGen, which audio.cpp hasn't, runs in the page: routed there, the rest to the app's helper) -- one host for
+  // the page, shared by the AI settings, the VCO prompts, the gardens and the MCP server: one model loaded, as one knows it
+  const native = host ?? sharedSoundHost(() => s().hfToken)
   return {
     host: () => native,
     selected: () => soundModelFrom(s().model) ?? soundModelFrom(DEFAULT_SOUND_MODEL),

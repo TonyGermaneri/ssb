@@ -1,61 +1,68 @@
 /**
- * The NINETIES: a fat, pre-rendered hypercruiser -- a bulbous, chunky, organic-meets-mechanical bean of a ship in
- * teal, purple and lime, ray-traced chrome, bevelled seams and a big swoosh, warping through a CGI starfield.
- * Original game-box-art; nose to the right.
+ * The NINETIES: the HX-2K HYPERCRUISER as the hero of a pre-rendered CGI game box -- a fat, bulbous, organic-meets-
+ * mechanical cruiser of translucent candy plastic (teal bow, purple midships, lime stern) over glowing circuit boards,
+ * every section joined by fat ray-traced chrome tori, a bolted chrome-ringed bubble canopy like the bridge's, a CRT
+ * deck, a magenta swoosh, chrome intakes and lime thrusters, warping through a CGI starfield. Hard speculars, a touch
+ * of banding and dither. Original art; nose to the right.
  */
 import Hull1990 from '../../../components/voyage/Hull1990.vue'
+import Overlay1990 from '../../../components/voyage/Overlay1990.vue'
 import { pal, part, type Era } from '../ship'
 
 export const E1990: Era = {
   id: '1990',
   label: '90s',
   title: 'HX-2K HYPERCRUISER',
-  blurb: 'a chunky chrome bean warping through a rendered sky',
+  blurb: 'a pre-rendered chrome-and-candy cruiser, ray-traced at 320×240',
   palettes: [
-    pal('BOW', '#17c9bf', '#7b2ff7', '#d6fff9', '#062a46', '#b8ff1f'),
-    pal('MIDSHIPS', '#7d3ff2', '#18d8c9', '#f0e2ff', '#1a0a48', '#b8ff1f'),
-    pal('STERN', '#93df24', '#2b5dff', '#f3ffd0', '#0e3318', '#ff3db8'),
+    pal('BOW', '#1fe0d2', '#7b2ff7', '#d6fff9', '#062a46', '#b8ff1f'),
+    pal('MIDSHIPS', '#a46bff', '#18d8c9', '#f0e2ff', '#1a0a48', '#b8ff1f'),
+    pal('STERN', '#b8ff1f', '#2b5dff', '#f3ffd0', '#0e3318', '#ff3db8'),
   ],
   ink: '#110a2c',
   stroke: 1,
+  partStroke: 0.5,
+  glass: { fill: '#3a1a9a', opacity: 0.34, highlight: true },
   stripes: 'palette',
   parts: [
-    // ── BOW · VCO 1 ──
-    part(0, 'perform', 'WRAP VISOR', [372, -140, 640, 0], 'capsule'),
-    part(0, 'grain', 'NOSE TURBO', [652, -42, 784, 90], 'turbine'),
-    part(0, 'lfo', 'EYE STALK', [540, -312, 650, -164], 'periscope'),
-    part(0, 'fx', 'SENSOR BLISTER', [300, -322, 470, -182], 'bubble'),
-    part(0, 'pitch', 'HOVER JETS', [290, 150, 440, 272], 'bells', { dir: 90, n: 2 }),
-    part(0, 'texture', 'COOL GILLS', [380, 22, 560, 86], 'row', { dir: 150 }),
-    part(0, 'echo', 'BUNNY EARS', [676, -264, 790, -116], 'whisker'),
-    part(0, 'tone', 'CHIN FIN', [460, 128, 640, 312], 'tail'),
-    // ── MIDSHIPS · VCO 2 ──
-    part(1, 'perform', 'MEGA DECK', [-222, -182, 98, -42], 'panel'),
-    part(1, 'grain', 'POWER HALO', [-252, 8, 62, 100], 'ring'),
-    part(1, 'lfo', 'BEACON ARM', [128, -372, 240, -204], 'arm'),
-    part(1, 'fx', 'BELLY BLISTER', [-160, 192, 40, 324], 'down'),
-    part(1, 'pitch', 'TURBO STACKS', [-252, -364, -122, -222], 'stacks', { n: 2 }),
-    part(1, 'texture', 'BIO VENTS', [104, -132, 214, 50], 'column', { dir: 160 }),
-    part(1, 'echo', 'NET TOWER', [-62, -424, 70, -226], 'mast'),
-    part(1, 'tone', 'SWOOP FIN', [70, 150, 232, 334], 'wing'),
-    // ── STERN · VCO 3 ──
-    part(2, 'perform', 'REAR VIEWER', [-612, -132, -332, 8], 'round'),
-    part(2, 'grain', 'HYPER FAN', [-820, -124, -684, 12], 'turbine'),
-    part(2, 'lfo', 'BELLY RUDDER', [-430, 160, -318, 314], 'rudder', { dir: 90 }),
-    part(2, 'fx', 'AFT BLISTER', [-560, -304, -402, -172], 'up'),
-    part(2, 'pitch', 'AFTERBURNERS', [-820, 70, -702, 196], 'bells', { dir: 180, n: 2 }),
-    part(2, 'texture', 'EXHAUST GILLS', [-602, 36, -342, 100], 'row', { dir: 180 }),
-    part(2, 'echo', 'SAT DISH', [-392, -364, -276, -196], 'dish'),
-    part(2, 'tone', 'TAIL FIN', [-722, -428, -562, -150], 'tail', { flip: 'x' }),
+    // ── BOW · VCO 1: the teal candy nose, under the bubble canopy ──
+    part(0, 'perform', 'WRAP VISOR', [384, -136, 650, 12], 'capsule'),
+    part(0, 'grain', 'NOSE INTAKE', [672, -34, 806, 100], 'turbine'),
+    part(0, 'lfo', 'EYE STALK', [622, -304, 722, -162], 'periscope'),
+    part(0, 'fx', 'BUBBLE CANOPY', [392, -352, 600, -196], 'bubble'),
+    part(0, 'pitch', 'HOVER JETS', [300, 150, 450, 282], 'bells', { dir: 90, n: 2 }),
+    part(0, 'texture', 'COOL GILLS', [400, 34, 630, 94], 'row', { dir: 150 }),
+    part(0, 'echo', 'BUNNY EARS', [728, -300, 820, -150], 'whisker'),
+    part(0, 'tone', 'CHIN FIN', [480, 124, 650, 304], 'tail'),
+    // ── MIDSHIPS · VCO 2: the purple candy waist, its CRT deck and power halo ──
+    part(1, 'perform', 'MEGA DECK', [-228, -184, 104, -30], 'screen'),
+    part(1, 'grain', 'POWER HALO', [-250, 18, 66, 110], 'ring'),
+    part(1, 'lfo', 'BEACON ARM', [130, -386, 240, -212], 'arm'),
+    part(1, 'fx', 'BELLY BLISTER', [-170, 198, 30, 326], 'down'),
+    part(1, 'pitch', 'TURBO STACKS', [-252, -372, -122, -230], 'stacks', { n: 2 }),
+    part(1, 'texture', 'BIO VENTS', [134, -150, 234, 60], 'column', { dir: 160 }),
+    part(1, 'echo', 'NET TOWER', [-66, -432, 64, -236], 'mast'),
+    part(1, 'tone', 'SWOOP FIN', [76, 152, 238, 336], 'wing'),
+    // ── STERN · VCO 3: the lime candy engine bulb, its chrome fan and afterburners ──
+    part(2, 'perform', 'REAR VIEWER', [-616, -150, -340, 12], 'round'),
+    part(2, 'grain', 'HYPER FAN', [-820, -128, -684, 8], 'turbine'),
+    part(2, 'lfo', 'BELLY RUDDER', [-436, 162, -320, 318], 'rudder', { dir: 90 }),
+    part(2, 'fx', 'AFT BLISTER', [-560, -366, -404, -236], 'up'),
+    part(2, 'pitch', 'AFTERBURNERS', [-820, 62, -702, 192], 'bells', { dir: 180, n: 2 }),
+    part(2, 'texture', 'EXHAUST GILLS', [-606, 40, -346, 100], 'row', { dir: 180 }),
+    part(2, 'echo', 'SAT DISH', [-390, -372, -272, -204], 'dish'),
+    part(2, 'tone', 'TAIL FIN', [-728, -430, -568, -156], 'tail', { flip: 'x' }),
   ],
   ports: [
-    { vco: 0, x: 385, y: -322 },
-    { vco: 1, x: -60, y: 324 },
-    { vco: 2, x: -481, y: -304 },
+    { vco: 0, x: 496, y: -352 },
+    { vco: 1, x: -70, y: 326 },
+    { vco: 2, x: -482, y: -366 },
   ],
-  wake: [-812, 133],
-  aura: [20, -10, 790, 270],
+  wake: [-812, 128],
+  aura: [10, -20, 800, 280],
   hull: Hull1990,
+  overlay: Overlay1990,
+  finish: { shade: 0.8, tintMax: 0.35 },
   sky: {
     mode: 4,
     colors: ['#0b0d42', '#5a159a', '#7ef9ff', '#d4ff3f', '#ff5cf0'],
@@ -66,5 +73,12 @@ export const E1990: Era = {
     outlines: 0,
     rocks: 2,
   },
-  hud: { bg: '#15123c', fg: '#eafffb', edge: ['#17c9bf', '#9b5cff', '#b8ff1f'], font: "'Arial Black', 'Orbitron', sans-serif", radius: 14, hard: false },
+  hud: {
+    bg: '#15123c',
+    fg: '#eafffb',
+    edge: ['#1fe0d2', '#a46bff', '#b8ff1f'],
+    font: "'Arial Black', 'Orbitron', sans-serif",
+    radius: 14,
+    hard: false,
+  },
 }

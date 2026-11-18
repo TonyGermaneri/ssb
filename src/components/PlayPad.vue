@@ -6,7 +6,10 @@ import type { Point } from '../lib/play/pads'
  * One of the Play view's XY pads: a canvas the parent paints (`draw`, when the parent calls `paint()` -- it knows
  * when the picture changed -- and on a resize), a crosshair dragged anywhere on it (`move`, y = 1 at the top, as
  * fast as the pointer moves: the parent takes the latest once a frame), a double-click for its starting point
- * (`reset`), and its settings behind ⚙ (the `settings` slot).
+ * (`reset`), and its settings behind ⚙ (the `settings` slot). With `grows` set, a GROW button (🌱, green while on:
+ * `grow` flips it) says whether it walks with the garden's clips. With `auto` set, a small automation button beside ⚙,
+ * green while the pad's LFO is on (lib/play/padLfo.ts): a click (`auto`) opens its panel on the pad's face (the `lfo`
+ * slot, shown while `lfoOpen`), a right-click (`autoToggle`) turns it on or off.
  */
 const props = defineProps<{
   label: string
@@ -14,11 +17,22 @@ const props = defineProps<{
   color: string
   draw: (g: CanvasRenderingContext2D, w: number, h: number, dpr: number) => void
   square?: boolean
+  /** it walks with the garden's clips (undefined: no GROW button) */
+  grows?: boolean
+  /** its automation (LFO) is on (undefined: no button) */
+  auto?: boolean
+  /** its LFO is running on its own (no one at it): its bright buttons dim */
+  quiet?: boolean
+  /** its LFO panel is open (the `lfo` slot) */
+  lfoOpen?: boolean
+  /** its settings in a panel beside it, not over it (more than a pad holds) */
+  menuSettings?: boolean
 }>()
-const emit = defineEmits<{ move: [Point]; reset: []; end: [] }>()
+const emit = defineEmits<{ move: [Point]; reset: []; end: []; grow: []; auto: []; autoToggle: [] }>()
 const wrap = ref<HTMLDivElement>()
 const canvas = ref<HTMLCanvasElement>()
 const showSettings = ref(false)
+const menuOpen = ref(false)
 let size = { w: 100, h: 100 }
 let g: CanvasRenderingContext2D | null = null
 
@@ -74,13 +88,48 @@ function up() {
 </script>
 
 <template>
-  <div ref="wrap" class="pad" :class="{ square }" :style="{ '--line': color }" :title="title">
+  <div ref="wrap" class="pad" :class="{ square, quiet }" :style="{ '--line': color }" :title="title">
     <canvas ref="canvas" @pointerdown.stop="down" @pointermove="move" @pointerup="up" @pointercancel="up" @lostpointercapture="up" @dblclick.stop="emit('reset')" />
-    <span class="label">{{ label }}</span>
-    <button v-if="$slots.settings" class="gear" :class="{ on: showSettings }" title="Settings" @pointerdown.stop @click.stop="showSettings = !showSettings">
+    <span v-show="!lfoOpen" class="label">{{ label }}</span>
+    <slot v-if="lfoOpen" name="lfo" />
+    <button
+      v-if="grows !== undefined"
+      class="auto grow"
+      :class="{ on: grows }"
+      :aria-pressed="grows"
+      :title="grows ? 'GROW on: each new clip from the garden walks this pad somewhere new (with an LFO on, its centre) — click to hold it still' : 'GROW: each new clip from the garden walks this pad somewhere new (with an LFO on, its centre)'"
+      @pointerdown.stop
+      @click.stop="emit('grow')"
+    >
+      <v-icon size="11" icon="mdi-sprout" />
+    </button>
+    <button
+      v-if="auto !== undefined"
+      class="auto"
+      :class="{ on: auto, solo: !$slots.settings }"
+      :aria-pressed="auto"
+      :title="auto ? 'LFO on: the pad traces its shape — click for its panel, right-click to turn it off' : 'LFO: a shape traced round the pad\'s point — click to turn it on and open its panel, right-click to turn it on'"
+      @pointerdown.stop
+      @click.stop="emit('auto')"
+      @contextmenu.prevent.stop="emit('autoToggle')"
+    >
+      <v-icon size="11" icon="mdi-chart-timeline-variant" />
+    </button>
+    <v-menu v-if="$slots.settings && menuSettings" v-model="menuOpen" location="top end" :close-on-content-click="false" offset="6">
+      <template #activator="{ props: act }">
+        <button class="gear" :class="{ on: menuOpen }" title="Settings" v-bind="act" @pointerdown.stop @click.stop>
+          <v-icon size="12" icon="mdi-cog" />
+        </button>
+      </template>
+      <div class="settings menu" :style="{ '--line': color }" @pointerdown.stop @click.stop>
+        <slot name="settings" />
+        <button class="done" @click="menuOpen = false">DONE</button>
+      </div>
+    </v-menu>
+    <button v-else-if="$slots.settings" class="gear" :class="{ on: showSettings }" title="Settings" @pointerdown.stop @click.stop="showSettings = !showSettings">
       <v-icon size="12" icon="mdi-cog" />
     </button>
-    <div v-if="showSettings" class="settings" @pointerdown.stop @click.stop>
+    <div v-if="showSettings && !menuSettings" class="settings" @pointerdown.stop @click.stop>
       <slot name="settings" />
       <button class="done" @click="showSettings = false">DONE</button>
     </div>
@@ -116,7 +165,7 @@ canvas {
   left: 6px;
   top: 5px;
   /* one line, cut short in a narrow pad (the pads stretch to fit their column) */
-  max-width: calc(100% - 26px);
+  max-width: calc(100% - 46px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -149,6 +198,42 @@ canvas {
 .gear.on {
   opacity: 1;
 }
+/* the automation toggle, left of the gear: green while the pad grows with the garden */
+.auto {
+  position: absolute;
+  z-index: 4;
+  top: 4px;
+  right: 24px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 50%;
+  color: color-mix(in srgb, var(--line) 70%, transparent);
+  background: color-mix(in srgb, var(--lcd-bg) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 35%, transparent);
+  opacity: 0.6;
+}
+.auto.solo {
+  right: 5px;
+}
+.auto.grow {
+  right: 43px;
+}
+.auto.grow.solo {
+  right: 24px;
+}
+.auto:hover {
+  opacity: 1;
+}
+.auto.on {
+  opacity: 1;
+  color: #05030a;
+  background: #7dff6a;
+  border-color: #7dff6a;
+  box-shadow: 0 0 6px rgba(125, 255, 106, 0.6);
+}
 .settings {
   position: absolute;
   inset: 0;
@@ -162,6 +247,15 @@ canvas {
   padding: 6px;
   overflow: auto;
   background: color-mix(in srgb, var(--lcd-bg) 92%, transparent);
+}
+.settings.menu {
+  position: static;
+  width: 320px;
+  max-height: 70vh;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  background: color-mix(in srgb, var(--lcd-bg) 96%, transparent);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7), inset 0 0 18px color-mix(in srgb, var(--line) 14%, transparent);
 }
 .settings :deep(button.opt),
 .done {
@@ -208,6 +302,13 @@ canvas {
   letter-spacing: 0.15em;
   color: var(--line);
 }
+.auto {
+  transition: opacity 0.6s, box-shadow 0.6s;
+}
+.pad.quiet .auto.on {
+  opacity: 0.14;
+  box-shadow: none;
+}
 @container (max-width: 96px) {
   .label {
     left: 3px;
@@ -217,11 +318,18 @@ canvas {
     letter-spacing: 0.04em;
     max-width: calc(100% - 18px);
   }
-  .gear {
+  .gear,
+  .auto {
     top: 2px;
     right: 2px;
     width: 13px;
     height: 13px;
+  }
+  .auto:not(.solo) {
+    right: 17px;
+  }
+  .auto.grow {
+    right: 32px;
   }
 }
 </style>

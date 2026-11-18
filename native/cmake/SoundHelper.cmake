@@ -4,7 +4,7 @@
 #
 # audio.cpp (Apache-2.0, https://github.com/0xShug0/audio.cpp) is pinned to a commit: MOSS-SoundEffect v2
 # arrived after its last release (v0.9.4), and a pinned source build is what makes a universal macOS helper.
-# Only the two model families SSB uses are compiled in (moss_soundeffect, stable_audio), with the Metal
+# Only the model families SSB uses are compiled in (moss_soundeffect, stable_audio, ace_step), with the Metal
 # backend on macOS and the CPU backend elsewhere. -DSSB_SOUND_MODELS=OFF leaves it out (the AI settings
 # then say the build has no sound models).
 
@@ -93,7 +93,7 @@ foreach(_arch IN LISTS _archs)
             -DENGINE_BUILD_EXAMPLES=OFF
             -DENGINE_BUILD_WARMBENCH=OFF
             -DAUDIOCPP_MODEL_SET=custom
-            -DAUDIOCPP_MODELS=moss_soundeffect,stable_audio
+            -DAUDIOCPP_MODELS=moss_soundeffect,stable_audio,ace_step
             -DAUDIOCPP_DEPLOYMENT_BUILD=ON   # model specs compiled in: a safetensors checkpoint (Stable Audio Open 1.0) needs one
         BUILD_COMMAND "${CMAKE_COMMAND}" --build <BINARY_DIR> --target audiocpp_server --config Release
         INSTALL_COMMAND ""

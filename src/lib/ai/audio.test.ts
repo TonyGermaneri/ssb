@@ -266,7 +266,9 @@ describe('the sound tools', () => {
     expect(out.models.map((m: { model: string }) => m.model)).toEqual([...SOUND_MODELS.map((m) => m.id), 'custom-someone-sfx-stable-audio-ft'])
     expect(out.models[0]).toMatchObject({ loaded: true, downloaded: true })
     expect(out.models[1]).toMatchObject({ loaded: false, downloaded: false, download: '1.68 GB' })
-    expect(out.models[4]).toMatchObject({ selected_in_settings: true, download: 'size unknown' })
+    expect(out.models[4]).toMatchObject({ model: 'ace-step-1.5-turbo-bf16', download: '10.1 GB', sings: expect.stringMatching(/lyrics/) })
+    expect(out.models[5]).toMatchObject({ model: 'musicgen-small-q8' })
+    expect(out.models[6]).toMatchObject({ selected_in_settings: true, download: 'size unknown' })
   })
   it('a build without the helper says so', async () => {
     const { run } = setup(fakeHost({ available: false }))
@@ -295,6 +297,16 @@ describe('the sound tools', () => {
     expect(w.board.assignSlot).toHaveBeenCalledWith(1, 'snd-1')
     // no words, no clip
     await expect(promptSlotWave(board as never, agent, 0, '   ')).rejects.toThrow(/say what the wave should be/)
+  })
+  it('the VCO wave prompt uses the model its VCO names, not the one loaded before', async () => {
+    const f = fakeHost({ loaded: 'stable-audio-3-small-music-q8', downloaded: true })
+    const { board, agent } = setup(f)
+    const made = await promptSlotWave(board as never, agent, 0, 'a glass clink', undefined, { model: 'moss-soundeffect-v2-q8', negative: 'speech' })
+    expect(made.model.id).toBe('moss-soundeffect-v2-q8')
+    expect(made.switched).toBe(true)
+    expect(f.calls.map((c) => c.op)).toEqual(['load', 'generate'])
+    expect(f.calls.find((c) => c.op === 'load')?.arg).toBe('moss-soundeffect-v2-q8')
+    expect(f.calls.find((c) => c.op === 'generate')?.arg).toMatchObject({ options: { negative_prompt: 'speech' } })
   })
   it('unload_sound_model frees it', async () => {
     const { run } = setup(fakeHost({ loaded: 'moss-soundeffect-v2-q8' }))

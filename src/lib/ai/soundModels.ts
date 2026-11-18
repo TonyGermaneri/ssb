@@ -7,7 +7,7 @@
  * repo (a Hugging Face token), arranged as audio.cpp's Stable Audio loader reads a safetensors checkpoint.
  */
 
-export type SoundFamily = 'moss_soundeffect' | 'stable_audio'
+export type SoundFamily = 'moss_soundeffect' | 'stable_audio' | 'ace_step' | 'musicgen'
 
 export interface SoundFileSpec {
   url: string
@@ -46,12 +46,19 @@ export interface SoundModelInfo {
   defaultGuidance: number
   /** options every request carries */
   extraOptions?: Record<string, string | number | boolean>
+  /** run in SSB's page (transformers.js in a worker: lib/ai/pageSound.ts), not by audio.cpp, which hasn't it; SoundHost
+   * only downloads its files */
+  page?: boolean
+  /** it sings: a request may carry lyrics (SoundRequest.lyrics) */
+  lyrics?: boolean
   /** typed in by the user: not one of the catalog's */
   custom?: boolean
 }
 
 const MIRROR = 'https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/main'
 const SAO = 'https://huggingface.co/stabilityai/stable-audio-open-1.0/resolve/main'
+/** Xenova's ONNX MusicGen Small, at the revision SSB was tested with */
+const MUSICGEN = 'https://huggingface.co/Xenova/musicgen-small/resolve/6a8096dabfff72909ef5eae41461408e29ae20fd'
 /** audio.cpp's Stable Audio loader reads the prompt encoder from this folder of a safetensors checkpoint */
 const T5 = 't5gemma-b-b-ul2'
 
@@ -157,6 +164,63 @@ export const SOUND_MODELS: SoundModelInfo[] = [
     //   for SA3's rectified flow and goes non-finite with this v-diffusion model
     extraOptions: { sampler_mode: 'dpmpp-3m-sde', duration_padding_sec: 48, apg_scale: 0, sigma_min: 0.3, sigma_max: 500 },
   },
+  {
+    // ACE-Step 1.5 Turbo: music with vocals that sing the lyrics given. The BF16 package, not the 6 GB Q8: audio.cpp
+    // grades a fully quantised ACE-Step "planner sampling can fail" -- its planner LM, quantised, samples another song
+    // (docs/models/ace_step.md, docs/gguf.md). Turbo is guidance-distilled: 8 steps at most, guidance ignored.
+    id: 'ace-step-1.5-turbo-bf16',
+    label: 'ACE-Step 1.5 Turbo',
+    tag: 'ace-step',
+    family: 'ace_step',
+    task: 'gen',
+    main: 'ace-step-1.5-turbo-bf16.gguf',
+    files: [{ url: `${MIRROR}/ACE-Step1.5-GGUF/turbo/ace-step-1.5-turbo-bf16.gguf`, path: 'ace-step-1.5-turbo-bf16.gguf', bytes: 10_090_406_336 }],
+    memoryGb: 12,
+    sampleRate: 48000,
+    channels: 2,
+    maxSeconds: 60,
+    license: 'MIT',
+    gated: false,
+    url: 'https://huggingface.co/ACE-Step/Ace-Step1.5',
+    strengths:
+      'music with singing: a voice that sings the lyrics given (any of 50+ languages), choirs, hums and vocal lines, over a full arrangement or alone. Caption it as genre, mood, instruments and the voice ("dreamy female vocals, soft synth pads, slow ballad"; "a cappella male choir, cathedral reverb"); put the words to sing in lyrics, with [verse] / [chorus] lines, or "[instrumental]" for none. Stereo, 48 kHz. Its planner writes the song before it is rendered: slower than Stable Audio, faster than MOSS. About 12 GB of memory.',
+    stepsOption: 'num_inference_steps',
+    defaultSteps: 8,
+    defaultGuidance: 1,
+    lyrics: true,
+  },
+  {
+    // Meta's MusicGen Small as an ONNX export (Xenova's, for transformers.js), pinned: text encoder and decoder int8,
+    // the EnCodec decoder at full precision. audio.cpp has no MusicGen: it runs in the page (page: true).
+    id: 'musicgen-small-q8',
+    label: 'MusicGen Small',
+    tag: 'musicgen',
+    family: 'musicgen',
+    task: 'gen',
+    main: 'onnx/decoder_model_merged_quantized.onnx',
+    files: [
+      { url: `${MUSICGEN}/config.json`, path: 'config.json', bytes: 7796 },
+      { url: `${MUSICGEN}/generation_config.json`, path: 'generation_config.json', bytes: 224 },
+      { url: `${MUSICGEN}/tokenizer.json`, path: 'tokenizer.json', bytes: 2_422_191 },
+      { url: `${MUSICGEN}/tokenizer_config.json`, path: 'tokenizer_config.json', bytes: 20788 },
+      { url: `${MUSICGEN}/onnx/text_encoder_quantized.onnx`, path: 'onnx/text_encoder_quantized.onnx', bytes: 110_443_015 },
+      { url: `${MUSICGEN}/onnx/decoder_model_merged_quantized.onnx`, path: 'onnx/decoder_model_merged_quantized.onnx', bytes: 428_422_300 },
+      { url: `${MUSICGEN}/onnx/encodec_decode.onnx`, path: 'onnx/encodec_decode.onnx', bytes: 118_056_304 },
+    ],
+    memoryGb: 1.5,
+    sampleRate: 32000,
+    channels: 1,
+    maxSeconds: 30,
+    license: 'CC-BY-NC-4.0 (non-commercial)',
+    gated: false,
+    url: 'https://huggingface.co/facebook/musicgen-small',
+    strengths:
+      'instrumental music from a description: genre, instruments, mood and tempo ("lo-fi hip hop beat with warm rhodes chords, 85 bpm"; "80s synthwave arpeggio, driving bass"). Phrases and grooves that develop over the clip; no singing. Mono, 32 kHz, up to 30 s. Runs inside SSB (no sound helper) on one CPU core: about 4 s of work a second of music (5 s in about 20 s). Its weights are licensed for non-commercial use only.',
+    stepsOption: 'num_inference_steps',
+    defaultSteps: 1,
+    defaultGuidance: 3,
+    page: true,
+  },
 ]
 
 export const DEFAULT_SOUND_MODEL = SOUND_MODELS[0].id
@@ -177,20 +241,22 @@ export function soundModelFrom(text: string | null | undefined): SoundModelInfo 
     (/^moss\b/.test(n) ? SOUND_MODELS[0] : undefined) ??
     (/^stable audio open\b/.test(n) ? SOUND_MODELS[3] : undefined) ??
     (/^stable audio( 3)?( small)? sfx\b/.test(n) ? SOUND_MODELS[2] : undefined) ??
-    (/^stable audio( 3)?( small)?( music)?$/.test(n) ? SOUND_MODELS[1] : undefined)
+    (/^stable audio( 3)?( small)?( music)?$/.test(n) ? SOUND_MODELS[1] : undefined) ??
+    (/^ace ?step\b/.test(n) ? SOUND_MODELS[4] : undefined) ??
+    (/^music ?gen\b/.test(n) ? SOUND_MODELS[5] : undefined)
   if (known) return known
   const m = s.match(/^(?:https?:\/\/)?(?:www\.)?(?:huggingface\.co|hf\.co)\/([\w.-]+)\/([\w.-]+)\/(?:blob|resolve)\/([\w.-]+)\/(.+\.gguf)(?:\?.*)?$/i)
   if (!m) return null
   const [, org, repo, rev, file] = m
   const name = file.split('/').pop()!
   const lower = `${repo}/${name}`.toLowerCase()
-  const family: SoundFamily | '' = /moss.?sound/.test(lower) ? 'moss_soundeffect' : /stable.?audio/.test(lower) ? 'stable_audio' : ''
-  const base = family === 'moss_soundeffect' ? SOUND_MODELS[0] : SOUND_MODELS[1]
+  const family: SoundFamily | '' = /moss.?sound/.test(lower) ? 'moss_soundeffect' : /stable.?audio/.test(lower) ? 'stable_audio' : /ace.?step/.test(lower) ? 'ace_step' : ''
+  const base = family === 'moss_soundeffect' ? SOUND_MODELS[0] : family === 'ace_step' ? SOUND_MODELS[4] : SOUND_MODELS[1]
   return {
     ...base,
     id: `custom-${org}-${repo}-${name}`.replace(/\.gguf$/i, '').replace(/[^\w.-]+/g, '-').slice(0, 120),
     label: name.replace(/\.gguf$/i, ''),
-    tag: family === 'moss_soundeffect' ? 'moss' : family ? 'stable-audio' : 'sound-model',
+    tag: family === 'moss_soundeffect' ? 'moss' : family === 'ace_step' ? 'ace-step' : family ? 'stable-audio' : 'sound-model',
     family,
     main: name,
     files: [{ url: `https://huggingface.co/${org}/${repo}/resolve/${rev}/${file}`, path: name, bytes: 0 }],

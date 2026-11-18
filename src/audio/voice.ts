@@ -11,8 +11,8 @@ import { grainNode, grainsLoaded, loadGrains, tableNode, type GrainNode, type Ta
 import { tableCount, tableCycleBuffer, tablePos } from './wavetable'
 import { grainFreqNow, MPE_GRAIN_SPAN, type GrainConfig, type GrainEvent } from './grainMath'
 import {
-  clipBounds, cycleSeconds, glideSemis, knobRate, playSeconds, semisToRate, tailSeconds,
-  type ClipBounds, type Glide,
+  clipBounds, cycleSeconds, glideSemis, hasTail, knobRate, playSeconds, samplePlaySeconds, semisToRate, tailSeconds,
+  wholeLoop, type ClipBounds, type Glide,
 } from './timing'
 
 /** the garden's stitch: the longest crossfade, s (lib/garden FADE_MAX, Engine.cpp's clamp) */
@@ -149,7 +149,7 @@ const LFO_DEST: Partial<Record<ModDest, 'lfo1' | 'lfo2'>> = { lfo1Rate: 'lfo1', 
 const zoneBounds = (z: ZonePlay, duration: number): ClipBounds => {
   const clipIn = Math.min(Math.max(0, z.start), Math.max(0, duration - 0.005))
   const clipOut = z.end > clipIn ? Math.min(z.end, duration) : duration
-  return { clipIn, clipOut, clipLen: clipOut - clipIn }
+  return wholeLoop(clipIn, clipOut)
 }
 
 let nextId = 1
@@ -262,6 +262,13 @@ export class Voice {
   private srcGain?: GainNode
   /** when the clip playing started, for the playhead (the stitch starts a new one part way through the note) */
   private clipT0 = 0
+  /**
+   * A sample's tail (the loop markers: START → loop → tail → END): with RPT passes, a second source plays loop end →
+   * END from `at`, as the looping one stops there. Released while looping, the looping one leaves its loop instead.
+   */
+  private tail?: { src: AudioBufferSourceNode; at: number }
+  /** from here on the playhead runs straight (out of the loop: the tail), for positionAt */
+  private straight?: { t: number; pos: number }
   /** the wavetable oscillator (table), once the worklet has loaded */
   private table?: TableNode
   /** the table's cycles and their length (table) */
@@ -376,7 +383,7 @@ export class Voice {
     }
     this.clip = this.zone ? zoneBounds(this.zone, this.buffer.duration) : clipBounds(s, this.buffer.duration)
     // a table's "clip" is one cycle: REPEAT counts cycles, as it counted a single-cycle wave's passes
-    if (this.kind === 'table') this.clip = { clipIn: 0, clipOut: this.tableSize / buffer.sampleRate, clipLen: this.tableSize / buffer.sampleRate }
+    if (this.kind === 'table') this.clip = wholeLoop(0, this.tableSize / buffer.sampleRate)
     this.kRate = knobRate(s)
     this.speed = s.speed
     // an SFZ region's own envelope wins over the pad's ADSR, field by field
@@ -409,7 +416,9 @@ export class Voice {
     this.keySrc.offset.setValueAtTime(this.glide.from / 12, this.t0)
     if (this.glide.dur > 0) this.keySrc.offset.linearRampToValueAtTime(note / 12, this.t0 + this.glide.dur)
     else this.keySrc.offset.setValueAtTime(note / 12, this.t0)
-    this.endTime = this.t0 + (this.zone ? this.zoneSeconds(note) : playSeconds(s, this.clip.clipLen, this.kind === 'cloud', note))
+    this.endTime =
+      this.t0 +
+      (this.zone ? this.zoneSeconds(note) : this.kind === 'sample' ? samplePlaySeconds(s, this.clip, note) : playSeconds(s, this.clip.clipLen, this.kind === 'cloud', note))
 
     if (this.kind === 'sample') this.startSource()
     if (this.kind === 'table') this.startTable()
@@ -453,7 +462,11 @@ export class Voice {
       if (lp && x > lp[1]) return lp[0] + ((x - lp[0]) % (lp[1] - lp[0]))
       return Math.min(x, clipOut)
     }
-    return clipIn + ((x - clipIn) % clipLen)
+    // START into the loop, round it; out of it (released, or into the tail), straight on to END
+    const st = this.straight
+    if (st && t >= st.t) return Math.min(clipOut, st.pos + (t - st.t) * this.tapeRate(this.glide.to))
+    const { loopIn, loopOut } = this.clip
+    return x < loopOut ? x : loopIn + ((x - loopOut) % Math.max(1e-6, loopOut - loopIn))
   }
 
   /** Post-envelope, post-filter, post-ring-modulator signal: what this voice feeds a patch's matrix as a VCO. */
@@ -483,11 +496,11 @@ export class Voice {
   }
 
   private startSource() {
-    const { clipIn, clipOut } = this.clip
+    const { clipIn, clipOut, loopIn, loopOut } = this.clip
     const src = this.ctx.createBufferSource()
     src.buffer = this.buffer
-    // zones loop only between their loop points (if any); pads loop the clip (repeat count stops them)
-    const loop = this.zone ? this.zone.loop : ([clipIn, clipOut] as [number, number])
+    // zones loop only between their loop points (if any); pads go round their loop (the repeat count stops them)
+    const loop = this.zone ? this.zone.loop : ([loopIn, loopOut] as [number, number])
     src.loop = !!loop
     if (loop) {
       src.loopStart = loop[0]
@@ -505,6 +518,45 @@ export class Voice {
     src.start(this.t0, clipIn)
     src.onended = () => this.finish()
     this.src = src
+    // RPT passes and a tail after the loop: the looping source stops as it reaches the loop's end for the last time,
+    // and a second one plays on from there to END, sample-accurately
+    const passes = Math.round(this.settings.repeat)
+    if (!this.zone && passes > 0 && hasTail(this.clip)) {
+      const at = this.t0 + (loopOut - clipIn + (passes - 1) * (loopOut - loopIn)) / to
+      const t = this.ctx.createBufferSource()
+      t.buffer = this.buffer
+      t.playbackRate.value = to
+      t.connect(this.srcGain)
+      this.pitchBus.connect(t.detune)
+      t.start(at, loopOut, clipOut - loopOut)
+      t.onended = () => this.finish()
+      src.onended = null
+      src.stop(at)
+      this.tail = { src: t, at }
+      this.straight = { t: at, pos: loopOut }
+    }
+  }
+
+  /**
+   * Released while still in its loop, a sample with a tail leaves the loop and plays on to END (the tail's source,
+   * not started yet, isn't needed). Returns when it reaches END (Infinity: it doesn't leave).
+   */
+  private leaveLoop(now: number): number {
+    const src = this.src
+    if (!src || this.zone || this.kind !== 'sample' || !hasTail(this.clip) || !src.loop) return Infinity
+    if (this.tail && now >= this.tail.at) return Infinity // already in the tail
+    if (this.tail) {
+      const t = this.tail.src
+      t.onended = null
+      t.stop()
+      t.disconnect()
+      this.tail = undefined
+    }
+    const pos = this.positionAt(now) ?? this.clip.clipIn
+    src.loop = false
+    src.onended = () => this.finish()
+    this.straight = { t: now, pos }
+    return now + (this.clip.clipOut - pos) / this.tapeRate(this.glide.to)
   }
 
   /**
@@ -529,8 +581,16 @@ export class Voice {
       const src = this.ctx.createBufferSource()
       src.buffer = buffer
       src.loop = true
-      src.loopStart = clip.clipIn
-      src.loopEnd = clip.clipOut
+      src.loopStart = clip.loopIn
+      src.loopEnd = clip.loopOut
+      // (the new clip goes round its loop: a tail the old one had to come is let go)
+      if (this.tail) {
+        this.tail.src.onended = null
+        this.tail.src.stop()
+        this.tail.src.disconnect()
+        this.tail = undefined
+      }
+      this.straight = undefined
       src.playbackRate.value = rate
       const gain = this.ctx.createGain()
       gain.gain.value = 0
@@ -834,10 +894,11 @@ export class Voice {
     this.speed = s.speed
     if (this.src) {
       if (!this.zone) {
-        this.src.loopStart = this.clip.clipIn
-        this.src.loopEnd = this.clip.clipOut
+        this.src.loopStart = this.clip.loopIn
+        this.src.loopEnd = this.clip.loopOut
       }
       if (tuned) set(this.src.playbackRate, this.tapeRate(this.glide.to))
+      if (tuned && this.tail) set(this.tail.src.playbackRate, this.tapeRate(this.glide.to))
     }
     if (this.table) {
       if (tuned) set(this.table.node.parameters.get('rate')!, this.tapeRate(this.glide.to))
@@ -1199,12 +1260,16 @@ export class Voice {
   }
 
   // ── ending ───────────────────────────────────────────────────────────────
-  private releaseAt(tr: number) {
+  private releaseAt(tr: number, sourceEnd = Infinity) {
     this.releaseTime = tr
     const end = scheduleRelease(this.env.gain, this.t0, tr, this.ampEnv, 1)
     scheduleRelease(this.fenvSrc.offset, this.t0, tr, this.filtEnv, 1)
-    this.endTime = Math.min(this.endTime, end)
-    this.src?.stop(this.endTime)
+    this.endTime = Math.min(this.endTime, end, sourceEnd)
+    // (with a tail to come, the looping source keeps its stop at the tail's start; the tail stops with the release)
+    if (this.tail) {
+      if (this.endTime < this.tail.at) this.src?.stop(this.endTime)
+      this.tail.src.stop(this.endTime)
+    } else this.src?.stop(this.endTime)
     this.table?.stop(this.endTime)
     this.regrain()
   }
@@ -1214,7 +1279,8 @@ export class Voice {
     if (this.zone?.oneShot) return // one_shot regions ignore note-off
     const now = this.ctx.currentTime
     if (!this.playing || now >= this.releaseTime) return
-    this.releaseAt(Math.max(now, this.t0))
+    const at = Math.max(now, this.t0)
+    this.releaseAt(at, this.leaveLoop(at))
   }
 
   /** Source finished on its own — let delay/reverb tails ring, then clean up. */
@@ -1237,6 +1303,7 @@ export class Voice {
     this.releaseTime = Math.min(this.releaseTime, now)
     try {
       this.src?.stop(now + fade)
+      this.tail?.src.stop(now + fade)
     } catch {
       /* already stopped */
     }
@@ -1257,6 +1324,7 @@ export class Voice {
     clearTimeout(this.impulseTimer)
     clearTimeout(this.disposeTimer)
     if (this.src) this.src.onended = null
+    if (this.tail) this.tail.src.onended = null
     this.unwire()
     const consts = [this.atSrc, this.bendSrc, this.velSrc, this.noteBendSrc, this.timbreSrc, this.fenvSrc, this.keySrc, this.rndSrc]
     for (const n of consts) n.stop()

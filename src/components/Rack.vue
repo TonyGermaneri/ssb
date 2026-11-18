@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, shallowReactive } from 'vue'
+import { computed, reactive, ref, shallowReactive, watch } from 'vue'
 import { activeVoices } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { rememberElementScroll } from '../lib/scrollMemory'
@@ -13,7 +13,6 @@ import { shaderPrefs, stageStatus } from '../lib/play/shaders'
 import Knob from './Knob.vue'
 import { useAi } from '../lib/ai/store'
 import { errorMessage } from '../lib/ai/types'
-import GardenDialog from './GardenDialog.vue'
 import GardenBar from './GardenBar.vue'
 import VcoMeter from './VcoMeter.vue'
 import { useGarden } from '../stores/garden'
@@ -94,28 +93,55 @@ for (const i of [0, 1, 2]) rememberElementScroll(() => `rack:${i}`, () => bodies
 const playBody = ref<HTMLElement | null>(null)
 rememberElementScroll(() => 'rack:play', () => playBody.value)
 
-// ── the VCO wave prompt (soundTools.promptSlotWave): a few words → the loaded model's clip → this slot's sound ──
+// ── the patch's name and tags: typed into drafts (a re-render -- the garden ticks, the meters -- would put the saved
+// name back over what's being typed), saved on change; the patch's own shown whenever they're not being edited ──
+const nameDraft = ref('')
+const tagDraft = ref('')
+const editing = ref<'name' | 'tag' | null>(null)
+watch(
+  () => [patch.value?.id, patch.value?.name, patch.value?.tag, editing.value] as const,
+  () => {
+    if (editing.value !== 'name') nameDraft.value = patch.value?.name ?? ''
+    if (editing.value !== 'tag') tagDraft.value = patch.value?.tag ?? ''
+  },
+  { immediate: true },
+)
+
+// ── the VCO wave prompt: a few words → the VCO's model (☰ SOUND MODEL) → its clip → this slot's sound. ➤ sends the
+// words as typed; the automation button has the word model write them out first (a caption, and words to sing) ──
 const ai = useAi()
 const prompts = reactive(['', '', ''])
 const promptBusy = reactive([false, false, false])
+/** which button sent it (its spinner) */
+const promptAuto = reactive([false, false, false])
 const promptNote = reactive(['', '', ''])
 const promptErr = reactive([false, false, false])
 const promptAborts: (AbortController | null)[] = [null, null, null]
-async function promptWave(i: number) {
+/** the model VCO `i` prompts, for its status line */
+const modelLabel = (i: number) => {
+  const m = garden.modelOf(i)
+  return m.sketch ? 'SKETCH' : (m.info?.label ?? m.id)
+}
+async function promptWave(i: number, auto: boolean) {
   const text = prompts[i]!.trim()
   if (!text || promptBusy[i]) return
   promptBusy[i] = true
+  promptAuto[i] = auto
   promptErr[i] = false
-  promptNote[i] = ''
+  promptNote[i] = `${modelLabel(i)} · ${auto ? 'writing…' : `“${text}”`}`
   const ctl = new AbortController()
   promptAborts[i] = ctl
   try {
-    const made = await ai.promptSlotWave(i, text, ctl.signal)
-    promptNote[i] = `${made.name} · ${made.seconds.toFixed(1)} s · ${made.model.label}${made.pitch?.steady ? ` · in tune at ${made.pitch.name}` : ''}`
+    const made = await garden.promptWave(i, text, auto, ctl.signal, (n) => (promptNote[i] = `${modelLabel(i)} · ${n || 'making…'}`))
+    if (!made || ctl.signal.aborted) return
+    const sung = made.lyrics ? ` · ♪ ${made.lyrics.replace(/^\[[^\]]*\]\s*/gm, '').split('\n').filter(Boolean).join(' / ')}` : ''
+    promptNote[i] = `${made.model} · “${made.sent}”${sung} → ${made.name} · ${made.seconds.toFixed(1)} s${made.tune ? ` · ${made.tune}` : ''}`
+    // what was typed seeds this VCO's garden: the word model lists words for its rings from it
+    void garden.seedWords(i, text).catch(() => {})
   } catch (e) {
     if (!ctl.signal.aborted) {
       promptErr[i] = true
-      promptNote[i] = errorMessage(e)
+      promptNote[i] = `${modelLabel(i)} · ${errorMessage(e)}`
     }
   } finally {
     promptBusy[i] = false
@@ -126,28 +152,8 @@ const stopPrompt = (i: number) => promptAborts[i]?.abort()
 
 // ── the PROMPT GARDEN (stores/garden.ts): a VCO regrowing its sample from rings of words ──
 const garden = useGarden()
-const gardenSlot = ref(0)
-const gardenOpen = ref(false)
-function openGarden(i: number) {
-  gardenSlot.value = i
-  gardenOpen.value = true
-}
-function gardenChip(x: PatchSlot | null) {
-  if (!x?.garden?.on) return 'GROW'
-  if (x.garden.paused) return 'PAUSED'
-  const r = garden.runs.get(x.layer.id)
-  // making a clip: how far through it (the chip fills behind, GardenBar.vue); made: waiting for its loops
-  if (r?.status === 'growing') return `${Math.round((r.genProgress ?? 0) * 100)} %`
-  if (r?.status === 'ready') return 'READY'
-  if (r?.status === 'error') return 'GROW ⚠'
-  return 'GROWING'
-}
 /** each VCO's colour, as its PLAY column and meters show it */
 const vcoColor = (i: number) => [board.theme.primary, board.theme.secondary, board.theme.accent][i % 3]
-const gardenTitle = (x: PatchSlot | null) =>
-  x?.garden?.on
-    ? `PROMPT GARDEN growing: ${x.garden.history[0]?.prompt ?? ''} — click to tend it`
-    : 'PROMPT GARDEN: this VCO regrows its own sample from rings of words (Euclidean rhythms pick them), stitched in as it loops'
 
 // ── drop sounds into slots ──
 const dropTarget = ref(-1)
@@ -181,21 +187,27 @@ function onDrop(e: DragEvent, i: number) {
           >BUILT-IN</span
         >
         <input
-          :value="patch.name"
+          v-model="nameDraft"
           class="name"
           spellcheck="false"
           title="Patch name"
-          @change="(e) => (patch!.name = (e.target as HTMLInputElement).value.trim() || patch!.name)"
+          @focus="editing = 'name'"
+          @blur="editing = null"
+          @change="patch!.name = nameDraft.trim() || patch!.name"
           @keydown.stop
+          @keydown.enter="($event.target as HTMLInputElement).blur()"
         />
         <input
-          :value="patch.tag"
+          v-model="tagDraft"
           class="tags"
           spellcheck="false"
           placeholder="tags, comma, separated"
           title="Patch tags"
-          @change="(e) => (patch!.tag = (e.target as HTMLInputElement).value)"
+          @focus="editing = 'tag'"
+          @blur="editing = null"
+          @change="patch!.tag = tagDraft"
           @keydown.stop
+          @keydown.enter="($event.target as HTMLInputElement).blur()"
         />
         <button class="heart" :class="{ on: patch.fav }" title="Favourite" @click="board.toggleFav('patch', patch.id)">
           <v-icon size="16" :icon="patch.fav ? 'mdi-heart' : 'mdi-heart-outline'" />
@@ -247,7 +259,7 @@ function onDrop(e: DragEvent, i: number) {
           <button class="hw-btn" :disabled="!board.patchEdited" title="Drop the edits: the patch as it was saved" @click="board.revertPatch()">
             <v-icon size="14" icon="mdi-restore" /> REVERT
           </button>
-          <button class="hw-btn" title="Duplicate this patch (the rack then shows the copy)" @click="board.duplicatePatch(patch.id)">
+          <button class="hw-btn" title="Duplicate this patch: the copy goes at the end of the list, and the rack shows it" @click="board.duplicatePatch(patch.id)">
             <v-icon size="14" icon="mdi-content-copy" /> DUPLICATE
           </button>
           <button class="hw-btn danger" title="Delete this patch (the rack then shows the next one)" @click="board.removePatch(patch.id)">
@@ -303,7 +315,7 @@ function onDrop(e: DragEvent, i: number) {
           <span class="src" :title="tabTitle(x, i)">{{ x ? sourceName(x) : 'empty' }}</span>
           <em v-if="!heard(i)">{{ muted(i) ? 'MUTED' : 'SOLO OFF' }}</em>
           <em v-else-if="x && i > 0 && !x.audible">MOD</em>
-          <GardenBar v-if="x" class="phead-garden" play :x="x" :slot="i" :chip="gardenChip(x)" :title="gardenTitle(x)" @open="openGarden(i)" />
+          <GardenBar v-if="x" class="phead-garden" play :x="x" :slot="i" />
         </div>
         <PlayView v-if="x && layerOf(x)" :sound="layerOf(x)!" :slot="i" />
         <div v-else class="drop">
@@ -355,7 +367,7 @@ function onDrop(e: DragEvent, i: number) {
           >
             PLAY
           </button>
-          <GardenBar v-if="x" :x="x" :slot="i" :chip="gardenChip(x)" :title="gardenTitle(x)" @open="openGarden(i)" />
+          <GardenBar v-if="x" :x="x" :slot="i" />
           <v-spacer />
           <Knob
             v-if="x && x.tuning !== 'et'"
@@ -379,12 +391,7 @@ function onDrop(e: DragEvent, i: number) {
         </div>
         <!-- The VCO wave prompt: the sound model picked in the AI settings makes a clip from a few words, and it
              becomes this slot's sound (no conversation, no download from here). In the app and the plugin. -->
-        <form
-          v-if="ai.soundAvailable"
-          class="prompt"
-          :title="`Prompt the sound model (${ai.soundPick?.label ?? 'the AI settings\' pick'}) for this VCO's wave: the clip it makes becomes the slot's sound, tuned from its pitch`"
-          @submit.prevent="promptWave(i)"
-        >
+        <form v-if="ai.soundAvailable" class="prompt" @submit.prevent="promptWave(i, false)">
           <v-icon size="14" icon="mdi-creation" />
           <input
             v-model="prompts[i]"
@@ -392,13 +399,32 @@ function onDrop(e: DragEvent, i: number) {
             spellcheck="false"
             :placeholder="x ? 'PROMPT A NEW WAVE FOR THIS VCO…' : 'PROMPT A WAVE FOR THIS VCO…'"
             :disabled="promptBusy[i]"
+            :title="`A few words for this VCO's sound model (${modelLabel(i)} — ☰ beside GROW picks it): Enter or ➤ sends them as typed`"
             @keydown.stop
           />
-          <button class="hw-btn" type="submit" :disabled="promptBusy[i] || !prompts[i]!.trim()">{{ promptBusy[i] ? 'MAKING…' : 'PROMPT' }}</button>
-          <button v-if="promptBusy[i]" class="hw-btn icon" type="button" title="Stop the sound model" @click="stopPrompt(i)">
+          <button
+            class="hw-btn icon send"
+            type="submit"
+            :class="{ busy: promptBusy[i] && !promptAuto[i] }"
+            :disabled="promptBusy[i] || !prompts[i]!.trim()"
+            :title="`Send the words as typed to ${modelLabel(i)}`"
+          >
+            <v-icon size="14" icon="mdi-send" />
+          </button>
+          <button
+            class="hw-btn icon auto"
+            type="button"
+            :class="{ busy: promptBusy[i] && promptAuto[i] }"
+            :disabled="promptBusy[i] || !prompts[i]!.trim()"
+            :title="`The word model writes the words out — a fuller caption, and for a model that sings, the words to sing — then sends them to ${modelLabel(i)}`"
+            @click="promptWave(i, true)"
+          >
+            <v-icon size="14" icon="mdi-chart-timeline-variant" />
+          </button>
+          <button v-if="promptBusy[i]" class="hw-btn icon" type="button" title="Stop" @click="stopPrompt(i)">
             <v-icon size="14" icon="mdi-stop" />
           </button>
-          <span v-if="promptNote[i]" class="prompt-note" :class="{ err: promptErr[i] }">{{ promptNote[i] }}</span>
+          <span class="prompt-note" :class="{ err: promptErr[i] }">{{ promptNote[i] || `${modelLabel(i)} · ready` }}</span>
         </form>
         <div :ref="(el) => (bodies[i] = el as HTMLElement | null)" class="body">
           <ControlPanel v-if="x && layerOf(x)" :sound="layerOf(x)!" :hue="hue(layerOf(x)!)" :role="i === 0 ? 'patch' : 'vco'" :patch="patch ?? undefined" wide />
@@ -411,7 +437,6 @@ function onDrop(e: DragEvent, i: number) {
       </div>
       </template>
     </div>
-    <GardenDialog v-if="gardenOpen" v-model="gardenOpen" :slot="gardenSlot" />
   </div>
 </template>
 
@@ -449,6 +474,18 @@ function onDrop(e: DragEvent, i: number) {
   font-family: 'VT323', monospace;
   font-size: 14px;
   color: var(--text-mute);
+}
+.prompt .hw-btn.icon.busy {
+  color: rgb(var(--v-theme-success));
+  animation: prompt-busy 1s ease-in-out infinite alternate;
+}
+@keyframes prompt-busy {
+  to {
+    opacity: 0.4;
+  }
+}
+.prompt .hw-btn.auto:not(:disabled):hover {
+  color: rgb(var(--v-theme-success));
 }
 .prompt-note.err {
   color: rgb(var(--v-theme-error));

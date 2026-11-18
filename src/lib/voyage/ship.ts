@@ -1,6 +1,7 @@
 /**
- * VOYAGE's ships, as plans. Every era's ship (eras/) carries the same 24 working parts -- each VCO's eight pads in
- * disguise, a section of the ship per VCO -- placed and named its own way. A part's rectangle is its pad: left / right
+ * VOYAGE's ships, as plans. Every era's ship (eras/) carries the same 27 working parts -- each VCO's eight pads in
+ * disguise and its GARDEN (a strip of step lamps set into the foot of its window; withGarden), a section
+ * of the ship per VCO -- placed and named its own way. A part's rectangle is its pad: left / right
  * and up / down across it are the pad's x and y (pads.ts), exactly as in the PADS mode.
  *
  * What a part does shows the same way on every ship (a rotor turns with the grains, a swinger swings with the LFO, a
@@ -9,11 +10,14 @@
  */
 import type { Component } from 'vue'
 import type { PadId } from '../play/padControl'
+import type { TextureId } from './cockpit/textures'
 
 export const SHIP_BOX = { x: -820, y: -440, w: 1640, h: 840 }
 
-export type PartForm = 'window' | 'rotor' | 'swinger' | 'dome' | 'funnel' | 'vents' | 'antenna' | 'fin'
-export const FORM_OF: Record<PadId, PartForm> = {
+export type PartForm = 'window' | 'rotor' | 'swinger' | 'dome' | 'funnel' | 'vents' | 'antenna' | 'fin' | 'lamps'
+/** a part's pad: one of the VCO's eight, or its GARDEN (the ring on it: x its STEPS, y its HITS) */
+export type PartKind = PadId | 'garden'
+export const FORM_OF: Record<PartKind, PartForm> = {
   perform: 'window',
   grain: 'rotor',
   lfo: 'swinger',
@@ -22,6 +26,7 @@ export const FORM_OF: Record<PadId, PartForm> = {
   texture: 'vents',
   echo: 'antenna',
   tone: 'fin',
+  garden: 'lamps',
 }
 
 /**
@@ -38,6 +43,8 @@ export const FORM_OF: Record<PadId, PartForm> = {
  * - vents: row, column (bubbles leave along `dir`)
  * - antenna: whisker, horn (a gramophone horn), spring (hanging), mast (crossbars and a ball), dish
  * - fin: keel, wing, tail, delta
+ * - lamps: strip (the picked ring's steps as a row of lamps, its hits lit, the step playing bright; a seed lamp at the
+ *   end, green while the garden grows, and one pip per ring)
  */
 export const VARIANTS: Record<PartForm, readonly string[]> = {
   window: ['capsule', 'panel', 'ports', 'screen', 'round'],
@@ -48,12 +55,13 @@ export const VARIANTS: Record<PartForm, readonly string[]> = {
   vents: ['row', 'column'],
   antenna: ['whisker', 'horn', 'spring', 'mast', 'dish'],
   fin: ['keel', 'wing', 'tail', 'delta'],
+  lamps: ['strip'],
 }
 
 export interface Part {
   id: string
   vco: number
-  kind: PadId
+  kind: PartKind
   form: PartForm
   name: string
   /** its pad: x0, y0 (top left), x1, y1 */
@@ -93,13 +101,13 @@ export const pal = (name: string, main: string, alt: string, hi: string, deep: s
 })
 
 /** the defaults per form: behind the hull, which way */
-const BACK: Record<PartForm, boolean> = { window: false, rotor: false, swinger: true, dome: false, funnel: true, vents: false, antenna: true, fin: true }
-const DIR: Record<PartForm, number> = { window: 0, rotor: 0, swinger: -90, dome: -90, funnel: -90, vents: 90, antenna: -90, fin: 90 }
+const BACK: Record<PartForm, boolean> = { window: false, rotor: false, swinger: true, dome: false, funnel: true, vents: false, antenna: true, fin: true, lamps: false }
+const DIR: Record<PartForm, number> = { window: 0, rotor: 0, swinger: -90, dome: -90, funnel: -90, vents: 90, antenna: -90, fin: 90, lamps: 0 }
 
 /** A part, with its form's defaults for whatever isn't given. */
 export function part(
   vco: number,
-  kind: PadId,
+  kind: PartKind,
   name: string,
   rect: Part['rect'],
   variant: string,
@@ -176,12 +184,58 @@ export interface Era {
   aura: [number, number, number, number]
   /** the static art: hull, sections, decoration (props: era) */
   hull: Component
+  /** detail drawn over the parts (panel lines, rivets, glare, decals), never taking the pointer (props: era) */
+  overlay?: Component
+  /**
+   * The parts' finish (default: the flat toon look): `shade` 0..1 lays light and shade over their bodies (rotor blades,
+   * funnels, bells, vents, dome bases, fins), `material` a texture over the funnels and fins (cockpit/textures.ts:
+   * 'brushed' steel, 'patina' brass...), `tintMax` caps how strongly the filter tints a dome's glass; and see below.
+   */
+  finish?: {
+    shade?: number
+    material?: TextureId
+    materialOpacity?: number
+    tintMax?: number
+    /** how the filter's tint lies on a dome's glass ('color': it recolours the glass rather than muddying it) */
+    tintBlend?: 'normal' | 'color' | 'hue' | 'soft-light' | 'overlay' | 'screen'
+    /** plain parts for a serious ship: funnels one colour (no candy stripes), no toon knob on domes, no wheel fender,
+     * no rudder stripes, no periscope eye */
+    plain?: boolean
+    /** fins' and aerials' outlines (default: the ink -- which the hover tags use too, so it stays dark) */
+    edge?: string
+    /** windows: 'screen' (default: a bold trace, its liquid level, a white playhead) or 'subtle' (glass: a thin trace,
+     * a faint level, a small lit playhead) */
+    window?: 'screen' | 'subtle'
+  }
+  /** art under everything, the back parts included: shadows beneath masts, fins and bells (props: era) */
+  underlay?: Component
   sky: Sky
   hud: Hud
 }
 
+/**
+ * The ship's parts with each VCO's GARDEN added: a strip of step lamps along the foot of its window (PERFORM), the
+ * window giving up that much of its height -- a readout under a screen, on the hull like every other part, rather
+ * than something bolted on. Every era gets it the same way.
+ */
+export const LAMPS_H = 40
+const LAMPS_GAP = 10
+export function withGarden(parts: Part[]): Part[] {
+  const out: Part[] = []
+  for (const p of parts) {
+    if (p.kind !== 'perform') {
+      out.push(p)
+      continue
+    }
+    const [x0, y0, x1, y1] = p.rect
+    const inset = Math.min(24, (x1 - x0) * 0.08)
+    out.push({ ...p, rect: [x0, y0, x1, y1 - LAMPS_H - LAMPS_GAP] }, part(p.vco, 'garden', 'GARDEN', [x0 + inset, y1 - LAMPS_H, x1 - inset, y1], 'strip'))
+  }
+  return out
+}
+
 /** the help line for a part: what its pad does */
-export const PART_HELP: Record<PadId, string> = {
+export const PART_HELP: Record<PartKind, string> = {
   perform: '←→ where the grains fire (POS) · ↑↓ volume — the liquid is the level, the bright line the playhead',
   grain: '↑↓ grain size (faster turns = smaller, faster grains) · ←→ how much of each turn sounds (blade width)',
   lfo: '←→ how far the LFO sweeps POS · ↑↓ how fast (tempo divisions) — it swings as it sweeps',
@@ -190,4 +244,5 @@ export const PART_HELP: Record<PadId, string> = {
   texture: '←→ SPRAY (bubbles scatter) · ↑↓ DETUNE (they split into two colours)',
   echo: '←→ echo time (it snaps to the tempo) · ↑↓ feedback (how many rings)',
   tone: '←→ darker / brighter (the stripes warm or cool) · ↑↓ mids pushed or scooped (the middle band swells)',
+  garden: "the garden's lamps, its picked ring: ←→ its STEPS · ↑↓ its HITS · double-click: the next ring (the pips) · right-click: its prompt and the rest",
 }

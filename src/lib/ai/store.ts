@@ -124,11 +124,11 @@ export const useAi = defineStore('ai', () => {
   })
   /** the model picked in the combobox (null: what's typed isn't a model) */
   const soundPick = computed<SoundModelInfo | null>(() => soundModelFrom(settings.sound.model))
-  /** The VCO wave prompt: the picked model's clip from `prompt` into patch slot `slot` (soundTools.promptSlotWave). */
-  async function promptSlotWave(slot: number, prompt: string, signal?: AbortSignal) {
+  /** The VCO wave prompt: a model's clip (the VCO's ☰ SOUND MODEL, else the picked one) from `prompt` into patch slot `slot` (soundTools.promptSlotWave). */
+  async function promptSlotWave(slot: number, prompt: string, signal?: AbortSignal, opts: { lyrics?: string; model?: string; negative?: string } = {}) {
     if (!soundAvailable) throw new Error('needs the SSB app or plugin: a browser tab can\'t run a model')
     try {
-      return await promptSlot(board, soundAgent, slot, prompt, signal)
+      return await promptSlot(board, soundAgent, slot, prompt, signal, opts)
     } finally {
       void pollSound()
     }

@@ -36,7 +36,7 @@ describe('Euclidean rhythms', () => {
 
 /** a garden with exactly these rings and nothing else in the caption */
 function bare(...rings: ReturnType<typeof newRing>[]): Garden {
-  return { ...defaultGarden(), seed: 7, rings, chips: { genre: [], mood: [], style: [] }, grids: { bpm: [], key: [], scale: [], seconds: [] } }
+  return { ...defaultGarden(), seed: 7, rings }
 }
 
 describe('a step\'s caption', () => {
@@ -64,19 +64,15 @@ describe('a step\'s caption', () => {
     expect(new Set(Array.from({ length: 40 }, (_, s) => ringWordIndex(rnd, s, 3))).size).toBeGreaterThan(3)
   })
 
-  it('puts the phrase in order (what it\'s like, what, doing what), then the chips and grids', () => {
+  it('puts the phrase in order (what it\'s like, what, doing what, where), then the custom rings', () => {
     const g = bare(
       newRing('verb', { words: ['humming'], k: 1, n: 1 }),
+      newRing('custom', { words: ['dream'], k: 1, n: 1 }),
+      newRing('place', { words: ['in a mine'], k: 1, n: 1 }),
       newRing('noun', { words: ['bells'], k: 1, n: 1 }),
       newRing('adjective', { words: ['warm'], k: 1, n: 1 }),
     )
-    g.chips.genre = ['ambient']
-    g.chips.mood = ['dreamy']
-    g.grids = { bpm: [90, 120], key: ['A'], scale: ['minor'], seconds: [2, 6] }
-    expect(composeCaption(g, 0)).toMatchObject({ prompt: 'warm bells humming, ambient, dreamy, 90 BPM, in A minor', seconds: 2 })
-    expect(composeCaption(g, 1)).toMatchObject({ prompt: 'warm bells humming, ambient, dreamy, 120 BPM, in A minor', seconds: 6 })
-    // the game's catch takes the rings' place for a step
-    expect(composeCaption(g, 0, ['comet', 'glass']).prompt).toBe('comet glass, ambient, dreamy, 90 BPM, in A minor')
+    expect(composeCaption(g, 0)).toMatchObject({ prompt: 'warm bells humming in a mine, dream', seconds: 4 })
   })
 
   it('a garden of cycling rings comes round again after the lcm of their periods', () => {
@@ -135,7 +131,19 @@ describe('what comes next', () => {
     expect(g.on).toBe(true)
     expect(g.loops).toBe(8)
     expect(g.rings[0]).toMatchObject({ kind: 'verb', words: ['x'], k: 3, n: 8 })
-    expect(g.chips.genre).toBeDefined()
+    expect(g.subject).toBe('')
+    expect(g.pads).toEqual(defaultPadGrowth())
+  })
+
+  it('an older garden lets go of its chips, grids and TELEPHONE; its pads grew only with PADS GROW on', () => {
+    const old = { chips: { genre: ['ambient'] }, grids: { bpm: [90] }, prefix: 'x', telephone: { on: true, chain: ['now', 'moria'] }, pads: { on: false, amount: 0.5, pads: ['grain'] } }
+    const g = migrateGarden(old as never) as Garden & Record<string, unknown>
+    expect(g.chips).toBeUndefined()
+    expect(g.grids).toBeUndefined()
+    expect(g.telephone).toBeUndefined()
+    expect(g.subject).toBe('moria')
+    expect(g.pads).toEqual({ amount: 0.5, pads: [], lfo: {} })
+    expect(migrateGarden({ pads: { on: true, amount: 0.2, pads: ['lfo'] } } as never).pads).toEqual({ amount: 0.2, pads: ['lfo'], lfo: {} })
   })
 })
 
@@ -272,5 +280,18 @@ describe('the pads growing with the clips', () => {
   })
   it('old gardens get the pads, off', () => {
     expect(migrateGarden({ on: true } as never).pads).toEqual(defaultPadGrowth())
+  })
+})
+
+describe('a ring on the GARDEN pad', () => {
+  it('x is its steps, y its hits of them; and back again', async () => {
+    const { ringPoint, setRingPoint, STEPS_MAX } = await import('./garden')
+    const r = newRing('noun', { k: 3, n: 8, rot: 7 })
+    setRingPoint(r, { x: 0, y: 1 })
+    expect([r.n, r.k, r.rot]).toEqual([1, 1, 0])
+    setRingPoint(r, { x: 1, y: 0.5 })
+    expect([r.n, r.k]).toEqual([STEPS_MAX, 16])
+    setRingPoint(r, ringPoint(newRing('verb', { k: 5, n: 12 })))
+    expect([r.n, r.k]).toEqual([12, 5])
   })
 })

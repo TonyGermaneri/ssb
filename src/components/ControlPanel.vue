@@ -63,6 +63,8 @@ function savePreset() {
   presetName.value = ''
 }
 const modeInfo = computed(() => TRIGGER_MODE_INFO[s.value.mode])
+/** the loop markers play: a sample on tape (not grains, STRETCH, a wavetable or SFZ zones) */
+const loopable = computed(() => !s.value.grain && s.value.timeMode !== 'stretch' && !tableWaves.value && !props.sound.zones?.length)
 
 // a wavetable (audio/wavetable.ts): WT picks its wave, BLEND fades it into the next
 const tableWaves = computed(() => {
@@ -217,8 +219,26 @@ function doReset() {
           <button class="fold" :title="isFolded('clip') ? 'Show' : 'Fold'" @click="toggleFold('clip')"><i /></button>
         </h4>
         <div class="row">
-          <Knob v-model="s.clipIn" label="IN" :default="0" :format="fmtPct" />
-          <Knob v-model="s.clipOut" label="OUT" :default="1" :format="fmtPct" />
+          <Knob v-model="s.clipIn" label="START" :default="0" :format="fmtPct" title="START: where the sample starts playing" />
+          <Knob
+            v-model="s.loopStart"
+            label="LOOP"
+            :default="0"
+            :format="fmtPct"
+            color="success"
+            :class="{ dim: !loopable }"
+            title="LOOP: where the loop starts again (held inside START..END). A note plays from START into the loop and goes round it — RPT times, or while held at RPT ∞ — then on through the tail to END. Played on tape only (not GRAIN, STRETCH or a wavetable)"
+          />
+          <Knob
+            v-model="s.loopEnd"
+            label="L.END"
+            :default="1"
+            :format="fmtPct"
+            color="success"
+            :class="{ dim: !loopable }"
+            title="LOOP END: where the loop goes back to LOOP. Before END, what's after it is the tail: played once the passes are done, or on release at RPT ∞"
+          />
+          <Knob v-model="s.clipOut" label="END" :default="1" :format="fmtPct" title="END: where the sample stops" />
         </div>
       </section>
 
@@ -318,27 +338,6 @@ function doReset() {
         </div>
       </section>
 
-      <section class="module" :class="{ folded: isFolded('eq') }">
-        <h4>EQ
-          <button class="fold" :title="isFolded('eq') ? 'Show' : 'Fold'" @click="toggleFold('eq')"><i /></button>
-        </h4>
-        <div class="row">
-          <Knob v-model="s.eqLow" label="BASS" :min="-12" :max="12" :step="0.5" :default="0" bipolar :format="fmtDb" color="secondary" />
-          <Knob v-model="s.eqMid" label="MID" :min="-12" :max="12" :step="0.5" :default="0" bipolar :format="fmtDb" color="secondary" />
-          <Knob v-model="s.eqHigh" label="TREBLE" :min="-12" :max="12" :step="0.5" :default="0" bipolar :format="fmtDb" color="secondary" />
-        </div>
-      </section>
-
-      <section class="module" :class="{ folded: isFolded('ring') }">
-        <h4>RING
-          <button class="fold" :title="isFolded('ring') ? 'Show' : 'Fold'" @click="toggleFold('ring')"><i /></button>
-        </h4>
-        <div class="row">
-          <Knob v-model="s.ringMix" label="MIX" :default="0" :format="fmtPct" color="secondary" title="Ring modulation: how much of the signal is multiplied by the carrier (0: off)" />
-          <Knob v-model="s.ringFreq" label="FREQ" :min="20" :max="5000" curve="log" :default="440" :format="fmtHz" color="secondary" :class="{ dim: !s.ringMix }" title="The ring modulator's carrier frequency" />
-        </div>
-      </section>
-
       <section class="module wide" :class="{ folded: isFolded('grain'), off: !s.grain }">
         <h4>GRAIN
           <button
@@ -411,25 +410,47 @@ function doReset() {
         </div>
       </section>
 
-      <section class="module" :class="{ folded: isFolded('delay') }">
-        <h4>DELAY
-          <button class="fold" :title="isFolded('delay') ? 'Show' : 'Fold'" @click="toggleFold('delay')"><i /></button>
+      <!-- FX: the sound's own EQ, ring modulator, delay and reverb, as one block (folded as one) -->
+      <section class="module fx" :class="{ folded: isFolded('fx') }">
+        <h4>FX
+          <button class="fold" :title="isFolded('fx') ? 'Show' : 'Fold'" @click="toggleFold('fx')"><i /></button>
         </h4>
-        <div class="row">
+        <div class="fx-groups">
+          <div class="fx-group">
+            <span class="fx-lbl">EQ</span>
+            <div class="row">
+          <Knob v-model="s.eqLow" label="BASS" :min="-12" :max="12" :step="0.5" :default="0" bipolar :format="fmtDb" color="secondary" />
+          <Knob v-model="s.eqMid" label="MID" :min="-12" :max="12" :step="0.5" :default="0" bipolar :format="fmtDb" color="secondary" />
+          <Knob v-model="s.eqHigh" label="TREBLE" :min="-12" :max="12" :step="0.5" :default="0" bipolar :format="fmtDb" color="secondary" />
+        
+            </div>
+          </div>
+          <div class="fx-group">
+            <span class="fx-lbl">RING</span>
+            <div class="row">
+          <Knob v-model="s.ringMix" label="MIX" :default="0" :format="fmtPct" color="secondary" title="Ring modulation: how much of the signal is multiplied by the carrier (0: off)" />
+          <Knob v-model="s.ringFreq" label="FREQ" :min="20" :max="5000" curve="log" :default="440" :format="fmtHz" color="secondary" :class="{ dim: !s.ringMix }" title="The ring modulator's carrier frequency" />
+        
+            </div>
+          </div>
+          <div class="fx-group">
+            <span class="fx-lbl">DELAY</span>
+            <div class="row">
           <Knob v-model="s.delayTime" label="TIME" :min="0.01" :max="2" curve="log" :default="0.25" :format="fmtSec" color="success" />
           <Knob v-model="s.delayFeedback" label="FDBK" :max="0.9" :default="0.35" :format="fmtPct" color="success" />
           <Knob v-model="s.delayMix" label="MIX" :default="0" :format="fmtPct" color="success" />
-        </div>
-      </section>
-
-      <section class="module" :class="{ folded: isFolded('reverb') }">
-        <h4>REVERB
-          <button class="fold" :title="isFolded('reverb') ? 'Show' : 'Fold'" @click="toggleFold('reverb')"><i /></button>
-        </h4>
-        <div class="row">
+        
+            </div>
+          </div>
+          <div class="fx-group">
+            <span class="fx-lbl">REVERB</span>
+            <div class="row">
           <Knob v-model="s.reverbSize" label="SIZE" :min="0.1" :max="6" :default="2" :format="fmtSec" color="success" />
           <Knob v-model="s.reverbDecay" label="DECAY" :min="0.5" :max="10" :default="3" :format="fmtNum" color="success" />
           <Knob v-model="s.reverbMix" label="MIX" :default="0" :format="fmtPct" color="success" />
+        
+            </div>
+          </div>
         </div>
       </section>
     </div>
@@ -622,6 +643,25 @@ function doReset() {
 }
 .module.wide {
   flex-basis: 100%;
+}
+/* FX: its four groups side by side (wrapping in a narrow slot), each with its own small label */
+.fx-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+.fx-group {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.fx-lbl {
+  margin-left: 2px;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--text-mute);
 }
 .module {
   position: relative;

@@ -266,8 +266,15 @@ export interface SoundSettings {
   speed: number // 0.25..4
   timeMode: TimeMode
   // clip
-  clipIn: number // 0..1 of duration
-  clipOut: number // 0..1 of duration
+  clipIn: number // 0..1 of duration: START
+  clipOut: number // 0..1 of duration: END
+  /**
+   * The sustain loop, 0..1 of duration, held inside START..END (timing.ts clipBounds): a note plays from START into it,
+   * goes round it (RPT passes; ∞ while held), then on through the tail to END. 0 and 1: the clip itself, as before.
+   * Tape playback of a sample only (grains, STRETCH, wavetables and SFZ zones keep their own).
+   */
+  loopStart: number
+  loopEnd: number
   // amp envelope (seconds, sustain 0..1)
   attack: number
   decay: number
@@ -517,6 +524,8 @@ export function defaultSettings(name = 'SOUND'): SoundSettings {
     timeMode: 'tape',
     clipIn: 0,
     clipOut: 1,
+    loopStart: 0,
+    loopEnd: 1,
     attack: 0.001,
     decay: 0.2,
     sustain: 1,
@@ -740,17 +749,17 @@ export const defaultMaster = (): MasterState => ({
   patchView: 'grid',
   gridPanel: false,
   showPatches: false,
-  showSamples: true,
+  showSamples: false,
   paneSplit: 0.5,
   listWidth: 0.33,
-  folded: ['eq', 'ring', 'delay', 'reverb'],
+  folded: [],
   headerFolded: ['perform', 'tempo', 'board', 'chorus', 'delay', 'reverb'],
   uiDefaults: 1,
   favSounds: false,
   favPatches: false,
   factory: false,
   factoryVersion: 0,
-  rack: false,
+  rack: true,
   tab: 'sounds',
   patchId: null,
   fx: defaultGlobalFx(),
@@ -791,6 +800,8 @@ export function migrateMaster(raw?: Partial<MasterState>): MasterState {
   m.vcoSolo = [0, 1, 2].map((i) => !!raw?.vcoSolo?.[i])
   m.rackTab = Math.min(2, Math.max(0, Math.round(Number(raw?.rackTab) || 0)))
   m.playMode = raw?.playMode === 'voyage' ? 'voyage' : 'pads'
+  // EQ, RING, DELAY and REVERB are one FX block now (folded as one, open to begin with)
+  m.folded = (m.folded ?? []).filter((k) => !['eq', 'ring', 'delay', 'reverb'].includes(k))
   return m
 }
 
@@ -802,7 +813,7 @@ export interface Preset {
 }
 
 /** Sample-specific settings a preset leaves alone when copied to another pad. */
-export const PRESET_EXCLUDE = ['name', 'tag', 'midiNote', 'rootNote', 'clipIn', 'clipOut', 'vcos'] as const
+export const PRESET_EXCLUDE = ['name', 'tag', 'midiNote', 'rootNote', 'clipIn', 'clipOut', 'loopStart', 'loopEnd', 'vcos'] as const
 
 export function presetSettings(s: SoundSettings): Partial<SoundSettings> {
   const copy: Partial<SoundSettings> = JSON.parse(JSON.stringify(s))

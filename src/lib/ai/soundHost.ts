@@ -48,6 +48,8 @@ export interface SoundRequest {
   steps?: number
   guidance?: number
   seed?: number
+  /** words to sing (a model that sings: SoundModelInfo.lyrics); others ignore them */
+  lyrics?: string
 }
 
 export interface SoundClip {
@@ -88,6 +90,7 @@ export function requestFor(m: SoundModelInfo, req: SoundRequest, seed: number) {
       [m.stepsOption]: req.steps ?? m.defaultSteps,
       guidance_scale: req.guidance ?? m.defaultGuidance,
       ...(req.negative_prompt ? { negative_prompt: req.negative_prompt } : {}),
+      ...(m.lyrics && req.lyrics?.trim() ? { lyrics: req.lyrics.trim() } : {}),
       ...(m.extraOptions ?? {}),
     },
   }
