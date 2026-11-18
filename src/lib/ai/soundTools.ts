@@ -7,7 +7,8 @@
 import type { useBoard } from '../../stores/board'
 import type { Sound } from '../../types'
 import type { AgentTool, ToolReply } from './agent'
-import { clipPitch, readPcmWav, shapeClip } from './audio'
+import { clipAsync } from '../analysis'
+import type { clipPitch } from './audio'
 import { DEFAULT_SOUND_MODEL, downloadBytes, fmtBytes, SOUND_MODELS, soundModelFrom, type SoundModelInfo } from './soundModels'
 import { generateWithStop, loadAndWait, NativeSoundHost, type SoundHostApi, type SoundStatus } from './soundHost'
 import { defaultSoundSettings, errorMessage, type SoundSettings } from './types'
@@ -123,11 +124,11 @@ export async function makeSound(
   const { switched } = await ensureLoaded(agent, m, signal)
   const seconds = Math.min(input.seconds ?? 5, m.maxSeconds)
   const clip = await generateWithStop(host, m, { prompt: input.prompt, negative_prompt: input.negative_prompt, seconds, steps: input.steps, guidance: input.guidance, seed: input.seed }, signal)
-  const pcm = readPcmWav(clip.wav)
-  if (!pcm) throw new Error('the clip came back in a form that could not be read (not a PCM WAV)')
-  const shaped = shapeClip(pcm.channels, pcm.rate, { maxSeconds: seconds + 0.5, keepChannels: true })
-  if (shaped.silent) throw new Error('the clip came back silent; try another caption or seed')
-  const p = clipPitch(shaped.mono, shaped.rate)
+  // read, trimmed, normalised and its pitch found in a worker (lib/analysis.ts): never a stalled frame
+  const shaped = await clipAsync(clip.wav, seconds + 0.5)
+  if (!shaped.ok && shaped.why === 'unreadable') throw new Error('the clip came back in a form that could not be read (not a PCM WAV)')
+  if (!shaped.ok) throw new Error('the clip came back silent; try another caption or seed')
+  const p = shaped.pitch
   const tuned = input.root_note === undefined && !!p?.steady
   const rootNote = input.root_note ?? (tuned ? Math.round(p!.midi) : 60)
   const fine = tuned ? -p!.cents : 0

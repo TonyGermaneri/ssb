@@ -180,6 +180,77 @@ SsbEditor::SsbEditor (SsbProcessor& p)
               plugin.library.addSample (args[0].toString().toStdString(), sample);
               complete (juce::var (true));
           })
+          .withNativeFunction ("ssbAudioBegin", [this] (const juce::Array<juce::var>& args, auto complete)
+          {
+              // (audioId, sampleRate, channels, frames): room for a sample the page is about to send in chunks
+              if (args.size() < 4)
+                  return complete (juce::var (false));
+              const auto channels = juce::jlimit (1, 2, (int) args[2]);
+              const auto frames = (size_t) juce::jlimit<juce::int64> (0, (juce::int64) 1 << 31, (juce::int64) args[3]);
+              Upload u;
+              u.sample = std::make_shared<ssb::Sample>();
+              u.sample->rate = (double) args[1];
+              u.sample->channels.assign ((size_t) channels, std::vector<float> (frames));
+              uploads[args[0].toString()] = std::move (u);
+              complete (juce::var (true));
+          })
+          .withNativeFunction ("ssbAudioChunk", [this] (const juce::Array<juce::var>& args, auto complete)
+          {
+              // (audioId, byteOffset into the planar float32, base64): decoded on a worker thread, answered when done
+              if (args.size() < 3)
+                  return complete (juce::var (false));
+              auto it = uploads.find (args[0].toString());
+              if (it == uploads.end())
+                  return complete (juce::var (false));
+              auto sample = it->second.sample;
+              auto pending = it->second.pending;
+              ++*pending;
+              const auto offset = (size_t) (juce::int64) args[1];
+              auto text = std::make_shared<juce::String> (args[2].toString());
+              std::weak_ptr<bool> editor = alive;
+              ssb::SampleStore::instance().workers().addJob ([sample, pending, offset, text, editor, complete]
+              {
+                  juce::MemoryOutputStream decoded;
+                  bool ok = juce::Base64::convertFromBase64 (decoded, *text);
+                  if (ok)
+                  {
+                      // the planar layout: channel 0's bytes, then channel 1's
+                      const auto frames = sample->frames();
+                      const auto perChannel = frames * sizeof (float);
+                      const auto* src = static_cast<const char*> (decoded.getData());
+                      size_t at = offset, done = 0, size = decoded.getDataSize();
+                      while (ok && done < size)
+                      {
+                          const auto ch = at / perChannel;
+                          if (ch >= sample->channels.size()) { ok = false; break; }
+                          const auto within = at % perChannel;
+                          const auto n = std::min (size - done, perChannel - within);
+                          std::memcpy (reinterpret_cast<char*> (sample->channels[ch].data()) + within, src + done, n);
+                          done += n;
+                          at += n;
+                      }
+                  }
+                  --*pending;
+                  juce::MessageManager::callAsync ([editor, complete, ok]
+                  {
+                      if (! editor.expired())
+                          complete (juce::var (ok));
+                  });
+              });
+          })
+          .withNativeFunction ("ssbAudioEnd", [this] (const juce::Array<juce::var>& args, auto complete)
+          {
+              // (audioId): every chunk is in -- the sample joins the library (its disk copy is written in the background)
+              if (args.isEmpty())
+                  return complete (juce::var (false));
+              auto it = uploads.find (args[0].toString());
+              if (it == uploads.end() || it->second.pending->load() != 0)
+                  return complete (juce::var (false));
+              auto sample = it->second.sample;
+              uploads.erase (it);
+              plugin.library.addSample (args[0].toString().toStdString(), sample);
+              complete (juce::var (true));
+          })
           .withNativeFunction ("ssbForget", [] (const juce::Array<juce::var>& args, auto complete)
           {
               // ([audioId, ...]): the PROMPT GARDEN's old takes, gone for good
@@ -568,8 +639,31 @@ void SsbEditor::timerCallback()
         browser.emitEventIfBrowserIsVisible ("ssbMidi", juce::var (batch));
 }
 
+std::optional<juce::WebBrowserComponent::Resource> SsbEditor::provideAudio (const juce::String& audioId)
+{
+    // from memory when it's there; else the disk cache (only for a page whose storage lost it: rare)
+    auto sample = ssb::SampleStore::instance().get (audioId.toStdString());
+    if (! sample || sample->frames() == 0)
+        return std::nullopt;
+    const auto channels = sample->channels.size();
+    const auto frames = sample->frames();
+    std::vector<std::byte> out (16 + channels * frames * sizeof (float));
+    const double rate = sample->rate;
+    const auto ch32 = (juce::int32) channels;
+    const auto fr32 = (juce::int32) frames;
+    std::memcpy (out.data(), &rate, 8);
+    std::memcpy (out.data() + 8, &ch32, 4);
+    std::memcpy (out.data() + 12, &fr32, 4);
+    for (size_t c = 0; c < channels; ++c)
+        std::memcpy (out.data() + 16 + c * frames * sizeof (float), sample->channels[c].data(), frames * sizeof (float));
+    return juce::WebBrowserComponent::Resource { std::move (out), "application/octet-stream" };
+}
+
 std::optional<juce::WebBrowserComponent::Resource> SsbEditor::provide (const juce::String& path)
 {
+    if (const auto rel = path.fromFirstOccurrenceOf ("/", false, false); rel.startsWith ("ssb-audio/"))
+        return provideAudio (juce::URL::removeEscapeChars (rel.fromFirstOccurrenceOf ("ssb-audio/", false, false).upToFirstOccurrenceOf ("?", false, false)));
+
     const auto root = ssb::webRoot();
     const auto relative = path == "/" ? juce::String ("index.html") : path.fromFirstOccurrenceOf ("/", false, false);
     const auto file = root.getChildFile (relative.upToFirstOccurrenceOf ("?", false, false));

@@ -4,6 +4,7 @@ import { activeVoices, audioDuration, clock } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { midiNoteName, padHue } from '../lib/format'
 import { hueColor, paintScore, paintWave, type Box } from '../lib/gridPaint'
+import { waveMorphs } from '../lib/waveMorph'
 import DataGrid, { type GridRow } from './DataGrid.vue'
 import { TRIGGER_MODES, type Sound, type SoundSettings, type TriggerMode } from '../types'
 
@@ -200,12 +201,14 @@ function progressOf(id: string): number {
   if (Number.isFinite(v.endTime)) return Math.min(1, Math.max(0, elapsed / (v.endTime - v.t0)))
   return v.cycle > 0 ? (((elapsed % v.cycle) + v.cycle) % v.cycle) / v.cycle : -1
 }
+/** a row's wave changed: its outline morphs in (lib/waveMorph.ts) */
+const morphs = waveMorphs()
 const painters = {
   wave: (ctx: CanvasRenderingContext2D, box: Box, row: GridRow) => {
     const snd = board.byId(row.id)
     if (!snd) return
     const on = playing.value.has(row.id)
-    paintWave(ctx, board.peaksOf(snd.audioId), box, hueColor(hueOf(snd), on ? 66 : 58, on ? 1 : 0.8), on ? progressOf(row.id) : -1)
+    paintWave(ctx, morphs.at(row.id, snd.audioId, board.peaksOf(snd.audioId)), box, hueColor(hueOf(snd), on ? 66 : 58, on ? 1 : 0.8), on ? progressOf(row.id) : -1)
   },
   sim: (ctx: CanvasRenderingContext2D, box: Box, row: GridRow) => paintScore(ctx, box, board.soundScores?.get(row.id), board.theme),
 }
@@ -224,7 +227,7 @@ function onButton(id: string, column: string) {
   if (column === 'menu') board.togglePanel(id)
 }
 /** behind the rows: the selected sound's waveform */
-const backdrop = computed(() => (board.selected ? { peaks: board.peaksOf(board.selected.audioId), hue: hueOf(board.selected) } : null))
+const backdrop = computed(() => (board.selected ? { key: board.selected.audioId, peaks: board.peaksOf(board.selected.audioId), hue: hueOf(board.selected) } : null))
 </script>
 
 <template>
@@ -242,7 +245,7 @@ const backdrop = computed(() => (board.selected ? { peaks: board.peaksOf(board.s
     :toggles="vcos"
     :buttons="buttons"
     :painters="painters"
-    :animate="playing.size > 0"
+    :animate="playing.size > 0 || morphs.active.value"
     :backdrop="backdrop"
     :order="board.similarTo.sounds"
     reorder

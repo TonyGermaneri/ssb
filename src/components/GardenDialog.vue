@@ -4,7 +4,7 @@ import { useBoard } from '../stores/board'
 import { SKETCH_MODEL, useGarden } from '../stores/garden'
 import {
   CHIP_GROUPS, CHIPS, composeCaption, ENUM_GRIDS, gardenPeriod, newRing, RING_COLORS, RING_KINDS, ringWordIndex, WORD_BANKS,
-  DEFAULT_GARDEN_MODEL, FADE_MAX, OFFSET_MAX, TAKES_KEPT, type ChipGroup, type EnumGrid, type GardenTake, type Ring, type RingKind,
+  DEFAULT_GARDEN_MODEL, FADE_MAX, OFFSET_MAX, PAD_GROWTH_PADS, TAKES_KEPT, type ChipGroup, type EnumGrid, type GardenTake, type Ring, type RingKind,
 } from '../lib/garden/garden'
 import { SOUND_MODELS } from '../lib/ai/soundModels'
 import { soundModelsAvailable } from '../lib/ai/soundHost'
@@ -23,6 +23,13 @@ const board = useBoard()
 const garden = useGarden()
 
 const g = computed(() => (open.value ? garden.gardenOf(props.slot) : null))
+const PAD_NAMES: Record<string, string> = { perform: 'PERFORM', grain: 'GRAIN', lfo: 'LFO', fx: 'FILTER · REVERB', pitch: 'PITCH · RING', texture: 'TEXTURE', echo: 'ECHO', tone: 'TONE' }
+const padAmount = computed({ get: () => g.value?.pads.amount ?? 0.25, set: (v: number) => g.value && (g.value.pads.amount = Math.round(v * 100) / 100) })
+function togglePad(id: string) {
+  const p = g.value?.pads
+  if (!p) return
+  p.pads = p.pads.includes(id) ? p.pads.filter((x) => x !== id) : [...p.pads, id]
+}
 const run = computed(() => garden.runFor(props.slot))
 const slotSound = computed(() => {
   const x = board.selectedPatch?.slots[props.slot]
@@ -320,6 +327,29 @@ const reroll = () => g.value && (g.value.seed = Math.floor(Math.random() * 1e6))
             <Knob v-model="offset" label="OFFSET" :min="0" :max="OFFSET_MAX" :default="0" :size="38" :format="fmtOffset" title="Loops this VCO's swaps are pushed back by, so the VCOs don't all swap together" />
             <Knob v-model="fade" label="XFADE" :min="0.005" :max="FADE_MAX" curve="log" :default="0.08" :size="38" :format="fmtFade" title="The crossfade at the stitch: both heard on top of each other for that long; past a loop's length, several loops of each overlap" />
             <Knob v-model="back" label="BACK" :min="0" :max="1" :default="0.1" :size="38" :format="fmtPct" title="The chance a step goes back to an earlier clip instead of a new one" />
+          </div>
+          <!-- the PLAY view's pads grow with the clips -->
+          <div v-if="g.pads" class="pads-grow">
+            <div class="row">
+              <span class="pg-head">PADS GROW TOO</span>
+              <button class="tog" :class="{ on: g.pads.on }" title="At each new clip, the pads chosen below walk somewhere new: OFFSET loops after it comes in, gliding over XFADE" @click="g.pads.on = !g.pads.on">
+                {{ g.pads.on ? 'ON' : 'OFF' }}
+              </button>
+              <Knob v-model="padAmount" label="AMOUNT" :min="0" :max="1" :default="0.25" :size="30" :format="fmtPct" title="How far a pad can step at once (of its width and height)" />
+            </div>
+            <div class="row pg-pads">
+              <button
+                v-for="id in PAD_GROWTH_PADS"
+                :key="id"
+                class="chip"
+                :class="{ on: g.pads.pads.includes(id) }"
+                :title="`${PAD_NAMES[id]}: moves with the clips (its x and y)`"
+                @click="togglePad(id)"
+              >
+                {{ PAD_NAMES[id] }}
+              </button>
+            </div>
+            <p class="hint">Each new clip moves the chosen pads too — their x and y, 16 parameters for all eight — a seeded walk from where they are (the same seed and step move them the same way). The move starts {{ fmtOffset(offset) }} loops after the clip comes in (OFFSET, wrapped before the next one) and glides over XFADE ({{ fmtFade(fade) }}).</p>
           </div>
           <label class="field">
             <span>SOUND MODEL</span>
@@ -701,6 +731,21 @@ h4 small {
 }
 .chipset {
   display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.pads-grow {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.15);
+}
+.pg-head {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+}
+.pg-pads {
   flex-wrap: wrap;
   gap: 4px;
 }

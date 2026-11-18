@@ -116,7 +116,7 @@ function doReset() {
 
     <div class="top">
       <div class="scope">
-        <Waveform :key="scopeH" :sound="sound" :hue="hue" :height="scopeH" />
+        <Waveform :sound="sound" :hue="hue" :height="scopeH" />
         <KeyMap v-if="sound.zones?.length" :sound="sound" />
       </div>
     <div v-if="isPad" class="fields">

@@ -177,6 +177,35 @@ Clicking a VCO in the header opens its tab; a sound dragged over a tab opens it,
     neighbours. Every pad's ⚙ has a **SHADER** section: **GL ON / OFF** (for every pad), the style, and **AMT**, **GLOW**
     (bloom, and the halo on its neighbours), **TRAIL** (feedback) and **SPEED**, shared by that kind of pad in every VCO
     and kept by the page (not the patch). Off, or without WebGL2, the pads draw their pictures alone.
+  - **VOYAGE** (VCO 1's PERFORM ⚙ › PLAY MODE): the PLAY view goes full screen as a technicolor ship bobbing through
+    a field of rocks, and its working parts are the pads — all 24, the same settings, each VCO a section in its own
+    colours. The BOW (VCO 1): VIEWPORT (PERFORM), NOSE SPINNER (GRAIN), PERISCOPE (LFO), CRYSTAL DOME (FILTER · REVERB),
+    SPIRAL HORN (PITCH), BUBBLE JETS (TEXTURE), WHISKER AERIAL (ECHO), KEEL FIN (TONE). MIDSHIPS (VCO 2): BRIDGE WINDOW,
+    PADDLE WHEEL, SWING LANTERN, SONAR BUBBLE, CANDY STACKS, FIZZ PORTS, GRAMOPHONE, SIDE WING. The STERN (VCO 3): STERN
+    PORTS, PROPELLER, RUDDER, LAVA DOME, EXHAUST PIPES, BUBBLE WAKE, SPRING AERIAL, TAIL FIN. Drag across a part as across
+    its pad; double-click resets it; right-click opens its ⚙. Each kind of part shows its pad the same way: windows hold
+    the clip, the level as liquid and the playhead; rotors turn with the grain rate, their blades as wide as LENGTH;
+    swingers swing with the LFO; domes ripple with the reverb, tinted warm (low-pass) to icy (high-pass); funnels'
+    stripes run with the pitch (backwards, stopped) and puff smoke rings with the ring mod; vents bubble with SPRAY and
+    split into two colours with DETUNE; aerials ring once per echo, fading by the feedback; fins' stripes warm or cool
+    with the tilt, the middle band swelling with the mids. The ship steadies while you're at its controls.
+    Rocks drift by, each meant for one VCO (in its colours) and carrying a sound from the samples list as it's filtered.
+    One that passes near its VCO's tractor port (the top of the bow's and the stern's domes, the bottom of the sonar
+    bubble) is beamed in and becomes that VCO's wave, crossfaded into what's sounding (**XFADE**); a click on a rock
+    beams it in from anywhere. A port then rests for **GAP**; the magnet on a VCO's chip turns its beam off. A VCO
+    whose garden grows catches **pods** instead: its next clip, early. **FIELD** is how thick the field is, **FX** and
+    **TRAILS** how much light and film, **STEADY** stops the bob. The sky is all shader: a screenprinted nebula, a
+    striped sun, oil-wheel blobs, parallax stars and rocks, rainbow poster outlines round the ship, beams and wakes
+    leaving hue-shifting trails, then a misregistered three-strip split, halftone, grain, gate weave and dust.
+    **PADS** (or Esc) goes back.
+    **A ship for every decade**: the timeline over the caption (or ‹ ›) picks the era — the 50s' atomic saucer, the
+    60s' technicolor sub, the 70s' deep-space hauler, the 80s' neon interceptor, the 90s' CGI cruiser, the 00s' glossy
+    pod, the 10s' flat liner, the 20s' glass nomad and the 30s' steel starship. Each is its own hull with the same 24
+    parts placed and named its own way, in its own colours, and its own sky: pulp print with a ringed planet,
+    screenprint bands, airbrushed nebulae and a gas giant, a synthwave grid, a dithered warp field, aqua gloss and
+    bokeh, flat planets with long shadows, dark-mode mesh gradients, or black space over the Earth's limb — each with
+    the film, print or screen it would have been seen on. The HUD dresses for the era too. (lib/voyage/eras/: an era is
+    a plan of its parts, its palettes and sky, and a hull component.)
   It's the same settings as the knobs (GRAIN, LENGTH, BACK, RING, filter, reverb, PITCH / FINE, SPRAY, DETUNE, delay,
   EQ): PLAY again shows them.
 - Each list has one bar: its tag filter (a drop-down), a description field, **≈ SIMILAR**, card size and **CARDS** /
@@ -315,6 +344,11 @@ grows, a green **↻** (GROW NOW): the clip ready goes in at once, or a new one 
   kicked by the audio. Either way in film-stock colours with an anamorphic streak, lens ghosts, colour slipping apart, halation,
   grain and a little gate weave. A new prompt's words fade in one by one as the old ones go. PERFORM's ⚙ › GARDEN WORDS
   turns them off, picks SCROLL or DRIFT, and sets AMT, FLARE and AGE (how old the lens and film are).
+- **The pads grow too** (GROWTH › PADS GROW TOO): at each new clip, the PLAY view's pads chosen (all but PERFORM and
+  PITCH to begin with) step somewhere new — their x and y, up to 16 parameters a VCO — a seeded walk of up to AMOUNT from
+  where they are, so the same seed and step move them the same way. The move starts OFFSET loops after the clip comes
+  in (wrapped to land before the next one; OFFSET 0: with it) and glides over XFADE, as the clips crossfade. They're
+  the pads' own writes, so the knobs and crosshairs follow; a garden move never turns an ECHO on.
 - **It loops, sometimes**: everything follows from the SEED and the step, so cycling rings come round again (the
   RINGS tab says after how many steps), and with **REUSE** a caption that comes up again plays the clip it made then.
   **BACK** is the chance a step returns to an earlier clip instead. HISTORY plays any take (hold ▶) or goes back to

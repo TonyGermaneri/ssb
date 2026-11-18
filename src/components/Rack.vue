@@ -8,6 +8,7 @@ import { PATCH_SLOTS, TUNING_MODES, vcoHeard, type PatchSlot, type Sound, type T
 import ControlPanel from './ControlPanel.vue'
 import PlayView from './PlayView.vue'
 import ShaderStage from './ShaderStage.vue'
+import VoyageView from './VoyageView.vue'
 import { shaderPrefs, stageStatus } from '../lib/play/shaders'
 import Knob from './Knob.vue'
 import { useAi } from '../lib/ai/store'
@@ -49,6 +50,18 @@ const playView = computed({
   get: () => !!board.master.rackPlay,
   set: (on: boolean) => (board.master.rackPlay = on),
 })
+
+// PLAY opens the pads, VOYAGE the ship (lib/voyage); the one already open, clicked again, closes the PLAY view
+const padsOn = computed(() => playView.value && board.master.playMode !== 'voyage')
+const voyageOn = computed(() => playView.value && board.master.playMode === 'voyage')
+function openPlay(mode: 'pads' | 'voyage') {
+  if (playView.value && (board.master.playMode ?? 'pads') === mode) {
+    playView.value = false
+    return
+  }
+  board.master.playMode = mode
+  playView.value = true
+}
 
 // the VCO tab showing (kept with a plugin instance's view); choosing one leaves the PLAY view
 const tab = computed({
@@ -197,12 +210,21 @@ function onDrop(e: DragEvent, i: number) {
         </button>
         <button
           class="mpe-chip play-chip"
-          :class="{ on: playView }"
-          :aria-pressed="playView"
-          :title="playView ? 'PLAY view on: all three VCOs side by side, under their tabs — click (or a VCO tab) for one VCO\'s controls' : 'PLAY: all three VCOs side by side, each played from its clip and its XY pads'"
-          @click="playView = !playView"
+          :class="{ on: padsOn }"
+          :aria-pressed="padsOn"
+          :title="padsOn ? 'PLAY view on: all three VCOs side by side, under their tabs — click (or a VCO tab) for one VCO\'s controls' : 'PLAY: all three VCOs side by side, each played from its clip and its XY pads'"
+          @click="openPlay('pads')"
         >
           <v-icon size="12" icon="mdi-gamepad-variant" /> PLAY
+        </button>
+        <button
+          class="mpe-chip play-chip voyage-chip"
+          :class="{ on: voyageOn }"
+          :aria-pressed="voyageOn"
+          title="VOYAGE: straight into the ship, full screen — its parts are the three VCOs' pads (✕ at its top right comes back)"
+          @click="openPlay('voyage')"
+        >
+          <v-icon size="12" icon="mdi-rocket-launch" /> VOYAGE
         </button>
         <v-spacer />
         <!-- (a candidate's SAVE / DISCARD are on its bar, under the header) -->
@@ -258,11 +280,13 @@ function onDrop(e: DragEvent, i: number) {
       </div>
     </div>
     <!-- PLAY: the three VCOs' Play views together, a column each (stacked when the rack is narrow) -->
+    <!-- VOYAGE (VCO 1's PERFORM settings): the pads as a ship, full screen -->
+    <VoyageView v-if="playView && board.master.playMode === 'voyage'" />
     <div v-if="playView" class="playwrap" :class="{ 'gl-on': shaderPrefs.on && stageStatus.available }">
     <!-- the shader stage: one canvas behind every VCO's pads (lib/play/shaders.ts) -->
-    <ShaderStage />
+    <ShaderStage v-if="board.master.playMode !== 'voyage'" />
     <div ref="playBody" class="plays">
-      <div class="pgrid">
+      <div v-if="board.master.playMode !== 'voyage'" class="pgrid">
       <div
         v-for="(x, i) in slots"
         :key="i"
@@ -456,6 +480,9 @@ function onDrop(e: DragEvent, i: number) {
   color: #111;
   background: var(--c-accent);
   box-shadow: 0 0 8px color-mix(in srgb, var(--c-accent) 50%, transparent);
+}
+.voyage-chip:hover {
+  color: var(--c-accent);
 }
 .mpe-chip small {
   font-size: 11px;
@@ -692,6 +719,9 @@ function onDrop(e: DragEvent, i: number) {
   position: relative;
   flex: 1;
   min-height: 0;
+  /* the columns fill it exactly (the pads fit, never past it); it scrolls only if the window is too small for any */
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   scrollbar-width: thin;
   padding: 6px;
@@ -718,14 +748,19 @@ function onDrop(e: DragEvent, i: number) {
   background: color-mix(in srgb, var(--lcd-bg) 35%, transparent);
 }
 .pgrid {
+  flex: 1 0 auto;
+  min-height: 100%;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  align-items: start;
+  grid-template-rows: minmax(280px, 1fr);
+  align-items: stretch;
   gap: 6px;
 }
+/* narrow: the VCOs one above another, a third of the height each (each lays its pads out wide, in a row) */
 @container (max-width: 720px) {
   .pgrid {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: repeat(3, minmax(170px, 1fr));
   }
 }
 .pslot {
@@ -733,12 +768,20 @@ function onDrop(e: DragEvent, i: number) {
   position: relative;
   isolation: isolate;
   min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(0, 0, 0, 0.18);
 }
 .pslot :deep(.play) {
   border-radius: 0 0 6px 6px;
+  flex: 1;
+  min-height: 0;
+}
+.pslot > .phead {
+  flex: none;
 }
 .pspec {
   z-index: 0;

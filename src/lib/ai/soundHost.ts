@@ -93,7 +93,13 @@ export function requestFor(m: SoundModelInfo, req: SoundRequest, seed: number) {
   }
 }
 
-function fromBase64(data: string): ArrayBuffer {
+/** base64 as bytes: decoded natively (a data: URL fetched), off this thread; the byte loop where that can't be */
+async function fromBase64(data: string): Promise<ArrayBuffer> {
+  try {
+    return await (await fetch(`data:application/octet-stream;base64,${data}`)).arrayBuffer()
+  } catch {
+    /* below */
+  }
   const bin = atob(data)
   const bytes = new Uint8Array(bin.length)
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
@@ -147,7 +153,7 @@ export class NativeSoundHost implements SoundHostApi {
     const seed = req.seed ?? Math.floor(Math.random() * 2 ** 31)
     const r = await this.call<{ audio: string; sample_rate: number; channels: number; elapsed: number; model: string }>('generate', { request: requestFor(m, req, seed) })
     if (!r.audio) throw new AiError('the sound model answered without audio', 'server')
-    return { wav: fromBase64(r.audio), rate: r.sample_rate, channels: r.channels, seed, model: r.model, elapsed: Math.round(r.elapsed * 10) / 10 }
+    return { wav: await fromBase64(r.audio), rate: r.sample_rate, channels: r.channels, seed, model: r.model, elapsed: Math.round(r.elapsed * 10) / 10 }
   }
 }
 

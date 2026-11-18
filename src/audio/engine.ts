@@ -1,4 +1,5 @@
 import { markRaw, ref, shallowRef } from 'vue'
+import { blobBase64, planarBlob } from '../lib/pcmTransfer'
 import { defaultMatrix, type GlobalFx, type ModMatrix, type ModRoute, type Sound } from '../types'
 import { lfoConfig, LfoSource } from './lfo'
 import { isSynthAudioId, makeSynthBuffer, type SynthWave } from './synthWaves'
@@ -211,7 +212,17 @@ export function resume() {
   if (c.state !== 'running') void c.resume()
 }
 
+/**
+ * In the plugin and the app the native engine makes the sound, so the page needs no live context of its own just to
+ * decode: an offline one does (no audio device opened inside the host, none of the live graph built). 48 kHz, as
+ * a live context on most interfaces would; the engine plays any rate.
+ */
+let decoder: OfflineAudioContext | null = null
 export function decode(data: ArrayBuffer): Promise<AudioBuffer> {
+  if (external && !ctx) {
+    decoder ??= new OfflineAudioContext(2, 1, 48000)
+    return decoder.decodeAudioData(data)
+  }
   return getCtx().decodeAudioData(data)
 }
 
@@ -250,7 +261,10 @@ export function planarBase64(buffer: AudioBuffer): string {
  */
 export function preview(buffer: AudioBuffer, rate: number, seconds = 0.9) {
   if (external) {
-    void callNative('ssbPreview', buffer.sampleRate, Math.min(2, buffer.numberOfChannels), planarBase64(buffer), rate, seconds).catch(() => {})
+    // (the browser makes the base64, off the JS thread)
+    void blobBase64(planarBlob(buffer))
+      .then((b64) => callNative('ssbPreview', buffer.sampleRate, Math.min(2, buffer.numberOfChannels), b64, rate, seconds))
+      .catch(() => {})
     return
   }
   const c = getCtx()

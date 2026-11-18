@@ -13,7 +13,7 @@ import { runAgent, type AgentEvent } from './agent'
 import { SYSTEM_PROMPT } from './prompt'
 import { createSession, listModels } from './providers'
 import { createTools } from './tools'
-import { readPcmWav, shapeClip } from './audio'
+import { clipAsync } from '../analysis'
 import { promptSlotWave as promptSlot, soundAgentFrom } from './soundTools'
 import { soundModelFrom, type SoundModelInfo } from './soundModels'
 import { generateWithStop, soundModelsAvailable, type SoundCheck, type SoundStatus } from './soundHost'
@@ -466,10 +466,8 @@ export const useAi = defineStore('ai', () => {
     const m = soundPick.value
     if (!m) throw new AiError('Pick a model first', 'request')
     const clip = await generateWithStop(soundAgent.host(), m, { prompt, seconds: 3, steps: Math.min(m.defaultSteps, 24) })
-    const pcm = readPcmWav(clip.wav)
-    if (!pcm) throw new AiError('The clip could not be read', 'other')
-    const shaped = shapeClip(pcm.channels, pcm.rate, { maxSeconds: 4, keepChannels: true })
-    if (shaped.silent) throw new AiError('The clip came back silent', 'other')
+    const shaped = await clipAsync(clip.wav, 4)
+    if (!shaped.ok) throw new AiError(shaped.why === 'unreadable' ? 'The clip could not be read' : 'The clip came back silent', 'other')
     return { text: `${m.label}: ${shaped.seconds.toFixed(1)} s in ${clip.elapsed} s (${Math.min(m.defaultSteps, 24)} steps, seed ${clip.seed})`, channels: shaped.channels, rate: shaped.rate }
   }
 

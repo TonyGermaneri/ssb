@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  defaultPadGrowth, padMoveDelay, padTarget,
   composeCaption, defaultGarden, euclid, MIN_SWAP_S, gardenPeriod, gardenTick, hitsUpTo, migrateGarden, newRing, planNext, pushTake,
   ringSounds, ringWordIndex, takesToDrop, TAKES_KEPT, HISTORY_MAX, type Garden, type TickIn,
 } from './garden'
@@ -243,5 +244,33 @@ describe('letting old takes go', () => {
   })
   it('a saved garden from before SAVE comes back with an empty list of saved takes', () => {
     expect(migrateGarden({ on: true } as never).saved).toEqual([])
+  })
+})
+
+describe('the pads growing with the clips', () => {
+  it('steps a pad the same way for the same seed and step, within amount, inside the pad', () => {
+    const from = { x: 0.5, y: 0.5 }
+    const a = padTarget(42, 7, 'grain', from, 0.2)
+    expect(padTarget(42, 7, 'grain', from, 0.2)).toEqual(a)
+    expect(Math.abs(a.x - 0.5)).toBeLessThanOrEqual(0.2)
+    expect(Math.abs(a.y - 0.5)).toBeLessThanOrEqual(0.2)
+    expect(padTarget(42, 8, 'grain', from, 0.2)).not.toEqual(a)
+    expect(padTarget(42, 7, 'tone', from, 0.2)).not.toEqual(a)
+    for (let s = 0; s < 200; s++) {
+      const p = padTarget(1, s, 'fx', { x: 0.98, y: 0.02 }, 0.5)
+      expect(p.x).toBeGreaterThanOrEqual(0)
+      expect(p.x).toBeLessThanOrEqual(1)
+      expect(p.y).toBeGreaterThanOrEqual(0)
+      expect(p.y).toBeLessThanOrEqual(1)
+    }
+    expect(padTarget(3, 3, 'lfo', from, 0)).toEqual(from)
+  })
+  it('moves OFFSET loops after the stitch, wrapped before the next one', () => {
+    expect(padMoveDelay(0, 2, 8)).toBe(0)
+    expect(padMoveDelay(1.5, 2, 8)).toBe(3)
+    expect(padMoveDelay(5, 2, 8)).toBe(2)
+  })
+  it('old gardens get the pads, off', () => {
+    expect(migrateGarden({ on: true } as never).pads).toEqual(defaultPadGrowth())
   })
 })

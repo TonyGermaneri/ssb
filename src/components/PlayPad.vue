@@ -100,6 +100,10 @@ function up() {
 .pad.square {
   aspect-ratio: 1;
 }
+.pad {
+  /* (its label and gear shrink in a narrow pad: below) */
+  container-type: inline-size;
+}
 canvas {
   position: absolute;
   inset: 0;
@@ -111,6 +115,11 @@ canvas {
   position: absolute;
   left: 6px;
   top: 5px;
+  /* one line, cut short in a narrow pad (the pads stretch to fit their column) */
+  max-width: calc(100% - 26px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   pointer-events: none;
   padding: 0 5px;
   border-radius: 6px;
@@ -198,5 +207,21 @@ canvas {
   font-weight: 900;
   letter-spacing: 0.15em;
   color: var(--line);
+}
+@container (max-width: 96px) {
+  .label {
+    left: 3px;
+    top: 3px;
+    padding: 0 3px;
+    font-size: 6px;
+    letter-spacing: 0.04em;
+    max-width: calc(100% - 18px);
+  }
+  .gear {
+    top: 2px;
+    right: 2px;
+    width: 13px;
+    height: 13px;
+  }
 }
 </style>

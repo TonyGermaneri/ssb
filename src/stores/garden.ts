@@ -6,11 +6,13 @@ import * as engine from '../audio/engine'
 import { makeSound, soundAgentFrom } from '../lib/ai/soundTools'
 import { soundModelsAvailable } from '../lib/ai/soundHost'
 import { errorMessage } from '../lib/ai/types'
-import { sketchClip } from '../lib/garden/sketch'
+import { sketchAsync } from '../lib/analysis'
 import {
-  captionSeed, DEFAULT_GARDEN_MODEL, gardenTick, migrateGarden, planNext, pushTake, takesToDrop, TAKES_KEPT, type Garden, type GardenTake,
+  captionSeed, DEFAULT_GARDEN_MODEL, gardenTick, MIN_SWAP_S, padMoveDelay, padTarget, migrateGarden, planNext, pushTake, takesToDrop, TAKES_KEPT, type Garden, type GardenTake,
 } from '../lib/garden/garden'
 import { addTags, isTake, removeTags, TAKE_TAG } from '../lib/tags'
+import { padControl, type PadControl, type PadId } from '../lib/play/padControl'
+import type { Point } from '../lib/play/pads'
 import type { PatchSlot } from '../types'
 
 /** the garden's model id for the stand-in synth (lib/garden/sketch.ts) */
@@ -50,9 +52,17 @@ export interface GardenRun {
   rush?: boolean
   /** stitches so far (the rings flash on each) */
   stitches: number
+  /** the clip's loop, s, as last heard */
+  loopSec: number
+  /** the pads' next move (PadGrowth): when it starts (performance.now), for which step; 0 none */
+  padAt: number
+  padStep: number
+  /** the pads' move under way: from where to where, over how long */
+  padTween: { start: number; dur: number; from: Record<string, Point>; to: Record<string, Point> } | null
 }
 
 const newRun = (): GardenRun => ({
+  loopSec: 0, padAt: 0, padStep: 0, padTween: null,
   status: 'off', heard: 0, started: false, offsetUsed: 0, progress: 0, genProgress: 0, genStart: 0, genExpect: 1, next: null, growing: '', note: '', coolUntil: 0, fadeUntil: 0, catch: [], stitches: 0,
 })
 
@@ -86,7 +96,9 @@ export const useGarden = defineStore('garden', () => {
   function gardenOf(i: number): Garden | null {
     const slot = slotOf(i)
     if (!slot) return null
-    if (!slot.garden) slot.garden = migrateGarden(null)
+    // made (off) the first time; one from an older SSB (a draft or a host session put back as it was saved) given what
+    // it lacks -- the dialog reads every field
+    if (!slot.garden || !slot.garden.pads || !Array.isArray(slot.garden.pads.pads)) slot.garden = migrateGarden(slot.garden)
     return slot.garden
   }
   const runFor = (i: number) => {
@@ -141,7 +153,7 @@ export const useGarden = defineStore('garden', () => {
       let soundId: string
       if (sketch) {
         const rate = 44100
-        const snd = await board.addAgentSound(sketchClip(plan.prompt, plan.seconds, rate), rate, { name: takeName(plan.prompt), tags: ['garden', 'sketch', TAKE_TAG], rootNote: 60, fine: 0 })
+        const snd = await board.addAgentSound(await sketchAsync(plan.prompt, plan.seconds, rate), rate, { name: takeName(plan.prompt), tags: ['garden', 'sketch', TAKE_TAG], rootNote: 60, fine: 0 })
         soundId = snd.id
         run.note = `SKETCH · ${((performance.now() - started) / 1000).toFixed(1)} s`
       } else {
@@ -206,6 +218,72 @@ export const useGarden = defineStore('garden', () => {
     run.fadeUntil = performance.now() + (g.fade > 0.5 ? g.fade + 4 : 0) * 1000
     run.stitches++
     run.status = 'waiting'
+    // the pads grow with it: their move starts OFFSET loops on (wrapped before the next stitch), gliding over XFADE
+    if (g.pads?.on && g.pads.pads.length) {
+      const cycle = Math.max(MIN_SWAP_S, g.fade + 0.5, g.loops * run.loopSec)
+      run.padAt = performance.now() + padMoveDelay(g.offset ?? 0, run.loopSec, cycle) * 1000
+      run.padStep = next.step
+    }
+  }
+
+  // ── the pads growing (PadGrowth): moves scheduled at each stitch, glided a frame at a time ──
+  /** each growing VCO's pads, as controls (lib/play/padControl.ts: the very writes the PLAY view's pads make) */
+  const padControls = new Map<string, PadControl>()
+  function padsOf(slot: PatchSlot): PadControl | null {
+    if (!board.layerSound(slot.layer)) return null
+    let c = padControls.get(slot.layer.id)
+    if (!c) {
+      // (looked up each time: a patch reloaded or reverted brings new layer objects under the same id)
+      const id = slot.layer.id
+      const layerNow = () => board.selectedPatch?.slots.find((x) => x?.layer.id === id)?.layer ?? slot.layer
+      c = padControl({ sound: () => board.layerSound(layerNow())!, bpm: () => board.bpm })
+      padControls.set(id, c)
+    }
+    return c
+  }
+  /** a move due: from where each pad is now to where the garden's seed and step send it */
+  function startPadMove(slot: PatchSlot, g: Garden, run: GardenRun, now: number) {
+    run.padAt = 0
+    const c = padsOf(slot)
+    if (!c) return
+    const from: Record<string, Point> = {}
+    const to: Record<string, Point> = {}
+    for (const id of g.pads.pads) {
+      const pad = id as PadId
+      from[pad] = c.pointOf(pad)
+      to[pad] = padTarget(g.seed, run.padStep, pad, from[pad], g.pads.amount)
+    }
+    run.padTween = { start: now, dur: Math.max(0.05, g.fade) * 1000, from, to }
+    if (!padFrame) padFrame = requestAnimationFrame(glidePads)
+  }
+  let padFrame = 0
+  let padWritten = 0
+  /** the moves under way, a step along (30 times a second: each write is a patch edit the engines hear) */
+  function glidePads(now: number) {
+    padFrame = 0
+    const p = board.selectedPatch
+    let any = false
+    if (p && now - padWritten >= 33) {
+      padWritten = now
+      for (const slot of p.slots) {
+        if (!slot) continue
+        const run = runs.get(slot.layer.id)
+        const tw = run?.padTween
+        if (!run || !tw) continue
+        const c = padsOf(slot)
+        const k = Math.min(1, (now - tw.start) / tw.dur)
+        const e = k * k * (3 - 2 * k)
+        if (c)
+          for (const id of Object.keys(tw.to)) {
+            const a = tw.from[id]
+            const b = tw.to[id]
+            c.write(id as PadId, { x: a.x + (b.x - a.x) * e, y: a.y + (b.y - a.y) * e })
+          }
+        if (k >= 1) run.padTween = null
+        else any = true
+      }
+    } else any = !!p?.slots.some((x) => x && runs.get(x.layer.id)?.padTween)
+    if (any) padFrame = requestAnimationFrame(glidePads)
   }
 
   /** how long each model took to make a clip of each length (s), lately: the next one's progress is timed by it */
@@ -230,6 +308,8 @@ export const useGarden = defineStore('garden', () => {
       }
       const mine = voices.filter((v) => v.soundId === slot.layer.id)
       const cycle = mine.map((v) => v.voice.cycle).find((c) => Number.isFinite(c) && c > 0) ?? 0
+      if (cycle > 0) run.loopSec = cycle
+      if (run.padAt && now >= run.padAt) startPadMove(slot, g, run, now)
       const out = gardenTick(
         { heard: run.heard, started: run.started, offsetUsed: run.offsetUsed },
         {

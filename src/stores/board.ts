@@ -1,4 +1,7 @@
 import { defineStore } from 'pinia'
+import { soundsInUse } from '../lib/soundsInUse'
+import { peaksAsync } from '../lib/analysis'
+import { fetchPcm } from '../lib/pcmTransfer'
 import { computed, markRaw, nextTick, reactive, ref, shallowReactive, shallowRef, toRaw, watch, type Ref } from 'vue'
 import { del, get, keys, set } from 'idb-keyval'
 import * as engine from '../audio/engine'
@@ -59,7 +62,7 @@ const INSTANCE_FIELDS = [
  */
 const VIEW_FIELDS = [
   'tab', 'view', 'patchView', 'gridPanel', 'showPatches', 'showSamples', 'paneSplit', 'listWidth', 'folded',
-  'headerFolded', 'rack', 'waveView', 'scope', 'isoView', 'favSounds', 'favPatches', 'scale', 'rackPlay', 'rackTab',
+  'headerFolded', 'rack', 'waveView', 'scope', 'isoView', 'favSounds', 'favPatches', 'scale', 'rackPlay', 'rackTab', 'playMode',
 ] as const
 /** tells the other tabs / instances the library was saved, so they reload it */
 const libraryChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('ssb-library') : null
@@ -121,6 +124,16 @@ export const useBoard = defineStore('board', () => {
   /** tags hidden with a right-click: pads carrying any of them are filtered out */
   const tagHidden = ref<string[]>([])
   const peaks = shallowReactive(new Map<string, Float32Array>())
+  /** bumped (a few times a second at most) as peaks arrive from the workers: canvases that paint them repaint */
+  const peaksVersion = shallowRef(0)
+  let peaksTimer = 0
+  function peaksArrived() {
+    if (peaksTimer) return
+    peaksTimer = window.setTimeout(() => {
+      peaksTimer = 0
+      peaksVersion.value++
+    }, 120)
+  }
   const loaded = ref(false)
   const toast = ref('')
   const midi = reactive({ enabled: false, inputs: 0, learning: null as string | null })
@@ -359,7 +372,12 @@ export const useBoard = defineStore('board', () => {
       tableSizes.set(audioId, tbl.size)
     } else buf = cycle ? engine.cycleBuffer(cycle.channels, cycle.rate) : await engine.decode(bytes) // detaches `bytes`
     engine.buffers.set(audioId, buf)
-    peaks.set(audioId, computePeaks(buf))
+    // its waveform's peaks: worked out in the analysis workers (lib/analysis.ts), drawn when they arrive
+    void peaksAsync(buf).then((p) => {
+      if (engine.buffers.get(audioId) !== buf) return
+      peaks.set(audioId, p)
+      peaksArrived()
+    })
     semantic.audioChanged()
     return rate
   }
@@ -648,29 +666,44 @@ export const useBoard = defineStore('board', () => {
         toast.value = 'Couldn\'t load the AKWF waves'
       })
     }
-    const ok: Sound[] = []
-    for (const s of list) {
-      try {
-        let missing = false
-        for (const audioId of new Set(soundAudioIds(s))) {
+    // each audio once, however many sounds share it: read from storage and decoded several at a time (the
+    // decoding runs off the main thread; the reads overlap), the sounds kept in their order
+    const loading = new Map<string, Promise<boolean>>()
+    const ensure = (audioId: string): Promise<boolean> => {
+      let p = loading.get(audioId)
+      if (!p) {
+        p = (async () => {
           if (engine.hasAudio(audioId)) {
             if (isSynthAudioId(audioId) && !peaks.has(audioId)) peaks.set(audioId, computePeaks(engine.getBuffer(audioId)!))
-            continue
+            return true
           }
           const blob = (await get<Blob>(audioKey(audioId))) ?? (await audioFromPlugin(audioId))
-          if (!blob) {
-            missing = true
-            break
-          }
+          if (!blob) return false
           await loadAudio(audioId, blob)
-        }
-        if (missing) continue
-        ok.push(tracked(expandSound(s)))
-      } catch (e) {
-        console.error(`Dropping ${s.fileName}`, e)
+          return true
+        })()
+        loading.set(audioId, p)
       }
+      return p
     }
-    return ok
+    const out: (Sound | null)[] = new Array(list.length).fill(null)
+    let next = 0
+    const lanes = Math.max(2, Math.min(8, (navigator.hardwareConcurrency || 4)))
+    await Promise.all(
+      Array.from({ length: lanes }, async () => {
+        while (next < list.length) {
+          const i = next++
+          const s = list[i]
+          try {
+            const found = await Promise.all([...new Set(soundAudioIds(s))].map(ensure))
+            if (found.every(Boolean)) out[i] = tracked(expandSound(s))
+          } catch (e) {
+            console.error(`Dropping ${s.fileName}`, e)
+          }
+        }
+      }),
+    )
+    return out.filter((s): s is Sound => !!s)
   }
 
   /** the sound's stored JSON, kept until it is next written to */
@@ -694,9 +727,14 @@ export const useBoard = defineStore('board', () => {
    */
   async function audioFromPlugin(audioId: string): Promise<Blob | null> {
     if (!inNative()) return null
-    const pcm = await callNative<{ rate: number; channels: number; data: string } | null>('ssbGetAudio', audioId).catch(() => null)
-    if (!pcm?.data) return null
-    const blob = encodeWav(planarFromBase64(pcm.data, pcm.channels), pcm.rate)
+    // binary, from the editor's resource route (no base64 either way); the older call if that isn't there
+    let pcm = await fetchPcm(audioId).catch(() => null)
+    if (!pcm) {
+      const old = await callNative<{ rate: number; channels: number; data: string } | null>('ssbGetAudio', audioId).catch(() => null)
+      if (old?.data) pcm = { rate: old.rate, channels: planarFromBase64(old.data, old.channels) }
+    }
+    if (!pcm) return null
+    const blob = encodeWav(pcm.channels, pcm.rate)
     await set(audioKey(audioId), blob)
     return blob
   }
@@ -2430,10 +2468,12 @@ export const useBoard = defineStore('board', () => {
 
   /**
    * The garden's old takes gone for good: out of the board, their audio out of memory, storage and (in the plugin) the
-   * engine's sample cache. Only takes nothing else uses: never a sound a patch plays.
+   * engine's sample cache. Only takes nothing else uses: never a sound a patch plays, saved or as edited.
    */
   function dropTakes(ids: string[]) {
-    const used = new Set(patches.value.flatMap((p) => patchLayers(p).map((l) => l.soundId)))
+    // never one a patch plays -- now, or as it was last SAVEd (an edited patch is stored as saved: dropping a take
+    // its saved version plays lost that VCO's wave on the next load), or in the kept draft
+    const used = soundsInUse(patches.value, savedBodies.values(), [editDraft.value?.body])
     const gone = sounds.value.filter((s) => ids.includes(s.id) && isTake(s.settings.tag) && !used.has(s.id))
     if (!gone.length) return
     const ids2 = new Set(gone.map((s) => s.id))
@@ -2792,7 +2832,7 @@ export const useBoard = defineStore('board', () => {
     installFactory, addFactoryPatch, selectPatch, editPatch, selectPatchStep, newPatch, duplicatePatch, removePatch, removePatches, assignSlot, slotsOf, toggleSlot, toggleFav,
     patchEdited, isEdited, isBuiltIn, savePatch, revertPatch,
     pressPatch, releasePatch, patchIdOfLayer, soundRef, resolveSoundRef, addAgentPatch, replacePatch, renderOffline,
-    tags, visible, facets, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
+    tags, visible, facets, peaksVersion, toggleTag, keyFor, soundForKey, byId, selected, selectedNumber,
     addFiles, addCapture, addAgentSound, load, press, release, panic, noteOn, noteOff,
     select, selectStep, togglePanel, cycleMode, cycleFilter, toggleGrain, addTable, akwfWaves, resetSettings, duplicate, remove, removeSounds, dropTakes, move,
     mpeRoutesFor,

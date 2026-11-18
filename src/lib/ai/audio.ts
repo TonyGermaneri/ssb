@@ -171,3 +171,20 @@ export function clipPitch(x: Float32Array, rate: number): ClipPitch | null {
     voiced: Math.round(voiced * 100) / 100,
   }
 }
+
+/** a sound model's clip made into a sample: read, shaped, its pitch found (or why not) */
+export type ClipOut =
+  | { ok: false; why: 'unreadable' | 'silent' }
+  | { ok: true; channels: Float32Array[]; rate: number; seconds: number; peakDb: number; cut: boolean; pitch: ClipPitch | null }
+
+/**
+ * A sound model's WAV made into a sample: read, shaped (shapeClip), its pitch found (clipPitch). Run in the analysis
+ * workers (lib/analysis.ts clipAsync): the pitch-finding alone is hundreds of ms a clip.
+ */
+export function makeClip(wav: ArrayBuffer, maxSeconds: number, keepChannels: boolean): ClipOut {
+  const pcm = readPcmWav(wav)
+  if (!pcm) return { ok: false, why: 'unreadable' }
+  const shaped = shapeClip(pcm.channels, pcm.rate, { maxSeconds, keepChannels })
+  if (shaped.silent) return { ok: false, why: 'silent' }
+  return { ok: true, channels: shaped.channels, rate: shaped.rate, seconds: shaped.seconds, peakDb: shaped.peakDb, cut: shaped.cut, pitch: clipPitch(shaped.mono, shaped.rate) }
+}

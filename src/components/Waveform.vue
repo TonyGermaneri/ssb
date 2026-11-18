@@ -8,6 +8,7 @@ import { tableCount, tablePos } from '../audio/wavetable'
 import { useBoard } from '../stores/board'
 import { midiNoteName } from '../lib/format'
 import { ISO_PITCH, ISO_VIEW, type Sound } from '../types'
+import { MORPH_MS, useWaveMorph } from '../lib/waveMorph'
 import LiveView from './LiveView.vue'
 import WaveViewPicker from './WaveViewPicker.vue'
 
@@ -35,7 +36,10 @@ const wrap = ref<HTMLDivElement>()
 const canvas = ref<HTMLCanvasElement>()
 /** width follows the container (full-width panels), height is fixed per layout */
 const Wr = ref(props.width ?? 386)
-const H = props.height ?? 52
+/** height: the parent's (taller for ISO, a table's); kept up to date at each draw, so a change of height redraws in
+ * place (and a wave's morph carries across it) rather than starting a new display */
+const Hr = computed(() => props.height ?? 52)
+let H = Hr.value
 /** ISO: the waveform as a wall standing on a floor, the stereo field in depth (left at the back) */
 const iso = computed(() => board.master.waveView === 'iso')
 /**
@@ -53,6 +57,18 @@ const table = computed(() => {
 const live = computed(() => !['2d', 'iso'].includes(board.master.waveView))
 
 const peaks = computed(() => board.peaksOf(props.sound.audioId))
+/**
+ * A new wave in (a stitch, a catch, another sound): the old outline morphs into it (lib/waveMorph.ts); ISO's stereo
+ * sides each their own. A wavetable (drawn from its waves, not peaks) crossfades from a ghost of the last picture.
+ */
+const morph = useWaveMorph()
+const sideMorphs = [useWaveMorph(), useWaveMorph()]
+let ghost: { key: string; canvas: HTMLCanvasElement; start: number } | null = null
+let drawnKey = ''
+/** the last picture was a table's */
+let ghostWasTable = false
+const ghostFrame = ref(0)
+let ghostRaf = 0
 const voices = computed(() => activeVoices.value.filter((v) => v.soundId === props.sound.id))
 
 /** what an ISO picture is made of, in floor units: time `lu` long, `lv` deep, a full-scale wave `ah` tall */
@@ -163,7 +179,21 @@ function draw() {
   const W = Wr.value
   const c = canvas.value
   const p = peaks.value
+  H = Hr.value
   if (!c) return
+  const t = table.value
+  const key = `${props.sound.audioId}|${t ? t.size : 0}`
+  // a table in, or out: what was drawn stays as a ghost, fading as the new picture comes up (copied before a change
+  // of size clears the canvas: a table's display is taller)
+  if (drawnKey && key !== drawnKey && (t || ghostWasTable) && c.width && c.height) {
+    const copy = document.createElement('canvas')
+    copy.width = c.width
+    copy.height = c.height
+    copy.getContext('2d')!.drawImage(c, 0, 0)
+    ghost = { key, canvas: copy, start: performance.now() }
+  }
+  ghostWasTable = !!t
+  drawnKey = key
   const dpr = window.devicePixelRatio || 1
   if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) {
     c.width = Math.round(W * dpr)
@@ -172,10 +202,26 @@ function draw() {
   const g = c.getContext('2d')!
   g.setTransform(dpr, 0, 0, dpr, 0, 0)
   g.clearRect(0, 0, W, H)
-  const t = table.value
+  const shown = morph.at(props.sound.audioId, p) ?? undefined
   if (t) drawTable(g, W, t)
-  else if (iso.value) drawIso(g, W, p)
-  else draw2d(g, W, p)
+  else if (iso.value) drawIso(g, W, shown)
+  else draw2d(g, W, shown)
+  void ghostFrame.value
+  if (ghost) {
+    const k = (performance.now() - ghost.start) / MORPH_MS
+    if (k >= 1 || ghost.key !== key) ghost = null
+    else {
+      g.setTransform(1, 0, 0, 1, 0, 0)
+      g.globalAlpha = 1 - k * k * (3 - 2 * k)
+      g.drawImage(ghost.canvas, 0, 0, c.width, c.height)
+      g.globalAlpha = 1
+      if (!ghostRaf)
+        ghostRaf = requestAnimationFrame(() => {
+          ghostRaf = 0
+          ghostFrame.value++
+        })
+    }
+  }
 }
 
 // ── a wavetable ──────────────────────────────────────────────────────────────────
@@ -496,7 +542,8 @@ function drawIso(g: CanvasRenderingContext2D, W: number, p: Float32Array | undef
 
   // the wave: a wall standing on the floor (a stereo sample's left at the back, its right at the front), the face away
   // dark, top lit, the face toward the eye bright; each drawn far to near (which end is far follows the camera)
-  const sides = channelPeaks(p)
+  const target = peaks.value
+  const sides = target && target.length === p.length && channelPeaks(target).length > 1 ? channelPeaks(target).map((sp, k) => sideMorphs[k].at(props.sound.audioId, sp) ?? sp) : [p]
   const n = p.length / 2
   const cols = Math.max(1, Math.min(n, Math.floor(Tx / 2)))
   const per = n / cols
@@ -625,7 +672,11 @@ watch(
   { flush: 'post' },
 )
 onMounted(() => watchEffect(draw))
-onBeforeUnmount(() => ro?.disconnect())
+onBeforeUnmount(() => {
+  ro?.disconnect()
+  morph.stop()
+  sideMorphs.forEach((m) => m.stop())
+})
 
 // ── dragging ─────────────────────────────────────────────────────────────────────
 // Without grains: the nearest clip marker. With them: the grain -- its middle moves POS, its sides set its length
@@ -749,13 +800,13 @@ const tip = computed(() =>
 </script>
 
 <template>
-  <LiveView v-if="live" :sound="sound" :hue="hue" :height="H" :width="props.width" :readonly="readonly" />
+  <LiveView v-if="live" :sound="sound" :hue="hue" :height="Hr" :width="props.width" :readonly="readonly" />
   <div v-else ref="wrap" class="wf" :style="{ width: props.width ? `${Wr}px` : '100%' }">
     <canvas
       ref="canvas"
       class="waveform"
       :class="{ readonly, iso: iso || !!table }"
-      :style="{ width: `${Wr}px`, height: `${H}px`, cursor: readonly ? undefined : cursor }"
+      :style="{ width: `${Wr}px`, height: `${Hr}px`, cursor: readonly ? undefined : cursor }"
       :title="tip"
       @pointerdown="onDown"
       @pointermove="onMove"

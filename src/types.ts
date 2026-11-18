@@ -1,4 +1,5 @@
-import type { Garden } from './lib/garden/garden'
+import { migrateGarden, type Garden } from './lib/garden/garden'
+import type { PlayMode } from './lib/voyage/modes'
 import {
   GRAIN_FREQ_FLOOR, GRAIN_FREQ_MAX, type AmpMode, type GrainMode, type SpraySign, type Symmetry,
 } from './audio/grainMath'
@@ -647,6 +648,8 @@ export interface MasterState {
   isoView: IsoView
   /** the rack shows the PLAY view: VCO 1-3's Play views side by side, in place of the tabs' panels */
   rackPlay: boolean
+  /** how the PLAY view plays: the pads, or VOYAGE (the ship, full screen) -- chosen in VCO 1's PERFORM settings */
+  playMode: PlayMode
   /** the rack's mute / solo, per VCO (1-3) of the selected patch: the instance's, not the patch's (vcoHeard) */
   vcoMute: boolean[]
   vcoSolo: boolean[]
@@ -719,6 +722,7 @@ export const defaultMaster = (): MasterState => ({
   scope: defaultScopeKnobs(),
   isoView: { ...ISO_VIEW },
   rackPlay: false,
+  playMode: 'pads',
   vcoMute: [false, false, false],
   vcoSolo: [false, false, false],
   rackTab: 0,
@@ -786,6 +790,7 @@ export function migrateMaster(raw?: Partial<MasterState>): MasterState {
   m.vcoMute = [0, 1, 2].map((i) => !!raw?.vcoMute?.[i])
   m.vcoSolo = [0, 1, 2].map((i) => !!raw?.vcoSolo?.[i])
   m.rackTab = Math.min(2, Math.max(0, Math.round(Number(raw?.rackTab) || 0)))
+  m.playMode = raw?.playMode === 'voyage' ? 'voyage' : 'pads'
   return m
 }
 
@@ -905,7 +910,8 @@ export function migratePatch(p: Patch & { layers?: PatchLayer[] }): Patch {
   return {
     ...rest,
     tag: p.tag ?? '',
-    slots: slots.slice(0, PATCH_SLOTS),
+    // a garden saved by an older SSB gets what it lacks (PADS GROW TOO, ...)
+    slots: slots.slice(0, PATCH_SLOTS).map((x) => (x?.garden ? { ...x, garden: migrateGarden(x.garden) } : x)),
     header: {
       ...headerOf(d),
       ...h,

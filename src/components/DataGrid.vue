@@ -6,6 +6,7 @@ import { rememberScroll } from '../lib/scrollMemory'
 import { activeVoices, levels } from '../audio/engine'
 import { CELL_ALPHA, gridStyle, mix, rgba } from '../theme/gridStyle'
 import { Backdrop, type Box } from '../lib/gridPaint'
+import { waveMorph } from '../lib/waveMorph'
 
 /**
  * Themed canvas-datagrid for a catalog (sounds or patches). Rows need a hidden \`id\` and a 1-based \`n\` (the row's
@@ -48,7 +49,7 @@ const props = defineProps<{
   /** a row dragged by its grip can be dropped on another to move it there (while the grid isn't sorted) */
   reorder?: boolean
   /** painted big and faint behind the rows: the selected item's waveform */
-  backdrop?: { peaks?: Float32Array; hue?: number } | null
+  backdrop?: { key?: string; peaks?: Float32Array; hue?: number } | null
   /** changes when the rows come in a new order of their own (≈ similar, a description): the grid shows that order */
   order?: unknown
   /** the slot (a panel) above the grid, whatever the width */
@@ -186,6 +187,7 @@ function applyTheme() {
 
 // ── the backdrop: a canvas under the (transparent) grid ──
 const backdrop = new Backdrop()
+const backMorph = waveMorph()
 function paintBack() {
   const c = back.value
   if (!c) return
@@ -200,7 +202,8 @@ function paintBack() {
   const ctx = c.getContext('2d')!
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   backdrop.paint(ctx, w, h, board.theme, {
-    peaks: props.backdrop?.peaks,
+    // another item selected (or its wave replaced): the backdrop's outline morphs into the new one
+    peaks: backMorph.at(props.backdrop?.key ?? null, props.backdrop?.peaks) ?? undefined,
     hue: props.backdrop?.hue,
     live: activeVoices.value.length > 0,
     level: Math.max(...levels.value),
@@ -212,7 +215,7 @@ function tick() {
   ticking = 0
   paintBack()
   if (props.animate) grid?.draw()
-  if (activeVoices.value.length || backdrop.busy || props.animate) schedule()
+  if (activeVoices.value.length || backdrop.busy || props.animate || backMorph.moving()) schedule()
 }
 function schedule() {
   if (ticking) return
@@ -528,11 +531,16 @@ onMounted(() => {
 // a new array whenever a row changes (the parents' computeds): no need to walk every row's fields to notice
 watch(() => props.rows, sync)
 watch(() => board.theme, applyTheme)
+// waveform peaks arriving from the analysis workers
+watch(() => board.peaksVersion, () => grid?.draw())
 watch(
   () => [props.selectedId, props.playing, props.toggles, props.buttons],
   () => grid?.draw(),
 )
-watch(() => props.backdrop, paintBack)
+watch(() => props.backdrop, () => {
+  paintBack()
+  if (backMorph.moving()) schedule()
+})
 // rows in a new order of their own: sorted by # (their place in it), whatever column the grid was sorted by
 watch(
   () => props.order,

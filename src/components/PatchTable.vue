@@ -4,6 +4,7 @@ import { activeVoices } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { fmtSec, midiNoteName, padHue } from '../lib/format'
 import { hueColor, paintScore, paintWave, type Box } from '../lib/gridPaint'
+import { waveMorphs } from '../lib/waveMorph'
 import DataGrid, { type GridRow } from './DataGrid.vue'
 import { carrierSlot, type Patch, type Sound } from '../types'
 
@@ -87,6 +88,8 @@ function onEdit(id: string, column: string, value: string) {
 // ── what the cards show, painted ──
 const hueOf = (s: Sound) => padHue(s.settings.tag, s.settings.name, board.theme.padHues)
 const patchOf = (id: string) => board.patches.find((p) => p.id === id)
+/** a slot's wave changed (a garden stitch, a catch, a wave assigned): its outline morphs in (lib/waveMorph.ts) */
+const morphs = waveMorphs()
 const painters = {
   /** the three slots side by side: each sound's waveform in its colour, a mod-only one dim, an empty one a line */
   vcos: (ctx: CanvasRenderingContext2D, box: Box, row: GridRow) => {
@@ -96,7 +99,7 @@ const painters = {
     p.slots.forEach((x, i) => {
       const snd = x ? board.layerSound(x.layer) : undefined
       const b = { x: box.x + i * (w + 4), y: box.y, width: w, height: box.height }
-      paintWave(ctx, snd && board.peaksOf(snd.audioId), b, snd ? hueColor(hueOf(snd), 58, x!.audible || i === 0 ? 0.85 : 0.35) : 'rgba(255, 255, 255, 0.15)')
+      paintWave(ctx, morphs.at(`${row.id}|${i}`, snd?.audioId, snd && board.peaksOf(snd.audioId)), b, snd ? hueColor(hueOf(snd), 58, x!.audible || i === 0 ? 0.85 : 0.35) : 'rgba(255, 255, 255, 0.15)')
     })
   },
   sim: (ctx: CanvasRenderingContext2D, box: Box, row: GridRow) => paintScore(ctx, box, board.patchScores?.get(row.id), board.theme),
@@ -121,7 +124,7 @@ const backdrop = computed(() => {
   const p: Patch | null = board.selectedPatch
   const c = p && carrierSlot(p)
   const snd = c ? board.layerSound(c.layer) : undefined
-  return snd ? { peaks: board.peaksOf(snd.audioId), hue: hueOf(snd) } : null
+  return snd ? { key: snd.audioId, peaks: board.peaksOf(snd.audioId), hue: hueOf(snd) } : null
 })
 
 function onPlay(id: string) {
@@ -144,6 +147,7 @@ function onPlay(id: string) {
     :accent="['root', 'vco1']"
     :buttons="buttons"
     :painters="painters"
+    :animate="morphs.active.value"
     :backdrop="backdrop"
     :order="board.similarTo.patches"
     hint="▷ / double-click = load and play · click a row to load the patch · ☰ = edit it in the rack · ≈ = order by likeness to that patch · ⇧ / ⌘-click to pick several, Delete to remove them · double-click name or tags to edit · click a column title to sort"

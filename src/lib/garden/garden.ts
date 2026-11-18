@@ -161,6 +161,47 @@ export interface Garden {
   history: GardenTake[]
   /** the takes SAVEd into the samples, oldest first */
   saved: SavedTake[]
+  /** the PLAY view's pads grow too: at each new clip, the pads chosen walk somewhere new (PadGrowth) */
+  pads: PadGrowth
+}
+
+/**
+ * The pads growing with the clips: each time a new clip is stitched in, every pad in `pads` steps to a new point (its
+ * x and y: 16 parameters for all eight), a seeded walk of up to `amount` from where it is -- the same garden, seed
+ * and step move them the same way. The move starts OFFSET loops after the stitch and glides over XFADE.
+ */
+export interface PadGrowth {
+  on: boolean
+  /** 0..1: how far a pad can step at once (of its whole width / height) */
+  amount: number
+  /** the pads that move (PadId: perform, grain, lfo, fx, pitch, texture, echo, tone) */
+  pads: string[]
+}
+export const PAD_GROWTH_PADS = ['perform', 'grain', 'lfo', 'fx', 'pitch', 'texture', 'echo', 'tone'] as const
+/** the pads that move to begin with: not the level (PERFORM) nor the pitch, which would be jarring to have wander */
+export const defaultPadGrowth = (): PadGrowth => ({ on: false, amount: 0.25, pads: ['grain', 'lfo', 'fx', 'texture', 'echo', 'tone'] })
+
+/** Where a pad steps to at `step`: from `from`, up to `amount` each way on each axis, folded back in at the edges. */
+export function padTarget(seed: number, step: number, pad: string, from: { x: number; y: number }, amount: number): { x: number; y: number } {
+  const fold = (v: number) => {
+    let x = ((v % 2) + 2) % 2
+    if (x > 1) x = 2 - x
+    return x
+  }
+  const a = Math.min(1, Math.max(0, amount))
+  return {
+    x: fold(from.x + (rand01(seed, 'pad', pad, 'x', step) * 2 - 1) * a),
+    y: fold(from.y + (rand01(seed, 'pad', pad, 'y', step) * 2 - 1) * a),
+  }
+}
+
+/**
+ * Seconds after a stitch the pads start moving: OFFSET loops of the clip, wrapped into the time until the next stitch
+ * (`cycle`, s) so a move always lands between two of them. OFFSET 0: with the new clip, gliding over its crossfade.
+ */
+export function padMoveDelay(offset: number, loopSec: number, cycle: number): number {
+  const d = Math.max(0, offset) * Math.max(0, loopSec)
+  return cycle > 0 ? d % cycle : d
 }
 
 /** prompts remembered in the history */
@@ -233,6 +274,7 @@ export function defaultGarden(): Garden {
     suffix: '',
     history: [],
     saved: [],
+    pads: defaultPadGrowth(),
   }
 }
 
@@ -248,6 +290,7 @@ export function migrateGarden(g: Partial<Garden> | null | undefined): Garden {
     grids: { ...d.grids, ...(g.grids ?? {}) },
     history: (g.history ?? []).slice(0, HISTORY_MAX),
     saved: g.saved ?? [],
+    pads: { ...d.pads, ...(g.pads ?? {}) },
   }
 }
 

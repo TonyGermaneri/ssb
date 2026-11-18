@@ -15,6 +15,7 @@ import { dot, loadTextModel, type TextModel } from '../embed/model2vec'
 import { patchTexts, soundTexts } from './describe'
 import { patchFeatures, soundFeatures, standardise, statsOf, type Stats } from './features'
 import { BANDS, cycleTimbre, sampleTimbre } from './timbre'
+import { timbreAsync } from '../analysis'
 import { queryPushes, spellQuery, STOP, type Push } from './axes'
 import type { Patch, PatchSlot, Sound } from '../../types'
 
@@ -78,6 +79,8 @@ export class SemanticIndex {
   private texts = new Map<string, Float32Array>()
   private entries = new WeakMap<object, Entry>()
   private timbres = new Map<string, Float32Array>()
+  /** timbres being worked out (lib/analysis.ts) */
+  private pending = new Set<string>()
   private stats = new Map<'sound' | 'patch', { at: number; stats: Stats }>()
   private loading: Promise<TextModel> | null = null
   /** bumped when audio arrives (the waves loaded, a sample decoded): entries without a timbre look again */
@@ -131,9 +134,23 @@ export class SemanticIndex {
     if (hit) return hit
     const a = this.host.audioOf(s)
     if (!a) return undefined
-    const t = 'cycle' in a ? cycleTimbre(a.cycle) : sampleTimbre(a.data, a.rate, a.from, a.to)
-    this.timbres.set(key, t)
-    return t
+    if ('cycle' in a) {
+      const t = cycleTimbre(a.cycle)
+      this.timbres.set(key, t)
+      return t
+    }
+    // a sample's FFTs go to the analysis workers; it has its timbre when they answer
+    if (!this.pending.has(key)) {
+      this.pending.add(key)
+      void timbreAsync(a.data, a.rate, a.from, a.to)
+        .then((t) => {
+          this.timbres.set(key, t)
+          this.audioChanged()
+        })
+        .catch(() => this.timbres.set(key, sampleTimbre(a.data, a.rate, a.from, a.to)))
+        .finally(() => this.pending.delete(key))
+    }
+    return undefined
   }
 
   /** an item's entry, its parts filled in as they can be: words once the model is in, timbre once audio is */

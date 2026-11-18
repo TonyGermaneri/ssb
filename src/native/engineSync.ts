@@ -16,6 +16,8 @@
  * The engine plays host MIDI on its own (with or without this page open); clicks and the
  * computer keyboard reach it as commands from the board (`ssbCommand`).
  */
+import { sendPcm } from '../lib/pcmTransfer'
+import { voyageFades } from '../lib/voyage/stitch'
 import { computed, effectScope, watch, type ComputedRef, type EffectScope } from 'vue'
 import type { useBoard } from '../stores/board'
 import * as engine from '../audio/engine'
@@ -79,7 +81,9 @@ function soundJson(board: Board, sound: Sound) {
 /** the crossfade a growing garden's VCO stitches its new clips in with (0: no garden) */
 function gardenStitch(board: Board, layerId: string): number {
   const g = board.selectedPatch?.slots.find((x) => x?.layer.id === layerId)?.garden
-  return g?.on ? Math.max(0.005, g.fade) : 0
+  if (g?.on) return Math.max(0.005, g.fade)
+  // VOYAGE: a caught rock's sound stitches in too (lib/voyage/stitch.ts)
+  return voyageFades.get(layerId) ?? 0
 }
 
 /** how many clicked sounds the engine keeps besides the ones it always needs */
@@ -131,8 +135,6 @@ function metaJson(board: Board, ids: string[]) {
   }
 }
 
-/** Planar float32 of a decoded buffer, base64 (the engine plays exactly what the page decoded). */
-const encode = (buffer: AudioBuffer) => engine.planarBase64(buffer)
 
 export function startEngineSync(board: Board) {
   const sent = new Map<string, string>()
@@ -152,7 +154,9 @@ export function startEngineSync(board: Board) {
         .then(async () => {
           const buffer = engine.getBuffer(id)
           if (!buffer) return
-          await callNative('ssbAudio', id, buffer.sampleRate, Math.min(2, buffer.numberOfChannels), encode(buffer))
+          // the engine plays exactly what the page decoded: planar float32, in chunks (lib/pcmTransfer.ts), so the
+          // host's message thread never takes a whole sample at once
+          await sendPcm(callNative, id, buffer)
           uploaded.add(id)
         })
         .catch((e) => console.warn('engine upload failed', id, e))

@@ -95,21 +95,28 @@ export function cycleTimbre(cycle: Float32Array): Float32Array {
 }
 
 /** a sample's channel between two points (seconds): three Hann-windowed FFTs across it, pooled */
-export function sampleTimbre(data: Float32Array, rate: number, from = 0, to = data.length / rate): Float32Array {
-  const N = 4096
+/** the windows sampleTimbre listens to: N samples from a fifth, half and four fifths of the way through */
+export const TIMBRE_N = 4096
+export function timbreWindows(data: Float32Array, rate: number, from = 0, to = data.length / rate): Float32Array[] {
+  const N = TIMBRE_N
   const a = Math.max(0, Math.floor(from * rate))
   const z = Math.min(data.length, Math.ceil(to * rate))
+  return [0.2, 0.5, 0.8].map((at) => {
+    const start = Math.max(a, Math.min(z - N, Math.floor(a + (z - a) * at - N / 2)))
+    const w = new Float32Array(N)
+    for (let i = 0; i < N; i++) w[i] = data[start + i] ?? 0
+    return w
+  })
+}
+/** A timbre from timbreWindows' windows (the FFT work: what the analysis worker does). */
+export function timbreOfWindows(windows: Float32Array[], rate: number): Float32Array {
+  const N = TIMBRE_N
   const power = new Float32Array(BANDS)
   const re = new Float32Array(N)
   const im = new Float32Array(N)
-  for (const at of [0.2, 0.5, 0.8]) {
-    const start = Math.max(a, Math.min(z - N, Math.floor(a + (z - a) * at - N / 2)))
-    re.fill(0)
+  for (const w of windows) {
     im.fill(0)
-    for (let i = 0; i < N; i++) {
-      const v = data[start + i] ?? 0
-      re[i] = v * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (N - 1)))
-    }
+    for (let i = 0; i < N; i++) re[i] = (w[i] ?? 0) * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (N - 1)))
     fft(re, im)
     for (let k = 1; k < N / 2; k++) {
       const b = bandOf((k * rate) / N)
@@ -117,4 +124,7 @@ export function sampleTimbre(data: Float32Array, rate: number, from = 0, to = da
     }
   }
   return finish(power)
+}
+export function sampleTimbre(data: Float32Array, rate: number, from = 0, to = data.length / rate): Float32Array {
+  return timbreOfWindows(timbreWindows(data, rate, from, to), rate)
 }

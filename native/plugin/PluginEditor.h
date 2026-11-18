@@ -29,6 +29,19 @@ private:
     /** copies the MCP bridge to its fixed place; its path, or "" if this build has none */
     juce::String installMcpBridge();
     std::optional<juce::WebBrowserComponent::Resource> provide (const juce::String& path);
+    /** a cached sample for the page, as binary (rate, channels, frames, planar float32): "ssb-audio/<audioId>" */
+    std::optional<juce::WebBrowserComponent::Resource> provideAudio (const juce::String& audioId);
+
+    /** The page's samples on their way in, a chunk at a time (ssbAudioBegin / Chunk / End): each chunk's base64 is
+        decoded on the sample store's worker threads, so no single call holds the message thread -- the host's. */
+    struct Upload
+    {
+        std::shared_ptr<ssb::Sample> sample;
+        std::shared_ptr<std::atomic<int>> pending = std::make_shared<std::atomic<int>> (0);
+    };
+    std::map<juce::String, Upload> uploads;
+    /** lets work finished on a worker thread find out whether this editor still exists */
+    std::shared_ptr<bool> alive = std::make_shared<bool> (true);
 
     SsbProcessor& plugin;
     juce::WebBrowserComponent browser;
