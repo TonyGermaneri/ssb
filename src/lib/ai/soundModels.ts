@@ -47,8 +47,10 @@ export interface SoundModelInfo {
   /** options every request carries */
   extraOptions?: Record<string, string | number | boolean>
   /** run in SSB's page (transformers.js in a worker: lib/ai/pageSound.ts), not by audio.cpp, which hasn't it; SoundHost
-   * only downloads its files */
+   * only downloads its files -- and in a browser tab, where there's no SoundHost, the page fetches them itself (tabSound.ts) */
   page?: boolean
+  /** a page model's Hugging Face repo and pinned revision (its files' URLs are under it): what a browser tab loads it from */
+  hub?: { repo: string; revision: string }
   /** it sings: a request may carry lyrics (SoundRequest.lyrics) */
   lyrics?: boolean
   /** typed in by the user: not one of the catalog's */
@@ -58,7 +60,8 @@ export interface SoundModelInfo {
 const MIRROR = 'https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/main'
 const SAO = 'https://huggingface.co/stabilityai/stable-audio-open-1.0/resolve/main'
 /** Xenova's ONNX MusicGen Small, at the revision SSB was tested with */
-const MUSICGEN = 'https://huggingface.co/Xenova/musicgen-small/resolve/6a8096dabfff72909ef5eae41461408e29ae20fd'
+const MUSICGEN_HUB = { repo: 'Xenova/musicgen-small', revision: '6a8096dabfff72909ef5eae41461408e29ae20fd' }
+const MUSICGEN = `https://huggingface.co/${MUSICGEN_HUB.repo}/resolve/${MUSICGEN_HUB.revision}`
 /** audio.cpp's Stable Audio loader reads the prompt encoder from this folder of a safetensors checkpoint */
 const T5 = 't5gemma-b-b-ul2'
 
@@ -220,10 +223,13 @@ export const SOUND_MODELS: SoundModelInfo[] = [
     defaultSteps: 1,
     defaultGuidance: 3,
     page: true,
+    hub: MUSICGEN_HUB,
   },
 ]
 
 export const DEFAULT_SOUND_MODEL = SOUND_MODELS[0].id
+/** the one a browser tab can run (and so its default) */
+export const TAB_SOUND_MODEL = 'musicgen-small-q8'
 
 /**
  * A model from what the user (or the agent) typed: a catalog id or label or tag ("moss", "stable audio 3 small

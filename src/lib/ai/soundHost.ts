@@ -1,7 +1,8 @@
 /**
  * The sound models' host, as the page reaches it: the SSB app or plugin (native/plugin/SoundHost), through the
  * `ssbSound` native function. It downloads models, runs one at a time in audio.cpp (a helper process, out of the
- * DAW's), and generates clips with it. A browser tab has none: the feature is the app's and the plugin's.
+ * DAW's), and generates clips with it. A browser tab has none: there only the models SSB runs in its page (MusicGen)
+ * can play, their files fetched by the page itself (tabSound.ts).
  */
 import { callNative, inNative } from '../../native/bridge'
 import { AiError } from './types'
@@ -75,7 +76,10 @@ export interface SoundHostApi {
   generate(model: SoundModelInfo, req: SoundRequest): Promise<SoundClip>
 }
 
-export const soundModelsAvailable = () => inNative()
+/** some sound model can run here: every model in the app and the plugin, the page's own (MusicGen) in a browser tab */
+export const soundModelsAvailable = () => true
+/** whether `m` can run here (audio.cpp's need the app or the plugin) */
+export const canRunHere = (m: SoundModelInfo | null | undefined): boolean => !!m && (inNative() || !!m.page)
 
 /** a model as the native side takes it (plus the token, for gated files) */
 const specOf = (m: SoundModelInfo, token?: string) => ({ id: m.id, label: m.label, family: m.family, task: m.task, main: m.main, files: m.files, ...(m.gated && token ? { token } : {}) })

@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useAi, type Item } from '../lib/ai/store'
 import { errorMessage, PROVIDERS, type Effort, type ProviderKind } from '../lib/ai/types'
 import { downloadBytes, fmtBytes, SOUND_MODELS } from '../lib/ai/soundModels'
+import { canRunHere } from '../lib/ai/soundHost'
 import ComboBox from './ComboBox.vue'
 import { useBoard } from '../stores/board'
 import { preview } from '../audio/engine'
@@ -73,10 +74,10 @@ const STARTERS = [
   'Make a punchy FM bass for techno; keep it mono with a short glide.',
   'Look at the selected patch: what does it sound like, and how could it be better?',
   'Find three bell-like waves and build a glassy keys patch from them.',
-  // the sound models are the app's and the plugin's
-  ...(ai.soundAvailable
+  // (a browser tab has MusicGen only: music, not effects)
+  ...(inNative()
     ? ['Generate a deep sci-fi door whoosh with the sound model and put it on the board.', 'Make a rainy-night ambience with the sound model, then build a slow evolving pad patch around it.']
-    : []),
+    : ['Generate a lo-fi rhodes groove with MusicGen and build a patch that plays it as a loop.']),
 ]
 function startRename(id: string, title: string) {
   renaming.value = id
@@ -96,11 +97,13 @@ async function test() {
 }
 const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
-// ── the sound models (make_sound): the SSB app or plugin runs them natively (none in a browser tab) ──
+// ── the sound models (make_sound): the SSB app or plugin runs them natively (a browser tab: MusicGen, in the page) ──
 const sound = computed(() => ai.soundStatus)
 const pick = computed(() => ai.soundPick)
 const labelOf = (id?: string) => (id ? (SOUND_MODELS.find((m) => m.id === id)?.label ?? (pick.value?.id === id ? pick.value.label : id)) : '')
-const soundOptions = SOUND_MODELS.map((m) => ({
+// (a browser tab: only the ones SSB runs in its page)
+const inTab = !inNative()
+const soundOptions = SOUND_MODELS.filter(canRunHere).map((m) => ({
   value: m.id,
   label: m.label,
   detail: `${fmtBytes(downloadBytes(m))} · ${m.channels === 2 ? 'stereo' : 'mono'}${m.gated ? ' · token' : ''}`,
@@ -348,21 +351,26 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
             patches. SSB runs it on this computer (audio.cpp, on the GPU), one at a time; the agent can load or switch models itself, and asks before
             anything downloads.
           </p>
+          <p v-if="inTab" class="hint">
+            In a browser tab only MusicGen Small runs (in the page, on the CPU); the others need the SSB app or plugin. Its files are kept in this
+            browser's storage for this site.
+          </p>
           <p v-if="!ai.soundAvailable" class="mcp-state">Needs the SSB app or plugin: a browser tab can't run a model.</p>
           <template v-else>
             <p v-if="sound && !sound.available" class="err">This build of SSB doesn't carry the sound model helper.</p>
             <label>
-              MODEL (PICK ONE, OR PASTE A GGUF'S HUGGING FACE URL)
-              <ComboBox v-model="ai.settings.sound.model" :options="soundOptions" placeholder="huggingface.co/org/repo/blob/main/model.gguf" />
+              {{ inTab ? 'MODEL' : "MODEL (PICK ONE, OR PASTE A GGUF'S HUGGING FACE URL)" }}
+              <ComboBox v-model="ai.settings.sound.model" :options="soundOptions" :placeholder="inTab ? 'MusicGen Small' : 'huggingface.co/org/repo/blob/main/model.gguf'" />
             </label>
             <template v-if="pick">
               <p class="hint">
                 <a :href="pick.url" target="_blank" rel="noopener">{{ pick.url.replace('https://', '') }}</a> · {{ pick.channels === 2 ? 'stereo' : 'mono' }}
                 {{ pick.sampleRate / 1000 }} kHz · up to {{ pick.maxSeconds }} s · {{ pick.license }}<template v-if="pick.custom"> · a custom GGUF: a MOSS-SoundEffect or Stable Audio model for audio.cpp</template>
               </p>
-              <p v-if="soundLoaded" class="test">✓ Loaded ({{ sound?.backend }}, {{ sound?.loaded?.loadSeconds?.toFixed(0) }} s to load).</p>
+              <p v-if="!canRunHere(pick)" class="err">{{ pick.label }} needs the SSB app or plugin: a browser tab can only run MusicGen Small.</p>
+              <p v-else-if="soundLoaded" class="test">✓ Loaded ({{ sound?.backend }}, {{ sound?.loaded?.loadSeconds?.toFixed(0) }} s to load).</p>
               <p v-else-if="toDownload !== 0" class="warn">
-                ⚠ Loading it downloads <b>{{ toDownload ? fmtBytes(toDownload) : 'a file of unknown size' }}</b> the first time, into SSB's folder on this computer, and it
+                ⚠ Loading it downloads <b>{{ toDownload ? fmtBytes(toDownload) : 'a file of unknown size' }}</b> the first time, into {{ inTab ? "this browser's storage" : "SSB's folder on this computer" }}, and it
                 takes about {{ pick.memoryGb }} GB of memory while loaded.
               </p>
               <p v-else class="hint">Downloaded: loading it takes a few seconds.</p>
@@ -383,12 +391,12 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
             </template>
             <div v-if="confirmDownload" class="confirm-dl">
               <v-icon icon="mdi-download" color="secondary" />
-              <span>Download {{ toDownload ? fmtBytes(toDownload) : 'it' }} for {{ pick?.label }}? It's once; CANCEL stops it, and it resumes later.</span>
+              <span>Download {{ toDownload ? fmtBytes(toDownload) : 'it' }} for {{ pick?.label }}? It's once; CANCEL stops it, and it {{ inTab ? 'keeps the files it finished' : 'resumes later' }}.</span>
               <button class="hw-btn lit" @click="downloadAndLoad">DOWNLOAD</button>
               <button class="hw-btn" @click="confirmDownload = false">CANCEL</button>
             </div>
             <div class="row">
-              <button v-if="!soundLoaded" class="hw-btn" :disabled="!sound?.available || !!sound?.task || !pick" title="Load it (downloading it first if it isn't here)" @click="loadSound">
+              <button v-if="!soundLoaded" class="hw-btn" :disabled="!sound?.available || !!sound?.task || !canRunHere(pick)" title="Load it (downloading it first if it isn't here)" @click="loadSound">
                 {{ toDownload !== 0 ? 'DOWNLOAD + LOAD' : 'LOAD' }}
               </button>
               <button v-if="sound?.loaded" class="hw-btn" :disabled="!!sound.task" title="Free its memory" @click="ai.unloadSound()">UNLOAD</button>

@@ -1,13 +1,15 @@
 /**
  * Sound models SSB runs in its page, not in audio.cpp (SoundModelInfo.page: MusicGen, which audio.cpp hasn't): the
  * model in a worker (workers/musicgen.worker.ts), its files downloaded by SoundHost like any model's and served by the
- * editor at ssb-models/<id>/.
+ * editor at ssb-models/<id>/ -- or, in a browser tab, fetched by the page into the browser's cache (tabSound.ts, the
+ * `native` host there).
  *
  * `routedSoundHost` puts it behind the one SoundHostApi the tools, the settings and the garden use: a page model's
  * load, generate and cancel go to the worker; everything else (downloads, checks, deletes, and every audio.cpp model)
  * to the native host. One model at a time, as ever: loading a page model unloads audio.cpp's, and the reverse.
  */
 import { AiError } from './types'
+import { inNative } from '../../native/bridge'
 import type { SoundClip, SoundHostApi, SoundRequest, SoundStatus, SoundTask } from './soundHost'
 import type { SoundModelInfo } from './soundModels'
 import type { MusicgenJob, MusicgenReply } from '../../workers/musicgen.worker'
@@ -50,7 +52,9 @@ export function workerEngine(): PageSoundEngine {
         w(e.data)
       }
       const base = document.baseURI
-      const r = await send({ op: 'init', id: seq++, model: m.id, local: new URL('ssb-models/', base).href, ort: { mjs: new URL(ortMjs, base).href, wasm: new URL(ortWasm, base).href } })
+      // (the app / plugin: the files SoundHost downloaded, served by the editor; a tab: the browser's cache, tabSound.ts)
+      const local = inNative() || !m.hub ? new URL('ssb-models/', base).href : null
+      const r = await send({ op: 'init', id: seq++, model: m.id, local, ...(m.hub ? { hub: m.hub } : {}), ort: { mjs: new URL(ortMjs, base).href, wasm: new URL(ortWasm, base).href } })
       if (r.op !== 'ready') {
         stop()
         throw new AiError(r.op === 'error' ? r.error : `${m.label} did not load`, 'server')

@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { SKETCH_MODEL, useGarden } from '../stores/garden'
 import { DEFAULT_GARDEN_MODEL, FADE_MAX, OFFSET_MAX } from '../lib/garden/garden'
 import { SOUND_MODELS, soundModelFrom } from '../lib/ai/soundModels'
-import { soundModelsAvailable } from '../lib/ai/soundHost'
+import { canRunHere } from '../lib/ai/soundHost'
 import type { PatchSlot } from '../types'
 import Knob from './Knob.vue'
 
@@ -71,14 +71,19 @@ const navTitle = (dir: -1 | 1) => {
 }
 
 // ☰: the sound model and the words to avoid
-const MODEL_CHOICES = [
-  { id: '', label: `${SOUND_MODELS.find((m) => m.id === DEFAULT_GARDEN_MODEL)?.label} (fastest)` },
-  ...SOUND_MODELS.filter((m) => m.id !== DEFAULT_GARDEN_MODEL).map((m) => ({ id: m.id, label: m.label })),
-  { id: SKETCH_MODEL, label: 'SKETCH — a little synth plays the words (no model)' },
-]
-const hasModels = soundModelsAvailable()
+// (a browser tab runs only MusicGen: there the default, which it can't run, is SKETCH)
+const tab = !canRunHere(soundModelFrom(DEFAULT_GARDEN_MODEL))
+const MODEL_CHOICES = tab
+  ? [{ id: '', label: 'SKETCH — a little synth plays the words (no model)' }, ...SOUND_MODELS.filter(canRunHere).map((m) => ({ id: m.id, label: m.label }))]
+  : [
+      { id: '', label: `${SOUND_MODELS.find((m) => m.id === DEFAULT_GARDEN_MODEL)?.label} (fastest)` },
+      ...SOUND_MODELS.filter((m) => m.id !== DEFAULT_GARDEN_MODEL).map((m) => ({ id: m.id, label: m.label })),
+      { id: SKETCH_MODEL, label: 'SKETCH — a little synth plays the words (no model)' },
+    ]
 // (the VCO's model: its wave prompt's and its garden's; a clip the one before made, not yet in, is let go)
 const model = computed({ get: () => props.x.garden?.model ?? '', set: (v: string) => garden.setModel(props.slot, v) })
+// (a model that can't run here: SKETCH plays instead)
+const runs = computed(() => model.value === SKETCH_MODEL || (!model.value && tab) || canRunHere(soundModelFrom(model.value || DEFAULT_GARDEN_MODEL)))
 // ☰'s lyrics: for a model that sings
 const sings = computed(() => !!soundModelFrom(props.x.garden?.model || DEFAULT_GARDEN_MODEL)?.lyrics)
 const ownLyrics = computed({ get: () => !!props.x.garden?.ownLyrics, set: (v: boolean) => { const x = g(); if (x) x.ownLyrics = v } })
@@ -167,7 +172,7 @@ const fmtFade = (v: number) => `XF ${v < 1 ? `${Math.round(v * 1000)}ms` : `${v.
             <option v-for="m in MODEL_CHOICES" :key="m.id" :value="m.id">{{ m.label }}</option>
           </select>
         </label>
-        <small v-if="!hasModels && model !== SKETCH_MODEL">No sound models in a browser tab: SKETCH plays the words.</small>
+        <small v-if="!runs">In a browser tab only MusicGen Small runs: SKETCH plays the words.</small>
         <small v-else>The VCO's prompt and its garden both use it. It must be downloaded first (AI settings › SOUND MODEL): neither starts a download.</small>
         <label>
           <span>AVOID</span>

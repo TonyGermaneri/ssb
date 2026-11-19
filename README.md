@@ -120,7 +120,7 @@ A sound dragged over a tab opens it, and dropped there fills that slot.
   sits in that slot, and pressing it again takes it out; the previous sound is replaced). With no patch selected this
   starts one.
 - **REMOVE** empties a slot.
-- **Prompt a wave** (the app and the plugin, with a sound model downloaded): the field under a slot's bar asks the
+- **Prompt a wave** (with a sound model downloaded; in a browser tab, MusicGen Small): the field under a slot's bar asks the
   VCO's sound model (its **☰ › SOUND MODEL**, beside GROW — the same one its garden grows with) for a clip from a few
   words (*a warm sustained cello note, C3*; *glass harmonica, airy*), and the clip becomes that slot's sound: trimmed,
   faded and normalised, tuned from its pitch when it holds a note, added to the board tagged `vco`. **➤** (or Enter)
@@ -314,7 +314,7 @@ tools:
   side; a setting the model doesn't take (temperature on a reasoning model) is left out rather than failing the
   request. Local models that write a tool call into their text (Qwen3.5 does, in its thinking) still get it run.
 
-**Sound models** (⚙ ▸ SOUND MODEL; the app and the plugin, not a browser tab): text-to-audio models the agent briefs
+**Sound models** (⚙ ▸ SOUND MODEL; the app and the plugin — a browser tab runs only MusicGen Small): text-to-audio models the agent briefs
 to generate sound effects, foley, ambiences, loops and notes, as sub-agents it can load and switch itself. SSB runs
 them on this computer with [audio.cpp](https://github.com/0xShug0/audio.cpp) (on the GPU: Metal on a Mac), in a helper
 process every bundle carries (`Contents/Helpers/audiocpp_server`), so a model's memory, or a crash, stays out of the
@@ -331,7 +331,9 @@ DAW. Nothing to install: pick a model and press **DOWNLOAD + LOAD**.
 
 The Stable Audio models are under the Stability AI Community License. MusicGen isn't an audio.cpp model: SSB downloads its ONNX files the same way and runs it in the page, in a
 worker; loading it unloads the helper's model, and the reverse (one at a time), and a stopped MusicGen clip loads it
-again. Its weights are for non-commercial use. ACE-Step is the BF16 package: audio.cpp's
+again. It's the one model that runs in a **browser tab** too: there SSB fetches its files from the Hugging Face Hub (pinned to a
+revision) into the browser's storage for the site (the Cache API, where transformers.js looks), with progress; a stopped
+download keeps the files it finished, and the browser is asked to keep them rather than clear them when space runs short. Its weights are for non-commercial use. ACE-Step is the BF16 package: audio.cpp's
 Q8 one quantises its planner, which then writes a different song. You keep typing short prompts: with ACE-Step as a
 VCO's ☰ model, the prompt's automation button (and the garden) has the word model write four lines to sing about the
 prompt — or the garden's caption — and ACE-Step sings them (10 s clips; a garden's AVOID words for voices let go; with
@@ -393,7 +395,7 @@ which pauses its growth (the clip playing loops on), and **💾**, which saves t
   off "speech, vocals" for that clip.
 - **Growing**: once the VCO sounds, the next clip is made in the background — Stable Audio 3 Small (8 steps, seconds)
   by default, which must be downloaded (AI settings › SOUND MODEL); SKETCH, a little synth that plays the words, needs
-  nothing and is what a browser tab uses. After **LOOPS** passes of the clip (2 s at least) the new one is **stitched**
+  nothing and is what a browser tab uses unless the VCO's ☰ picks MusicGen Small. After **LOOPS** passes of the clip (2 s at least) the new one is **stitched**
   in with an equal-power crossfade (**XFADE**, up to 10 s: longer than a loop, several loops
   of the old clip and the new overlap; the next swap waits for it to finish) — the note never stops. **OFFSET** pushes
   a VCO's swaps back by that many loops, so VCOs with the same LOOPS don't all swap together. The new clip starts at

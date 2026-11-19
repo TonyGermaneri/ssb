@@ -9,9 +9,11 @@ import type { Sound } from '../../types'
 import type { AgentTool, ToolReply } from './agent'
 import { clipAsync } from '../analysis'
 import type { clipPitch } from './audio'
-import { DEFAULT_SOUND_MODEL, downloadBytes, fmtBytes, SOUND_MODELS, soundModelFrom, type SoundModelInfo } from './soundModels'
-import { generateWithStop, loadAndWait, NativeSoundHost, type SoundHostApi, type SoundStatus } from './soundHost'
+import { DEFAULT_SOUND_MODEL, downloadBytes, TAB_SOUND_MODEL, fmtBytes, SOUND_MODELS, soundModelFrom, type SoundModelInfo } from './soundModels'
+import { canRunHere, generateWithStop, loadAndWait, NativeSoundHost, type SoundHostApi, type SoundStatus } from './soundHost'
 import { routedSoundHost } from './pageSound'
+import { TabSoundFiles } from './tabSound'
+import { inNative } from '../../native/bridge'
 import { defaultSoundSettings, errorMessage, type SoundSettings } from './types'
 
 type Board = ReturnType<typeof useBoard>
@@ -208,7 +210,8 @@ export function createSoundTools(board: Board, agent: SoundAgent): AgentTool[] {
       run: async (): Promise<ToolReply> => {
         const host = agent.host()
         const selected = agent.selected()
-        const models = [...SOUND_MODELS, ...(selected?.custom ? [selected] : [])]
+        // (a browser tab: only the ones that run there)
+        const models = [...SOUND_MODELS, ...(selected?.custom ? [selected] : [])].filter(canRunHere)
         let st: SoundStatus
         try {
           st = await host.status()
@@ -348,7 +351,8 @@ let sharedToken: () => string = () => ''
 /** the page's one sound host (its token: the latest settings asking for it) */
 function sharedSoundHost(token: () => string): SoundHostApi {
   sharedToken = token
-  return (shared ??= routedSoundHost(new NativeSoundHost(() => sharedToken())))
+  // (a browser tab has no helper: the page fetches a page model's files itself, and runs nothing else)
+  return (shared ??= routedSoundHost(inNative() ? new NativeSoundHost(() => sharedToken()) : new TabSoundFiles()))
 }
 
 export function soundAgentFrom(settings: () => SoundSettings | null | undefined, hooks: Pick<SoundAgent, 'onLoaded' | 'onStatus'> = {}, host?: SoundHostApi): SoundAgent {
@@ -358,7 +362,7 @@ export function soundAgentFrom(settings: () => SoundSettings | null | undefined,
   const native = host ?? sharedSoundHost(() => s().hfToken)
   return {
     host: () => native,
-    selected: () => soundModelFrom(s().model) ?? soundModelFrom(DEFAULT_SOUND_MODEL),
+    selected: () => [soundModelFrom(s().model), soundModelFrom(DEFAULT_SOUND_MODEL), soundModelFrom(TAB_SOUND_MODEL)].find(canRunHere) ?? null,
     hasToken: () => !!s().hfToken,
     ...hooks,
   }

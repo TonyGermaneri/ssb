@@ -6,6 +6,13 @@ import { promptSlotWave, soundAgentFrom, VCO_PROMPT_SECONDS } from './soundTools
 import { createTools } from './tools'
 import { encodeWav } from '../wav'
 
+// the app or the plugin, unless a test says a browser tab
+const where = vi.hoisted(() => ({ native: true }))
+vi.mock('../../native/bridge', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../native/bridge')>()),
+  inNative: () => where.native,
+}))
+
 const RATE = 24000
 
 /** a 16-bit mono WAV; `claim` overrides the data chunk's size (a streamed file says 0xFFFFFFFF) */
@@ -269,6 +276,17 @@ describe('the sound tools', () => {
     expect(out.models[4]).toMatchObject({ model: 'ace-step-1.5-turbo-bf16', download: '10.1 GB', sings: expect.stringMatching(/lyrics/) })
     expect(out.models[5]).toMatchObject({ model: 'musicgen-small-q8' })
     expect(out.models[6]).toMatchObject({ selected_in_settings: true, download: 'size unknown' })
+  })
+  it('in a browser tab sound_models lists only MusicGen, and the pick falls back to it', async () => {
+    where.native = false
+    try {
+      const { run, agent } = setup(fakeHost({}))
+      const out = JSON.parse((await run('sound_models', {})).text)
+      expect(out.models.map((m: { model: string }) => m.model)).toEqual(['musicgen-small-q8'])
+      expect(agent.selected()?.id).toBe('musicgen-small-q8')
+    } finally {
+      where.native = true
+    }
   })
   it('a build without the helper says so', async () => {
     const { run } = setup(fakeHost({ available: false }))

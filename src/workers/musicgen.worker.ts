@@ -1,13 +1,15 @@
 /**
  * MusicGen in the page (lib/ai/pageSound.ts starts it): transformers.js running Meta's MusicGen (an ONNX export,
  * lib/ai/soundModels.ts) on ONNX Runtime's WebAssembly, off the main thread. audio.cpp has no MusicGen, so it isn't
- * the sound helper's: SoundHost downloads its files like any model's and the editor serves them at ssb-models/<id>/.
+ * the sound helper's: SoundHost downloads its files like any model's and the editor serves them at ssb-models/<id>/ --
+ * or, in a browser tab, the page fetched them from the Hub into the browser's cache (lib/ai/tabSound.ts), where
+ * transformers.js finds them by their pinned URLs.
  * `init` loads it; `generate` makes one clip from a caption and answers it as a 16-bit WAV (transferred).
  */
 import { AutoTokenizer, env, MusicgenForConditionalGeneration, type PreTrainedTokenizer } from '@huggingface/transformers'
 
 export type MusicgenJob =
-  | { op: 'init'; id: number; model: string; local: string; ort: { mjs: string; wasm: string } }
+  | { op: 'init'; id: number; model: string; local: string | null; hub?: { repo: string; revision: string }; ort: { mjs: string; wasm: string } }
   | { op: 'generate'; id: number; prompt: string; seconds: number; guidance: number }
 export type MusicgenReply =
   | { id: number; op: 'ready' }
@@ -30,14 +32,25 @@ async function init(job: Extract<MusicgenJob, { op: 'init' }>) {
     onnx.wasm.proxy = false
   }
   env.useWasmCache = false
-  // only what SoundHost downloaded, served by the editor
-  env.allowRemoteModels = false
-  env.allowLocalModels = true
-  env.localModelPath = job.local
-  env.useBrowserCache = false
-  tokenizer = await AutoTokenizer.from_pretrained(job.model)
+  const tab = !job.local && job.hub
+  if (job.local) {
+    // the app / plugin: only what SoundHost downloaded, served by the editor
+    env.allowRemoteModels = false
+    env.allowLocalModels = true
+    env.localModelPath = job.local
+    env.useBrowserCache = false
+  } else {
+    // a tab: the browser's cache, which the page filled (anything missing comes from the Hub, at the pinned revision)
+    env.allowRemoteModels = true
+    env.allowLocalModels = false
+    env.useBrowserCache = true
+  }
+  const name = tab ? job.hub!.repo : job.model
+  const at = tab ? { revision: job.hub!.revision } : {}
+  tokenizer = await AutoTokenizer.from_pretrained(name, at)
   // (the codec at full precision: quantised, EnCodec's decoder hisses)
-  model = (await MusicgenForConditionalGeneration.from_pretrained(job.model, {
+  model = (await MusicgenForConditionalGeneration.from_pretrained(name, {
+    ...at,
     device: 'wasm',
     dtype: { text_encoder: 'q8', decoder_model_merged: 'q8', encodec_decode: 'fp32' },
   })) as MusicgenForConditionalGeneration

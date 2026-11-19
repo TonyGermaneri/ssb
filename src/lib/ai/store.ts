@@ -15,8 +15,9 @@ import { createSession, listModels } from './providers'
 import { createTools } from './tools'
 import { clipAsync } from '../analysis'
 import { promptSlotWave as promptSlot, soundAgentFrom } from './soundTools'
-import { soundModelFrom, type SoundModelInfo } from './soundModels'
-import { generateWithStop, soundModelsAvailable, type SoundCheck, type SoundStatus } from './soundHost'
+import { soundModelFrom, TAB_SOUND_MODEL, type SoundModelInfo } from './soundModels'
+import { inNative } from '../../native/bridge'
+import { canRunHere, generateWithStop, soundModelsAvailable, type SoundCheck, type SoundStatus } from './soundHost'
 import {
   addUsage,
   AiError,
@@ -87,6 +88,8 @@ export const useAi = defineStore('ai', () => {
   const board = useBoard()
   const stored = loadSettings()
   const settings = reactive<AiSettings>(stored.current)
+  // a browser tab runs only MusicGen: a pick it can't run (the app's default) becomes that
+  if (!inNative() && !canRunHere(soundModelFrom(settings.sound.model))) settings.sound.model = TAB_SOUND_MODEL
   const profiles = reactive(stored.profiles)
   watch(
     settings,
@@ -107,7 +110,7 @@ export const useAi = defineStore('ai', () => {
     Object.assign(settings, { provider: p, endpoint: saved?.endpoint ?? PROVIDERS[p].endpoint, apiKey: saved?.apiKey ?? '', model: saved?.model ?? PROVIDERS[p].model })
   }
   const configured = computed(() => !!settings.model && !!settings.endpoint && (!PROVIDERS[settings.provider].needsKey || !!settings.apiKey))
-  // ── the sound models (the SSB app or plugin runs them: soundHost.ts; none in a browser tab) ──
+  // ── the sound models (the SSB app or plugin runs them: soundHost.ts; a browser tab, MusicGen only: tabSound.ts) ──
   const soundAvailable = soundModelsAvailable()
   const soundStatus = ref<SoundStatus | null>(null)
   const soundError = ref('')

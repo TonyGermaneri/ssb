@@ -4,7 +4,7 @@ import { useBoard } from './board'
 import { useAi } from '../lib/ai/store'
 import * as engine from '../audio/engine'
 import { makeSound, soundAgentFrom } from '../lib/ai/soundTools'
-import { soundModelsAvailable } from '../lib/ai/soundHost'
+import { canRunHere } from '../lib/ai/soundHost'
 import { soundModelFrom } from '../lib/ai/soundModels'
 import { VCO_SUNG_SECONDS } from '../lib/ai/soundTools'
 import { errorMessage } from '../lib/ai/types'
@@ -181,7 +181,7 @@ export const useGarden = defineStore('garden', () => {
     const ctl = new AbortController()
     abort = ctl
     const started = performance.now()
-    const sketch = g.model === SKETCH_MODEL || !soundModelsAvailable()
+    const sketch = g.model === SKETCH_MODEL || !canRunHere(soundModelFrom(g.model || DEFAULT_GARDEN_MODEL))
     // a model that sings (ACE-Step) sings the rings' words, given room for the line
     const sung = !sketch && !!soundModelFrom(g.model || DEFAULT_GARDEN_MODEL)?.lyrics
     const seconds = sung ? Math.max(plan.seconds, VCO_SUNG_SECONDS) : plan.seconds
@@ -538,7 +538,7 @@ export const useGarden = defineStore('garden', () => {
   /** the model VCO `i`'s wave prompt and garden use: its ☰ choice (SKETCH where no model can run) */
   function modelOf(i: number): { id: string; sketch: boolean; info: ReturnType<typeof soundModelFrom> } {
     const id = slotOf(i)?.garden?.model || DEFAULT_GARDEN_MODEL
-    const sketch = id === SKETCH_MODEL || !soundModelsAvailable()
+    const sketch = id === SKETCH_MODEL || !canRunHere(soundModelFrom(id))
     return { id, sketch, info: sketch ? null : soundModelFrom(id) }
   }
 
