@@ -42,6 +42,9 @@ const introOpen = ref(
         }
       })()),
 )
+// (the app isn't there under the splash while it covers it -- mounted as it fades: the GPU is the splash's, and a
+// VOYAGE cockpit left open under it would starve the HUD; the board, its patches and sound are the stores', not this)
+const introCovering = ref(introOpen.value)
 const libraryOpen = ref(false)
 /** the library's tab when it opens: the AKWF wavetables, or the online sources */
 const libraryTab = ref<'akwf' | 'sfz'>('akwf')
@@ -219,7 +222,12 @@ onBeforeUnmount(() => {
 
 <template>
   <v-app>
-    <div class="console" :class="{ scanlines: board.master.scanlines }" :style="{ '--piano-h': board.master.piano.on ? '64px' : '0px' }">
+    <div
+      v-if="!introCovering"
+      class="console"
+      :class="{ scanlines: board.master.scanlines }"
+      :style="{ '--piano-h': board.master.piano.on ? '64px' : '0px' }"
+    >
       <div class="chrome">
         <MasterStrip @add="fileInput?.click()" @add-folder="folderInput?.click()" @library="openLibrary('sfz')" @waves="openLibrary('akwf')" @ai="openAi" />
       </div>
@@ -295,7 +303,7 @@ onBeforeUnmount(() => {
     <LibraryDialog v-if="libraryOpen" v-model="libraryOpen" :start="libraryTab" />
     <!-- kept once opened: a running request carries on with the dialog closed -->
     <AiDialog v-if="aiUsed" v-model="aiOpen" />
-    <HyperspaceIntro v-if="introOpen" @done="introOpen = false" />
+    <HyperspaceIntro v-if="introOpen" @reveal="introCovering = false" @done="(introOpen = false), (introCovering = false)" />
     <!-- an agent connected over MCP wants to do something that needs a yes -->
     <v-dialog :model-value="!!mcpStatus.approval" max-width="480" persistent>
       <div v-if="mcpStatus.approval" class="mcp-ask">

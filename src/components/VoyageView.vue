@@ -695,6 +695,18 @@ const caption = computed(() => {
         <div class="film tint" :style="{ background: `rgb(${cockpit.atmosphere.tint.map((v) => Math.round(v * 255)).join(',')})`, opacity: 0.18 * prefs.amount }" />
         <div class="film grain" :style="{ opacity: cockpit.atmosphere.grain * prefs.amount * 0.28, backgroundImage: `url(${noiseTile})` }" />
       </div>
+      <!-- in the cockpit, the menu's tab: says the HUD is up there (hover or tap it, or bring the pointer to the top) -->
+      <button
+        v-if="prefs.view === 'cockpit'"
+        class="menu-tab"
+        :class="{ gone: reveal.top }"
+        title="The menu: bring the pointer to the top of the screen"
+        @pointerenter="reveal.top = true"
+        @pointerdown.stop
+        @click="reveal.top = true"
+      >
+        <span>MENU</span><v-icon size="14" icon="mdi-chevron-down" />
+      </button>
       <header class="hud" @pointerdown.stop>
         <div class="brand">
           <b>VOYAGE</b>
@@ -1236,6 +1248,53 @@ const caption = computed(() => {
 .pop .row {
   display: flex;
   gap: 6px;
+}
+/* the menu's tab, hanging from the top edge in the era's HUD colours, while the HUD is away */
+.menu-tab {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 14px 4px;
+  transform: translateX(-50%);
+  font-family: var(--hud-font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--hud-fg);
+  background: var(--hud-bg);
+  border: 2px solid var(--e0);
+  border-top: 0;
+  border-radius: 0 0 var(--hud-r) var(--hud-r);
+  box-shadow: var(--hud-shadow-b);
+  opacity: 0.85;
+  cursor: pointer;
+  transition: opacity 0.25s, transform 0.25s;
+}
+.menu-tab:hover {
+  opacity: 1;
+}
+.menu-tab .v-icon {
+  color: var(--e2);
+  animation: tab-nudge 2.4s ease-in-out infinite;
+}
+@keyframes tab-nudge {
+  0%,
+  70%,
+  100% {
+    transform: none;
+  }
+  80% {
+    transform: translateY(2px);
+  }
+}
+.menu-tab.gone {
+  opacity: 0;
+  transform: translate(-50%, -100%);
+  pointer-events: none;
 }
 /* the cockpit: the HUD out of the way of the dash until the pointer comes near its edge */
 .voyage.inside .hud,

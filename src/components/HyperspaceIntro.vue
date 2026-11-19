@@ -21,7 +21,7 @@ import { padControl } from '../lib/play/padControl'
  *           prompts, each growing -- then HOLD on and middle C, and the splash gives way to SSB playing it
  * SKIP leaves at once (stopping the download). App.vue shows it once (ssb:intro-done), or with ?intro in the URL.
  */
-const emit = defineEmits<{ done: [] }>()
+const emit = defineEmits<{ done: []; reveal: [] }>()
 const ai = useAi()
 const board = useBoard()
 const garden = useGarden()
@@ -87,9 +87,14 @@ function frame(now: number) {
   last = now
   const c = canvas.value
   if (!c) return
-  // (hidden behind the cockpit while the HUD shows: not drawn, so the GPU has room to paint the HUD)
-  if (phase.value === 'hud') return
-  const dpr = Math.min(2, devicePixelRatio || 1)
+  // (hidden behind the cockpit while the HUD shows: not drawn, and its buffer let go -- GPU memory the HUD's layers
+  // need: over Chrome's budget, some just aren't drawn)
+  if (phase.value === 'hud') {
+    if (c.width > 1) c.width = c.height = 1
+    return
+  }
+  // (streaks are soft: no need for the full retina buffer)
+  const dpr = Math.min(1.25, devicePixelRatio || 1)
   const w = c.clientWidth
   const h = c.clientHeight
   if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
@@ -301,6 +306,8 @@ function finish() {
     /* shown again next time */
   }
   phase.value = 'out'
+  // (the app under it drawn again, to fade into)
+  emit('reveal')
   setTimeout(() => emit('done'), reduced ? 50 : 1100)
 }
 function skip() {
@@ -463,12 +470,9 @@ const showHud = computed(() => phase.value === 'hud' || phase.value === 'jump')
   pointer-events: none;
   text-shadow: 0 0 6px var(--hud);
 }
-/* Nothing is painted on the full-screen .hud itself: each part is its own small layer, so the GPU, busy with the
-   cockpit's WebGL behind, draws each one (a full-screen layer could go undrawn for seconds). Each switches on with a
-   flicker. */
-.hud > * {
-  will-change: transform;
-}
+/* The HUD paints on the base layer, which is always drawn. Only what animates gets a layer of its own (the roll,
+   the button's pulse, the blinkers), and nothing on one changes its content: a layer redrawn as it changes (a caption
+   typing out, a meter counting) could be left undrawn while the cockpit's WebGL has the GPU. */
 /* the cockpit dimmed behind the caption, button and meter, so they read */
 .dim {
   position: absolute;
@@ -579,6 +583,10 @@ const showHud = computed(() => phase.value === 'hud' || phase.value === 'jump')
   text-align: right;
 }
 .blink {
+  /* (blinkers on their own layers: a blink painted into its parent repaints that parent forever, and on a busy GPU the
+     parent -- the caption -- could go undrawn) */
+  display: inline-block;
+  will-change: opacity;
   animation: blink 1s steps(2) infinite;
 }
 @keyframes blink {
@@ -601,7 +609,9 @@ const showHud = computed(() => phase.value === 'hud' || phase.value === 'jump')
   color: var(--hud-hi);
 }
 .cursor {
+  display: inline-block;
   margin-left: 4px;
+  will-change: opacity;
   animation: blink 0.8s steps(2) infinite;
 }
 @keyframes flicker {
