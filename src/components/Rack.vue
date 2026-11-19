@@ -3,7 +3,7 @@ import { computed, reactive, ref, shallowReactive, watch } from 'vue'
 import { activeVoices } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { rememberElementScroll } from '../lib/scrollMemory'
-import { fmtCents, fmtPct, fmtSemis, midiNoteName, padHue } from '../lib/format'
+import { fmtCents, fmtPct, fmtSec, fmtSemis, midiNoteName, padHue } from '../lib/format'
 import { PATCH_SLOTS, TUNING_MODES, vcoHeard, type PatchSlot, type Sound, type TuningMode } from '../types'
 import ControlPanel from './ControlPanel.vue'
 import PlayView from './PlayView.vue'
@@ -212,6 +212,18 @@ function onDrop(e: DragEvent, i: number) {
         <button class="heart" :class="{ on: patch.fav }" title="Favourite" @click="board.toggleFav('patch', patch.id)">
           <v-icon size="16" :icon="patch.fav ? 'mdi-heart' : 'mdi-heart-outline'" />
         </button>
+        <!-- (the global ones, moved here from the header: GLIDE and the global modulation matrix) -->
+        <div class="inline-knob">
+          <Knob v-model="board.master.glide" label="GLIDE" :min="0" :max="2" :step="0.005" :default="0" :format="fmtSec" :size="20" />
+        </div>
+        <button
+          class="mpe-chip matrix-chip"
+          :class="{ on: board.master.mod.routes.length, live: board.master.mod.routes.length }"
+          :title="`Global modulation matrix: LFOs, mod wheel, aftertouch, velocity, bend and timbre on every voice (${board.master.mod.routes.length} route${board.master.mod.routes.length === 1 ? '' : 's'}). Click to edit`"
+          @click="board.openMatrix('global')"
+        >
+          <v-icon size="13" icon="mdi-matrix" />
+        </button>
         <button
           class="mpe-chip"
           :class="{ on: patch.mpe?.length, live: board.master.mpe }"
@@ -237,6 +249,15 @@ function onDrop(e: DragEvent, i: number) {
           @click="openPlay('voyage')"
         >
           <v-icon size="12" icon="mdi-rocket-launch" /> VOYAGE
+        </button>
+        <button
+          class="mpe-chip play-chip piano-chip"
+          :class="{ on: board.master.piano.on }"
+          :aria-pressed="board.master.piano.on"
+          :title="board.master.piano.on ? 'Hide the on-screen keyboard' : 'An on-screen keyboard across the bottom, for playing with no keyboard at hand (touch, pen and multi-touch too)'"
+          @click="board.master.piano.on = !board.master.piano.on"
+        >
+          <v-icon size="14" icon="mdi-piano" />
         </button>
         <v-spacer />
         <!-- (a candidate's SAVE / DISCARD are on its bar, under the header) -->
@@ -500,6 +521,30 @@ function onDrop(e: DragEvent, i: number) {
   color: var(--ink-mute);
   background: #111;
   border: 1px solid #000;
+}
+/* GLIDE, sat in the header's row: its readout and label beside a small knob */
+.inline-knob :deep(.knob) {
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-rows: auto auto;
+  column-gap: 4px;
+  align-items: center;
+  width: auto;
+}
+.inline-knob :deep(.knob-body) {
+  grid-row: 1 / 3;
+}
+.inline-knob :deep(.readout) {
+  margin: 0;
+  font-size: 12px;
+}
+.inline-knob :deep(.label) {
+  font-size: 6.5px;
+}
+.matrix-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
 }
 .mpe-chip.on {
   color: color-mix(in srgb, var(--c-secondary) 60%, var(--ink-mute));

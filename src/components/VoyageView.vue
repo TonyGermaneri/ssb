@@ -817,7 +817,8 @@ const caption = computed(() => {
 <style scoped>
 .voyage {
   position: fixed;
-  inset: 0;
+  /* (above the on-screen keyboard, when it's out: App.vue sets its height) */
+  inset: 0 0 var(--piano-h, 0px) 0;
   z-index: 2400;
   overflow: hidden;
   background: #000;

@@ -12,6 +12,7 @@ import { activeVoices, getCtx, levels, readSound, soundSounding, SCOPE_SAMPLES, 
 import DropZone from './components/DropZone.vue'
 import MatrixDialog from './components/MatrixDialog.vue'
 import MasterStrip from './components/MasterStrip.vue'
+import KeyboardBar from './components/KeyboardBar.vue'
 import Rack from './components/Rack.vue'
 import TabBar from './components/TabBar.vue'
 import CandidateBar from './components/CandidateBar.vue'
@@ -205,7 +206,7 @@ onBeforeUnmount(() => {
 
 <template>
   <v-app>
-    <div class="console" :class="{ scanlines: board.master.scanlines }">
+    <div class="console" :class="{ scanlines: board.master.scanlines }" :style="{ '--piano-h': board.master.piano.on ? '64px' : '0px' }">
       <div class="chrome">
         <MasterStrip @add="fileInput?.click()" @add-folder="folderInput?.click()" @library="openLibrary('sfz')" @waves="openLibrary('akwf')" @ai="openAi" />
       </div>
@@ -274,6 +275,7 @@ onBeforeUnmount(() => {
           </footer>
         </div>
       </div>
+      <KeyboardBar v-if="board.master.piano.on" />
     </div>
     <DropZone />
     <MatrixDialog />

@@ -358,6 +358,8 @@ export function setCC(cc: number, v: number) {
   getCtx()
   hub.cc[cc] = v
   for (const voice of voices) voice.applyCC()
+  // expression (CC11) is a level on everything, as on a hardware synth (squared: an even fade by ear)
+  if (cc === 11) applyMaster()
 }
 
 export function forget(audioId: string) {
@@ -365,9 +367,15 @@ export function forget(audioId: string) {
   forgetGrainSample(audioId)
 }
 
-export function setMaster(volume: number, muted: boolean) {
+let masterLevel = { volume: 0.8, muted: false }
+function applyMaster() {
   const c = getCtx()
-  master.gain.setTargetAtTime(muted ? 0 : volume, c.currentTime, 0.02)
+  const expr = hub.cc[11] ?? 1
+  master.gain.setTargetAtTime(masterLevel.muted ? 0 : masterLevel.volume * expr * expr, c.currentTime, 0.02)
+}
+export function setMaster(volume: number, muted: boolean) {
+  masterLevel = { volume, muted }
+  applyMaster()
 }
 
 export function setGlobalFx(settings: GlobalFx) {

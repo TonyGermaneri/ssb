@@ -6,7 +6,7 @@ import { computed, markRaw, nextTick, reactive, ref, shallowReactive, shallowRef
 import { del, get, keys, set } from 'idb-keyval'
 import * as engine from '../audio/engine'
 import { computePeaks } from '../audio/peaks'
-import { connectMidi, parseMidi, type MidiEvent } from '../audio/midi'
+import { connectMidi, encodeMidi, parseMidi, type MidiEvent } from '../audio/midi'
 import { callNative, inNative, nativeBoardKey, nativeInfo, onNative, onNativeMidi, saveFile } from '../native/bridge'
 import { encodeTableWav, encodeWav, planarFromBase64, readCycleWav, readTableWav } from '../lib/wav'
 import { History } from '../lib/history'
@@ -648,6 +648,13 @@ export const useBoard = defineStore('board', () => {
         if ((master.uiDefaults ?? 0) < 1) {
           master.headerFolded = [...new Set([...master.headerFolded, 'perform', 'tempo', 'board'])]
           master.uiDefaults = 1
+        }
+        // 0.23: the console without scanlines, and the VCOs' waves drawn flat (2D), once (the SSB logo's menu and the
+        // wave view picker change them back)
+        if ((master.uiDefaults ?? 0) < 2) {
+          master.scanlines = false
+          master.waveView = '2d'
+          master.uiDefaults = 2
         }
         presets.value = (saved.presets ?? []).map((p) => ({ ...p, settings: migratePresetSettings(p.settings) }))
         patches.value = (saved.patches ?? []).map((p) => tracked(migratePatch(p)))
@@ -2834,6 +2841,31 @@ export const useBoard = defineStore('board', () => {
     }
   }
 
+  /**
+   * The on-screen keyboard (KeyboardBar.vue), a MIDI controller in the page: its notes play the selected patch whether
+   * PLAY is on or not; its wheels, strip and keys' pressure and slides go where a device's would. In the app and the
+   * plugin the engine plays it: notes as notes, the global controllers by way of `perform` (echoed to the engine),
+   * and what only the engine keeps -- a note's own bend, pressure and timbre on its MPE channel, expression -- as MIDI.
+   */
+  function screenMidi(e: MidiEvent) {
+    if (e.type === 'noteOn') return noteOn(e.note, e.velocity, e.channel)
+    if (e.type === 'noteOff') return noteOff(e.note, e.channel)
+    if (!('channel' in e)) return
+    if (engine.external) {
+      const member = isMember(e.channel)
+      if (member || (e.type === 'cc' && e.cc !== 1 && e.cc !== 64 && !(e.cc === 74 && !member))) {
+        if (member) {
+          const st = mpeState(e.channel)
+          if (e.type === 'pitchBend') st.bend = e.value
+          else if (e.type === 'channelPressure') st.pressure = e.value
+          else if (e.type === 'cc' && e.cc === 74) st.timbre = e.value
+        }
+        return toEngine({ type: 'midi', bytes: encodeMidi(e) })
+      }
+    }
+    onMidi(e)
+  }
+
   function openMatrix(scope: string) {
     matrixScope.value = scope
   }
@@ -2856,7 +2888,7 @@ export const useBoard = defineStore('board', () => {
   return {
     sounds, master, listViewOf, setListView, openPanels, view, pressed, tagFilter, peaks, peaksOf, changes, modulations, modulate, setEngineGate, loaded, toast, midi, heldNotes,
     perform, presets, clipboard, matrixScope, canUndo, canRedo, tempo, bpm, noteFor, theme, cycleTheme,
-    undo, redo, savePreset, loadPreset, deletePreset, copySettings, pasteSettings, openMatrix, onMidi,
+    undo, redo, savePreset, loadPreset, deletePreset, copySettings, pasteSettings, openMatrix, onMidi, screenMidi,
     patches, patchTagFilter, patchTags, visiblePatches, patchFacets, togglePatchTag,
     tagsOf, toggleTagOf, hideTagOf, clearTagsOf,
     tagHidden, patchTagHidden,

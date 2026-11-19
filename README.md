@@ -533,7 +533,7 @@ pad's BEND range. Negative volume modulation from an LFO is a tremolo that never
 LFOs can **SYNC** to note divisions (4 bars … 1/32, dotted, triplets) and the global delay has a **SYNC** switch.
 Tempo comes from the **BPM** knob (INT) or incoming **MIDI clock** (EXT); MIDI Start restarts the global LFOs.
 LFO shapes: sine, triangle, square, saw up, saw down, sample & hold, smooth random, and Granulator III's **RAND**
-(random steps four times a cycle, glided). **SUS** / MIDI CC64 is a sustain pedal for keyboard play and HOLD pads.
+(random steps four times a cycle, glided). MIDI CC64 is a sustain pedal for keyboard play and HOLD pads.
 
 Granulator III's LFO additions: **HZ / SYNC / RATIO** (RATIO runs it at a multiple of the note's frequency, from
 middle C at the pad's ROOT; it is audio rate, so try it on GRAIN POS or the cutoff), **AMOUNT**, **STEREO** (0–180°
@@ -673,7 +673,7 @@ the level). Playing rows light up; the grid follows the current theme.
 
 Click the **SSB** logo for the theme picker: 68 themes in five groups, each tile with its swatches. Hover a tile to
 preview it on the whole board, click to keep it; ◀ ▶ at the top step through them in order, and **SCANLINES** there
-turns the CRT lines on or off.
+turns the CRT lines on or off (off to begin with).
 - **ERAS** — Noir '49, Diner '55, Surf '62, Psych '67, Avocado '72, Funk '74, LED Calc '76, Disco '77, Punk '77,
   Roots '78, Cassette '79, Laserium '83, Console '85, Outrun '86, Mall '87, Metal '88, Boombox '88, 8-Bit '89,
   Rave '92, Grunge '93, Vapor '95
@@ -722,10 +722,20 @@ included in exports.
 ### Header
 
 OUTPUT + vertical VU · VIEW (RACK, PATCHES, SAMPLES toggles) · PATCH (◀ selected ▶, new, PLAY, POLY/MONO, HLD,
-MPE, octave, GLIDE; the patch's name widens into the room the folded groups leave) · PERFORM (SUS, global MATRIX) · TEMPO · MIDI · global CHORUS /
+MPE, octave; the patch's name widens into the room the folded groups leave) · TEMPO · MIDI · global CHORUS /
 DELAY / REVERB · BOARD (undo, redo, and **+**: add files or a folder, browse waves or the library, restore built-ins,
-export / import the board). PERFORM, TEMPO · MIDI and the effects fold sideways (◀); PERFORM and the three effects
-start folded. The rest always show. Wraps into rows on narrow windows.
+export / import the board). TEMPO · MIDI and the effects fold sideways (◀); they start folded. The rest always show.
+Wraps into rows on narrow windows. **GLIDE** and the global modulation **MATRIX** sit in the rack's patch row, left of
+its MPE chip.
+
+**🎹** in the rack's patch row (right of VOYAGE) puts an **on-screen keyboard** across the bottom, for playing with no
+keyboard at hand: a short strip of 32, 37, 49, 61, 76 or 88 keys (its size chip), − / + for its octave, a fixed
+**VEL**ocity, and three strips: **PB** (pitch bend, springs back), **MOD** (CC1) and **EXP** (expression, CC11: the level
+of everything playing). It plays the selected patch whether PLAY is on or not, in the app, the plugin and a browser
+tab. Every finger, pen or the mouse is its own note, so chords work on a touch screen or a tablet. On a held key the
+mouse wheel is aftertouch (a pen's pressure is too). With **MPE** on (its chip, or the header's) every note gets its own
+channel and dragging around the key plays it: sideways bends it, a semitone per key; up and down is its timbre (CC74).
+With MPE off, dragging slides from key to key. VOYAGE stays above it.
 
 **+ → EXPORT…** lists every patch and sound in one grid (TYPE, NAME, TAG, what each is MADE OF): tick what goes into
 the .zip (click a row; ⇧-click a run; filter by PATCHES / SOUNDS / MY SAMPLES or by text; ALL / NONE act on what's

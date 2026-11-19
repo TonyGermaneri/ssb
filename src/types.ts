@@ -638,7 +638,30 @@ export const defaultGlobalFx = (): GlobalFx => ({
 
 export type ListView = 'pads' | 'grid'
 
+/** the on-screen keyboard (KeyboardBar.vue): for playing with no keyboard at hand */
+export interface PianoState {
+  on: boolean
+  /** how many keys: one of PIANO_SIZES */
+  keys: number
+  /** octaves up or down from where that size starts */
+  octave: number
+  /** every note's velocity, 0..1 */
+  velocity: number
+}
+/** the sizes keyboards come in, and the note each starts on at octave 0 (88: A0; 61: C2; 49: C2; 37: C3; 32: F3) */
+export const PIANO_SIZES: { keys: number; low: number }[] = [
+  { keys: 32, low: 53 },
+  { keys: 37, low: 48 },
+  { keys: 49, low: 36 },
+  { keys: 61, low: 36 },
+  { keys: 76, low: 28 },
+  { keys: 88, low: 21 },
+]
+export const defaultPiano = (): PianoState => ({ on: false, keys: 49, octave: 0, velocity: 0.8 })
+
 export interface MasterState {
+  /** the on-screen keyboard */
+  piano: PianoState
   volume: number
   muted: boolean
   scanlines: boolean
@@ -698,7 +721,8 @@ export interface MasterState {
   folded: string[]
   /** header sections folded to their title */
   headerFolded: string[]
-  /** the header's fold defaults a board has had (board.ts load: 1 = PERFORM, TEMPO · MIDI and BOARD folded once) */
+  /** the defaults a board has had (board.ts load: 1 = PERFORM, TEMPO · MIDI and BOARD folded once; 2 = scanlines off and
+   *  the waves drawn 2D, once) */
   uiDefaults?: number
   /** show only favourites, per catalog */
   favSounds: boolean
@@ -720,14 +744,15 @@ export interface MasterState {
 }
 
 export const defaultMaster = (): MasterState => ({
+  piano: defaultPiano(),
   volume: 0.8,
   muted: false,
-  scanlines: true,
+  scanlines: false,
   scale: 1,
   play: false,
   mono: false,
   hold: false,
-  waveView: 'scope',
+  waveView: '2d',
   scope: defaultScopeKnobs(),
   isoView: { ...ISO_VIEW },
   rackPlay: false,
@@ -754,7 +779,7 @@ export const defaultMaster = (): MasterState => ({
   listWidth: 0.33,
   folded: [],
   headerFolded: ['perform', 'tempo', 'board', 'chorus', 'delay', 'reverb'],
-  uiDefaults: 1,
+  uiDefaults: 2,
   favSounds: false,
   favPatches: false,
   factory: false,
@@ -781,6 +806,8 @@ export function migrateMaster(raw?: Partial<MasterState>): MasterState {
   // a board from before the live views opens on the vintage scope, their new default
   if (raw && !raw.scope) m.waveView = 'scope'
   m.scope = { ...defaultScopeKnobs(), ...raw?.scope }
+  m.piano = { ...defaultPiano(), ...raw?.piano }
+  if (!PIANO_SIZES.some((p) => p.keys === m.piano.keys)) m.piano.keys = defaultPiano().keys
   m.isoView = { ...ISO_VIEW, ...raw?.isoView }
   // before the VIEW toggles: one catalog at a time, as a tab, shown or not (LIST)
   const old = raw as { list?: boolean; tab?: string } | undefined

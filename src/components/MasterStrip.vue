@@ -283,30 +283,8 @@ function onImport(e: Event) {
         </div>
         <span class="chip dim" title="Computer-keyboard octave (- / = keys)">{{ octaveLabel }}</span>
       </div>
-      <Knob v-model="board.master.glide" label="GLIDE" :min="0" :max="2" :step="0.005" :default="0" :format="fmtSec" :size="K" />
     </StripSection>
 
-
-    <StripSection id="perform" title="PERFORM">
-      <div class="stack">
-        <button
-          class="chip"
-          :class="{ on: board.perform.sustain }"
-          title="Sustain pedal (MIDI CC64) — click to latch"
-          @click="board.perform.sustain = !board.perform.sustain"
-        >
-          SUS
-        </button>
-      </div>
-      <button
-        class="hw-btn icon"
-        :class="{ lit: board.master.mod.routes.length }"
-        title="Global modulation matrix (LFOs, mod wheel, aftertouch, velocity, bend, timbre)"
-        @click="board.openMatrix('global')"
-      >
-        <v-icon size="16" icon="mdi-matrix" />
-      </button>
-    </StripSection>
 
     <StripSection id="tempo" title="TEMPO · MIDI">
       <div
@@ -537,6 +515,9 @@ function onImport(e: Event) {
   transform: rotate(180deg);
   font-size: 17px;
   letter-spacing: 0.02em;
+  /* room round the letters: WebKit (the plugin's web view) paints a background-clip: text gradient only inside the
+     box, and the italic B's slant overhangs it -- unpadded, the last B lost most of itself */
+  padding: 0.3em 0.2em;
 }
 .out-col {
   display: flex;

@@ -43,6 +43,29 @@ export function parseMidi(data: ArrayLike<number>): MidiEvent | null {
   return null
 }
 
+/** Encode one channel message (the inverse of parseMidi; realtime messages encode to nothing). */
+export function encodeMidi(e: MidiEvent): number[] {
+  const b7 = (v: number) => Math.max(0, Math.min(127, Math.round(v * 127)))
+  if (!('channel' in e)) return []
+  const ch = e.channel & 0x0f
+  switch (e.type) {
+    case 'noteOn':
+      return [0x90 | ch, e.note, Math.max(1, b7(e.velocity))]
+    case 'noteOff':
+      return [0x80 | ch, e.note, 0]
+    case 'polyPressure':
+      return [0xa0 | ch, e.note, b7(e.value)]
+    case 'cc':
+      return [0xb0 | ch, e.cc, b7(e.value)]
+    case 'channelPressure':
+      return [0xd0 | ch, b7(e.value), 0]
+    case 'pitchBend': {
+      const raw = Math.max(0, Math.min(16383, Math.round(8192 + e.value * (e.value >= 0 ? 8191 : 8192))))
+      return [0xe0 | ch, raw & 0x7f, raw >> 7]
+    }
+  }
+}
+
 /** Listen to every MIDI input, including devices plugged in later. Returns input count. */
 export async function connectMidi(onEvent: (e: MidiEvent, time: number) => void): Promise<number> {
   if (!navigator.requestMIDIAccess) throw new Error('Web MIDI is not supported in this browser')

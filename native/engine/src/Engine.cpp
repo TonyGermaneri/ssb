@@ -313,6 +313,8 @@ struct Engine::Impl
     // ---- controllers ----
     std::array<float, 128> cc {};
     float modWheel { 0 }, bend { 0 }, pressure { 0 }, timbre { 0 };
+    /** expression (CC11) as a level on the master, squared and smoothed (as the page's engine does) */
+    float exprGain { 1 };
     bool sustain { false };
     double now { 0 };               // seconds since prepare
     double bpm { 120 };
@@ -2762,6 +2764,7 @@ struct Engine::Impl
         const auto& fx = perf->fx;
         const double dt = 1.0 / engine.rate;
         const float gain = perf->muted ? 0.0f : perf->volume;
+        const float exprK = 1.0f - (float) std::exp (-1.0 / (0.01 * engine.rate));
         // synced: the division at the current tempo (the host's in a DAW), as the page computes it
         const double delaySeconds = fx.delaySync ? std::min (2.4, fx.delayBeats * 60.0 / std::max (1.0, bpm)) : (double) fx.delayTime;
         const double delaySamples = std::max (0.01, delaySeconds) * engine.rate;
@@ -2818,8 +2821,9 @@ struct Engine::Impl
                 outR += fx.reverbMix * wetR[(size_t) i];
             }
 
-            outL *= gain;
-            outR *= gain;
+            exprGain += (cc[11] * cc[11] - exprGain) * exprK;
+            outL *= gain * exprGain;
+            outR *= gain * exprGain;
             mainL[o] = outL;
             mainR[o] = outR;
             peakL = std::max (peakL * 0.99995f, std::abs (outL));
