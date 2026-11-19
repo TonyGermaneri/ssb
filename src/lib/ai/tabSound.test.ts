@@ -51,6 +51,24 @@ describe('a browser tab\'s sound files', () => {
     expect(c.missing).toBe(musicgen.files.find((f) => f.path.endsWith('encodec_decode.onnx'))!.bytes)
   })
 
+  it('tries a file again when the connection drops, and finishes', { timeout: 10_000 }, async () => {
+    const cache = fakeCache()
+    let dropped = false
+    const flaky = (async (url: RequestInfo | URL) => {
+      if (!dropped && String(url).endsWith('encodec_decode.onnx')) {
+        dropped = true
+        throw new TypeError('network error')
+      }
+      return new Response(new Uint8Array(10))
+    }) as typeof fetch
+    const h = new TabSoundFiles(async () => cache, flaky)
+    await h.download(musicgen)
+    for (let i = 0; i < 400 && (await h.status()).task; i++) await new Promise((r) => setTimeout(r, 10))
+    expect(dropped).toBe(true)
+    expect((await h.status()).error).toBeUndefined()
+    expect((await h.check([musicgen]))[0].downloaded).toBe(true)
+  })
+
   it('refuses audio.cpp\'s models: a tab can\'t run them', async () => {
     const h = new TabSoundFiles(async () => fakeCache(), hub())
     await expect(h.download(moss)).rejects.toThrow(/app or plugin/)

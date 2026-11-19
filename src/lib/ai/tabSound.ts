@@ -15,6 +15,9 @@ import { forgetModel, keepModel } from './tabKeep'
 
 /** transformers.js's cache (env.cacheKey's default) */
 export const TAB_CACHE = 'transformers-cache'
+/** tries per file, and the wait before the next (× the try) */
+const TRIES = 4
+const RETRY_MS = 1500
 
 const notHere = (m: SoundModelInfo) => new AiError(`${m.label} runs in the SSB app or plugin: a browser tab runs Stable Audio 3 Small Music and MusicGen Small`, 'request')
 
@@ -84,25 +87,18 @@ export class TabSoundFiles implements SoundHostApi {
     let before = 0
     try {
       for (const f of todo) {
-        const res = await this.fetcher(f.url, { signal })
-        if (!res.ok || !res.body) throw new AiError(`${f.path}: the Hub answered ${res.status}`, 'request')
+        // (a dropped connection or a refused write tries again, a few times, waiting longer each time)
         let got = 0
-        const task = this.task!
-        const counted = res.body.pipeThrough(
-          new TransformStream<Uint8Array, Uint8Array>({
-            transform(chunk, out) {
-              got += chunk.byteLength
-              task.done = before + got
-              task.progress = task.total ? Math.min(1, task.done / task.total) : null
-              out.enqueue(chunk)
-            },
-          }),
-        )
-        // streamed into the cache (never the whole file in memory)
-        await cache.put(f.url, new Response(counted, { headers: { 'content-type': res.headers.get('content-type') ?? 'application/octet-stream' } })).catch((e) => {
-          throw new AiError(`${f.path}: the browser couldn't store it (${e instanceof Error ? e.message : String(e)})`, 'request')
-        })
-        if (signal.aborted) throw new AiError('cancelled', 'aborted')
+        for (let attempt = 1; ; attempt++) {
+          try {
+            got = await this.fetchOne(f, cache, signal, before)
+            break
+          } catch (e) {
+            const fatal = signal.aborted || (e instanceof AiError && /answered (40[134])/.test(e.message))
+            if (fatal || attempt >= TRIES) throw e
+            await new Promise((r) => setTimeout(r, RETRY_MS * attempt))
+          }
+        }
         before += f.bytes || got
       }
       // (had in this browser: if it's cleared before the next visit, it comes back by itself: tabKeep.ts)
@@ -113,6 +109,31 @@ export class TabSoundFiles implements SoundHostApi {
       this.task = null
       this.stop = null
     }
+  }
+
+  /** one file streamed into the cache, its bytes counted into the task; the bytes it got */
+  private async fetchOne(f: SoundModelInfo['files'][number], cache: Awaited<ReturnType<CacheOpener>>, signal: AbortSignal, before: number): Promise<number> {
+    const res = await this.fetcher(f.url, { signal })
+    if (!res.ok || !res.body) throw new AiError(`${f.path}: the Hub answered ${res.status}`, 'request')
+    let got = 0
+    const task = this.task!
+    const counted = res.body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, out) {
+          got += chunk.byteLength
+          task.done = before + got
+          task.progress = task.total ? Math.min(1, task.done / task.total) : null
+          out.enqueue(chunk)
+        },
+      }),
+    )
+    // streamed into the cache (never the whole file in memory)
+    await cache.put(f.url, new Response(counted, { headers: { 'content-type': res.headers.get('content-type') ?? 'application/octet-stream' } })).catch((e) => {
+      task.done = before
+      throw new AiError(`${f.path}: the browser couldn't store it (${e instanceof Error ? e.message : String(e)})`, 'request')
+    })
+    if (signal.aborted) throw new AiError('cancelled', 'aborted')
+    return got
   }
 
   async load(m: SoundModelInfo): Promise<void> {

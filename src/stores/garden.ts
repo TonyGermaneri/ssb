@@ -618,12 +618,14 @@ export const useGarden = defineStore('garden', () => {
     const seed = randomIdea()
     return ((await captionFor(seed, 0.95).catch(() => null)) ?? seed).trim()
   }
-  /** VCO `i`, just made by GROW: grains on, a random LOOPS and XFADE, its model kept, growing */
+  /** VCO `i`, just made by GROW: grains on, looping, a random LOOPS and XFADE, its model kept, growing */
   function startNew(i: number, model: string) {
     const slot = slotOf(i)
     const g = gardenOf(i)
     if (!slot || !g) return
     slot.layer.settings.grain = true
+    // (round and round while held: a growing VCO's clip loops until the next is stitched in)
+    slot.layer.settings.repeat = 0
     g.loops = 2 + Math.floor(Math.random() * 11)
     // (log-spread: as many short crossfades as long ones, 30 ms to 4 s)
     g.fade = Math.round(Math.exp(Math.log(0.03) + Math.random() * (Math.log(Math.min(4, FADE_MAX)) - Math.log(0.03))) * 1000) / 1000

@@ -333,6 +333,14 @@ The Stable Audio models are under the Stability AI Community License. MusicGen i
 worker; loading it unloads the helper's model, and the reverse (one at a time), and a stopped MusicGen clip loads it
 again. Its weights are for non-commercial use.
 
+**First start on the web**: a hyperspace splash. Stars race at you, the view pulls back out of the windscreen into
+the 1980s cockpit, and a HUD reads *PREPARING FOR THE JUMP TO HYPERSPACE* over a meter counting down Stable Audio 3
+Small Music's download (it downloads and loads by itself; a dropped connection tries again). **ENGAGE HYPERSPACE** in
+the middle is the click the browser needs before it plays sound: once it's pressed and the model is ready, it jumps —
+a new patch, *Hyperspace*, of three VCOs made from three prompts in C (a pad, a bass drone, bells), each growing in its
+own words, with HOLD on and middle C held — and SSB opens playing it. **SKIP INTRO** leaves at once. It shows once;
+`?intro` in the URL shows it again.
+
 In a **browser tab** two models run, in the page: **Stable Audio 3 Small Music** (the default there) and MusicGen Small.
 Stable Audio 3 Small Music runs in its browser form: a 4-bit ONNX export
 ([lsb/stable-audio-3-small-music-onnx](https://huggingface.co/lsb/stable-audio-3-small-music-onnx), 640 MB, pinned to a

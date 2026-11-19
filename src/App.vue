@@ -29,6 +29,19 @@ const AiDialog = defineAsyncComponent(() => import('./components/AiDialog.vue'))
 const aiOpen = ref(false)
 const aiUsed = ref(false)
 const openAi = () => ((aiUsed.value = true), (aiOpen.value = true))
+// the web version's first start: the hyperspace splash (once; ?intro shows it again)
+const HyperspaceIntro = defineAsyncComponent(() => import('./components/HyperspaceIntro.vue'))
+const introOpen = ref(
+  !inNative() &&
+    (new URLSearchParams(location.search).has('intro') ||
+      (() => {
+        try {
+          return !localStorage.getItem('ssb:intro-done')
+        } catch {
+          return false
+        }
+      })()),
+)
 const libraryOpen = ref(false)
 /** the library's tab when it opens: the AKWF wavetables, or the online sources */
 const libraryTab = ref<'akwf' | 'sfz'>('akwf')
@@ -282,6 +295,7 @@ onBeforeUnmount(() => {
     <LibraryDialog v-if="libraryOpen" v-model="libraryOpen" :start="libraryTab" />
     <!-- kept once opened: a running request carries on with the dialog closed -->
     <AiDialog v-if="aiUsed" v-model="aiOpen" />
+    <HyperspaceIntro v-if="introOpen" @done="introOpen = false" />
     <!-- an agent connected over MCP wants to do something that needs a yes -->
     <v-dialog :model-value="!!mcpStatus.approval" max-width="480" persistent>
       <div v-if="mcpStatus.approval" class="mcp-ask">
