@@ -78,8 +78,21 @@ export interface SoundHostApi {
 
 /** some sound model can run here: every model in the app and the plugin, the page's own (MusicGen) in a browser tab */
 export const soundModelsAvailable = () => true
-/** whether `m` can run here (audio.cpp's need the app or the plugin) */
-export const canRunHere = (m: SoundModelInfo | null | undefined): boolean => !!m && (inNative() || !!m.page)
+/** whether `m` can run here (audio.cpp's need the app or the plugin, unless they have a browser form) */
+export const canRunHere = (m: SoundModelInfo | null | undefined): boolean => !!m && (inNative() || !!m.page || !!m.web)
+
+/**
+ * The model as it runs here: in a browser tab, one with a browser form (SoundModelInfo.web) becomes that -- a page
+ * model with the web files, engine and limits, under the same id. Everywhere else, and for the rest, the model itself.
+ */
+export function hereForm(m: SoundModelInfo): SoundModelInfo
+export function hereForm(m: SoundModelInfo | null | undefined): SoundModelInfo | null
+export function hereForm(m: SoundModelInfo | null | undefined): SoundModelInfo | null {
+  if (!m) return null
+  if (!m.web || inNative()) return m
+  const w = m.web
+  return { ...m, page: true, engine: w.engine, hub: w.hub, files: w.files, main: w.files[0]?.path ?? '', maxSeconds: w.maxSeconds, memoryGb: w.memoryGb, strengths: w.strengths }
+}
 
 /** a model as the native side takes it (plus the token, for gated files) */
 const specOf = (m: SoundModelInfo, token?: string) => ({ id: m.id, label: m.label, family: m.family, task: m.task, main: m.main, files: m.files, ...(m.gated && token ? { token } : {}) })

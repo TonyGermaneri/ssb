@@ -10,7 +10,7 @@ import type { AgentTool, ToolReply } from './agent'
 import { clipAsync } from '../analysis'
 import type { clipPitch } from './audio'
 import { DEFAULT_SOUND_MODEL, downloadBytes, TAB_SOUND_MODEL, fmtBytes, SOUND_MODELS, soundModelFrom, type SoundModelInfo } from './soundModels'
-import { canRunHere, generateWithStop, loadAndWait, NativeSoundHost, type SoundHostApi, type SoundStatus } from './soundHost'
+import { canRunHere, generateWithStop, hereForm, loadAndWait, NativeSoundHost, type SoundHostApi, type SoundStatus } from './soundHost'
 import { routedSoundHost } from './pageSound'
 import { TabSoundFiles } from './tabSound'
 import { inNative } from '../../native/bridge'
@@ -54,13 +54,13 @@ function resolveModel(agent: SoundAgent, model: string | undefined): SoundModelI
   }
   const m = soundModelFrom(model)
   if (!m) throw new Error(`"${model}" isn't a sound model: give one of sound_models' ids, or the Hugging Face URL of a GGUF`)
-  return m
+  return hereForm(m)
 }
 
 /** a model the host names, as a catalog model (a custom one: the settings' pick, when it's that) */
 function namedModel(agent: SoundAgent, id: string): SoundModelInfo | null {
   const sel = agent.selected()
-  return SOUND_MODELS.find((m) => m.id === id) ?? (sel?.id === id ? sel : null)
+  return hereForm(SOUND_MODELS.find((m) => m.id === id) ?? (sel?.id === id ? sel : null))
 }
 
 /** the model make_sound uses when none is named: the loaded one, else the one on its way (a reload, after a
@@ -211,7 +211,7 @@ export function createSoundTools(board: Board, agent: SoundAgent): AgentTool[] {
         const host = agent.host()
         const selected = agent.selected()
         // (a browser tab: only the ones that run there)
-        const models = [...SOUND_MODELS, ...(selected?.custom ? [selected] : [])].filter(canRunHere)
+        const models = [...SOUND_MODELS, ...(selected?.custom ? [selected] : [])].filter(canRunHere).map((m) => hereForm(m))
         let st: SoundStatus
         try {
           st = await host.status()
@@ -362,7 +362,8 @@ export function soundAgentFrom(settings: () => SoundSettings | null | undefined,
   const native = host ?? sharedSoundHost(() => s().hfToken)
   return {
     host: () => native,
-    selected: () => [soundModelFrom(s().model), soundModelFrom(DEFAULT_SOUND_MODEL), soundModelFrom(TAB_SOUND_MODEL)].find(canRunHere) ?? null,
+    // (as it runs here: in a browser tab, a model's browser form)
+    selected: () => hereForm([soundModelFrom(s().model), soundModelFrom(DEFAULT_SOUND_MODEL), soundModelFrom(TAB_SOUND_MODEL)].find(canRunHere) ?? null),
     hasToken: () => !!s().hfToken,
     ...hooks,
   }

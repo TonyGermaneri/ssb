@@ -51,6 +51,13 @@ export interface SoundModelInfo {
   page?: boolean
   /** a page model's Hugging Face repo and pinned revision (its files' URLs are under it): what a browser tab loads it from */
   hub?: { repo: string; revision: string }
+  /** which of the page's engines runs it (a page model: pageSound.ts) */
+  engine?: 'musicgen' | 'sa3'
+  /**
+   * Its browser form, for a model audio.cpp runs in the app: what a browser tab downloads and runs instead, in the
+   * page (soundHost.ts hereForm). The same id either way, so a VCO's choice carries between the app and a tab.
+   */
+  web?: { engine: 'sa3'; hub: { repo: string; revision: string }; files: SoundFileSpec[]; maxSeconds: number; memoryGb: number; strengths: string }
   /** it sings: a request may carry lyrics (SoundRequest.lyrics) */
   lyrics?: boolean
   /** typed in by the user: not one of the catalog's */
@@ -60,6 +67,30 @@ export interface SoundModelInfo {
 const MIRROR = 'https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/main'
 const SAO = 'https://huggingface.co/stabilityai/stable-audio-open-1.0/resolve/main'
 /** Xenova's ONNX MusicGen Small, at the revision SSB was tested with */
+/** Stable Audio 3 Small Music as a 4-bit ONNX bundle for the browser (lsb's export), at the revision SSB was tested with */
+const SA3_WEB_HUB = { repo: 'lsb/stable-audio-3-small-music-onnx', revision: 'd523962dc41a9c632a4928ff9e02538bb11f1806' }
+const SA3_WEB_FILES: [string, number][] = [
+  ['onnx/text_encoder_q4.onnx', 2232988],
+  ['onnx/text_encoder_q4_chunk_0.data', 98304000],
+  ['onnx/text_encoder_q4_chunk_1.data', 99418112],
+  ['onnx/text_encoder_q4_chunk_2.data', 14811136],
+  ['onnx/text_encoder_q4_chunks.json', 330],
+  ['onnx/number_conditioner.onnx', 798844],
+  ['onnx/number_conditioner_chunks.json', 84],
+  ['onnx/dit_q4.onnx', 5929366],
+  ['onnx/dit_q4_chunk_0.data', 96468992],
+  ['onnx/dit_q4_chunk_1.data', 99614720],
+  ['onnx/dit_q4_chunk_2.data', 99614720],
+  ['onnx/dit_q4_chunk_3.data', 84451328],
+  ['onnx/dit_q4_chunks.json', 367],
+  ['onnx/decoder_q4.onnx', 1653261],
+  ['onnx/decoder_q4_chunk_0.data', 44894208],
+  ['onnx/decoder_q4_chunks.json', 155],
+  ['tokenizer/tokenizer.json', 34362428],
+  ['tokenizer/tokenizer_config.json', 469],
+]
+const SA3_WEB_BASE = `https://huggingface.co/${SA3_WEB_HUB.repo}/resolve/${SA3_WEB_HUB.revision}`
+
 const MUSICGEN_HUB = { repo: 'Xenova/musicgen-small', revision: '6a8096dabfff72909ef5eae41461408e29ae20fd' }
 const MUSICGEN = `https://huggingface.co/${MUSICGEN_HUB.repo}/resolve/${MUSICGEN_HUB.revision}`
 /** audio.cpp's Stable Audio loader reads the prompt encoder from this folder of a safetensors checkpoint */
@@ -107,6 +138,15 @@ export const SOUND_MODELS: SoundModelInfo[] = [
     stepsOption: 'num_inference_steps',
     defaultSteps: 8,
     defaultGuidance: 1,
+    web: {
+      engine: 'sa3',
+      hub: SA3_WEB_HUB,
+      files: SA3_WEB_FILES.map(([path, bytes]) => ({ url: `${SA3_WEB_BASE}/${path}`, path, bytes })),
+      maxSeconds: 30,
+      memoryGb: 2,
+      strengths:
+        'music material in stereo: drum loops and grooves, basslines, chord stabs, instrument notes and phrases, pads, risers, textures. Name genre, instrument, BPM and key ("128 BPM tech house drum loop, punchy kick, crisp hats"; "single felt piano note, C3, soft, long decay"). Stereo, 44.1 kHz, up to 30 s. Runs in this browser tab (a 4-bit export, on the GPU through WebGPU where there is one): seconds a clip on a GPU, slower on the CPU.',
+    },
   },
   {
     id: 'stable-audio-3-small-sfx-q8',
@@ -224,12 +264,13 @@ export const SOUND_MODELS: SoundModelInfo[] = [
     defaultGuidance: 3,
     page: true,
     hub: MUSICGEN_HUB,
+    engine: 'musicgen',
   },
 ]
 
 export const DEFAULT_SOUND_MODEL = SOUND_MODELS[0].id
-/** the one a browser tab can run (and so its default) */
-export const TAB_SOUND_MODEL = 'musicgen-small-q8'
+/** a browser tab's default: Stable Audio 3 Small Music, in its browser form */
+export const TAB_SOUND_MODEL = 'stable-audio-3-small-music-q8'
 
 /**
  * A model from what the user (or the agent) typed: a catalog id or label or tag ("moss", "stable audio 3 small

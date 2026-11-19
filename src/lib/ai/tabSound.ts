@@ -1,6 +1,6 @@
 /**
  * A browser tab's stand-in for SoundHost (soundHost.ts), under routedSoundHost (pageSound.ts): a tab has no helper to
- * run audio.cpp, so only the page's own models (MusicGen) play there, and this fetches their files from the Hugging
+ * run audio.cpp, so only the page's own models (MusicGen, Stable Audio 3 Small's browser form) play there, and this fetches their files from the Hugging
  * Face Hub into the browser's storage -- the Cache API, under the same name and keys transformers.js reads its cache
  * by (the files' pinned Hub URLs), so the worker finds them there and never fetches them again.
  *
@@ -15,7 +15,7 @@ import type { SoundModelInfo } from './soundModels'
 /** transformers.js's cache (env.cacheKey's default) */
 export const TAB_CACHE = 'transformers-cache'
 
-const notHere = (m: SoundModelInfo) => new AiError(`${m.label} runs in the SSB app or plugin: a browser tab can only run MusicGen Small`, 'request')
+const notHere = (m: SoundModelInfo) => new AiError(`${m.label} runs in the SSB app or plugin: a browser tab runs Stable Audio 3 Small Music and MusicGen Small`, 'request')
 
 /** the Cache API, as this needs it (a stand-in in tests) */
 export type CacheOpener = () => Promise<Pick<Cache, 'match' | 'put' | 'delete'>>

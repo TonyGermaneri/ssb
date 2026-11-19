@@ -277,13 +277,17 @@ describe('the sound tools', () => {
     expect(out.models[5]).toMatchObject({ model: 'musicgen-small-q8' })
     expect(out.models[6]).toMatchObject({ selected_in_settings: true, download: 'size unknown' })
   })
-  it('in a browser tab sound_models lists only MusicGen, and the pick falls back to it', async () => {
+  it('in a browser tab sound_models lists what runs there, Stable Audio 3 Small Music in its browser form, and the pick falls back to it', async () => {
     where.native = false
     try {
       const { run, agent } = setup(fakeHost({}))
       const out = JSON.parse((await run('sound_models', {})).text)
-      expect(out.models.map((m: { model: string }) => m.model)).toEqual(['musicgen-small-q8'])
-      expect(agent.selected()?.id).toBe('musicgen-small-q8')
+      expect(out.models.map((m: { model: string }) => m.model)).toEqual(['stable-audio-3-small-music-q8', 'musicgen-small-q8'])
+      expect(out.models[0].max_seconds).toBe(30)
+      const sel = agent.selected()!
+      expect(sel.id).toBe('stable-audio-3-small-music-q8')
+      expect(sel).toMatchObject({ page: true, engine: 'sa3', maxSeconds: 30 })
+      expect(sel.files.every((f) => f.url.includes('lsb/stable-audio-3-small-music-onnx/resolve/'))).toBe(true)
     } finally {
       where.native = true
     }

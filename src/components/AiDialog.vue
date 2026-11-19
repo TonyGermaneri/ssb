@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useAi, type Item } from '../lib/ai/store'
 import { errorMessage, PROVIDERS, type Effort, type ProviderKind } from '../lib/ai/types'
 import { downloadBytes, fmtBytes, SOUND_MODELS } from '../lib/ai/soundModels'
-import { canRunHere } from '../lib/ai/soundHost'
+import { canRunHere, hereForm } from '../lib/ai/soundHost'
 import ComboBox from './ComboBox.vue'
 import { useBoard } from '../stores/board'
 import { preview } from '../audio/engine'
@@ -99,11 +99,12 @@ const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
 // ── the sound models (make_sound): the SSB app or plugin runs them natively (a browser tab: MusicGen, in the page) ──
 const sound = computed(() => ai.soundStatus)
-const pick = computed(() => ai.soundPick)
+// (as it runs here: in a tab, a model's browser form, with its download and limits)
+const pick = computed(() => hereForm(ai.soundPick))
 const labelOf = (id?: string) => (id ? (SOUND_MODELS.find((m) => m.id === id)?.label ?? (pick.value?.id === id ? pick.value.label : id)) : '')
 // (a browser tab: only the ones SSB runs in its page)
 const inTab = !inNative()
-const soundOptions = SOUND_MODELS.filter(canRunHere).map((m) => ({
+const soundOptions = SOUND_MODELS.filter(canRunHere).map((m) => hereForm(m)).map((m) => ({
   value: m.id,
   label: m.label,
   detail: `${fmtBytes(downloadBytes(m))} · ${m.channels === 2 ? 'stereo' : 'mono'}${m.gated ? ' · token' : ''}`,
@@ -352,8 +353,8 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
             anything downloads.
           </p>
           <p v-if="inTab" class="hint">
-            In a browser tab only MusicGen Small runs (in the page, on the CPU); the others need the SSB app or plugin. Its files are kept in this
-            browser's storage for this site.
+            In a browser tab two run, in the page: Stable Audio 3 Small Music (a 4-bit export, on the GPU through WebGPU where the browser has
+            it) and MusicGen Small (on the CPU); the others need the SSB app or plugin. Their files are kept in this browser's storage for this site.
           </p>
           <p v-if="!ai.soundAvailable" class="mcp-state">Needs the SSB app or plugin: a browser tab can't run a model.</p>
           <template v-else>
@@ -367,7 +368,7 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
                 <a :href="pick.url" target="_blank" rel="noopener">{{ pick.url.replace('https://', '') }}</a> · {{ pick.channels === 2 ? 'stereo' : 'mono' }}
                 {{ pick.sampleRate / 1000 }} kHz · up to {{ pick.maxSeconds }} s · {{ pick.license }}<template v-if="pick.custom"> · a custom GGUF: a MOSS-SoundEffect or Stable Audio model for audio.cpp</template>
               </p>
-              <p v-if="!canRunHere(pick)" class="err">{{ pick.label }} needs the SSB app or plugin: a browser tab can only run MusicGen Small.</p>
+              <p v-if="!canRunHere(pick)" class="err">{{ pick.label }} needs the SSB app or plugin: a browser tab runs Stable Audio 3 Small Music and MusicGen Small.</p>
               <p v-else-if="soundLoaded" class="test">✓ Loaded ({{ sound?.backend }}, {{ sound?.loaded?.loadSeconds?.toFixed(0) }} s to load).</p>
               <p v-else-if="toDownload !== 0" class="warn">
                 ⚠ Loading it downloads <b>{{ toDownload ? fmtBytes(toDownload) : 'a file of unknown size' }}</b> the first time, into {{ inTab ? "this browser's storage" : "SSB's folder on this computer" }}, and it
