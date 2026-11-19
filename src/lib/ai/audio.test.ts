@@ -308,7 +308,7 @@ describe('the sound tools', () => {
     // a model not downloaded yet: it says where to get it, and starts nothing
     const fresh = fakeHost()
     const cold = setup(fresh)
-    await expect(promptSlotWave(cold.board as never, cold.agent, 0, 'door slam')).rejects.toThrow(/isn't downloaded yet: AI settings › SOUND MODEL/)
+    await expect(promptSlotWave(cold.board as never, cold.agent, 0, 'door slam')).rejects.toThrow(/isn't downloaded yet: download it in the VCO's ☰ menu/)
     expect(fresh.calls.some((c) => c.op === 'load' || c.op === 'generate')).toBe(false)
     expect(cold.board.assignSlot).not.toHaveBeenCalled()
     // downloaded but not loaded: it loads (seconds), then makes the clip

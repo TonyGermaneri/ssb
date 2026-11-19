@@ -127,7 +127,8 @@ export function routedSoundHost(native: SoundHostApi, engine: PageSoundEngine = 
       // its files first, downloaded by the native host (resumably, with its progress in the status)
       const [c] = await native.check([m])
       if (!c?.downloaded) {
-        await native.download(m)
+        // (one under way already -- the tab bringing back a model the browser cleared -- is joined, not asked again)
+        if ((await native.status()).task?.model !== m.id) await native.download(m)
         for (;;) {
           await sleep(pollMs)
           if (mine !== job) return

@@ -3,14 +3,16 @@ import { reactive, ref, watch } from 'vue'
 import { useBoard } from './board'
 import { useAi } from '../lib/ai/store'
 import * as engine from '../audio/engine'
-import { makeSound, soundAgentFrom } from '../lib/ai/soundTools'
-import { canRunHere } from '../lib/ai/soundHost'
+import { boardTags, makeSound, soundAgentFrom } from '../lib/ai/soundTools'
+import { keepTabModels, restorable } from '../lib/ai/tabKeep'
+import { inNative } from '../native/bridge'
+import { canRunHere, hereForm } from '../lib/ai/soundHost'
 import { soundModelFrom } from '../lib/ai/soundModels'
 import { VCO_SUNG_SECONDS } from '../lib/ai/soundTools'
 import { errorMessage } from '../lib/ai/types'
 import { sketchAsync } from '../lib/analysis'
 import {
-  captionSeed, CLIP_SECONDS, DEFAULT_GARDEN_MODEL, gardenTick, MIN_SWAP_S, padMoveDelay, padTarget, migrateGarden, planNext, pushTake, takesToDrop, TAKES_KEPT, type Garden, type GardenTake,
+  captionSeed, CLIP_SECONDS, DEFAULT_GARDEN_MODEL, FADE_MAX, gardenTick, MIN_SWAP_S, padMoveDelay, padTarget, migrateGarden, planNext, pushTake, takesToDrop, TAKES_KEPT, type Garden, type GardenTake,
 } from '../lib/garden/garden'
 import { addTags, isTake, removeTags, TAKE_TAG } from '../lib/tags'
 import { padControl, type PadControl, type PadId } from '../lib/play/padControl'
@@ -18,6 +20,7 @@ import type { Point } from '../lib/play/pads'
 import { defaultPadLfo, LAST_SHAPE, lfoAt, rateHz, snapShape, type PadLfo } from '../lib/play/padLfo'
 import type { PatchSlot } from '../types'
 import { negativeFor } from '../lib/garden/negative'
+import { randomIdea } from '../lib/garden/ideas'
 import { captionFor, checkWordModel, lyricsFor, riffAvailable, riffState, wordsFor } from '../lib/garden/riff'
 import { asVerse } from '../lib/garden/lyricsText'
 
@@ -492,7 +495,7 @@ export const useGarden = defineStore('garden', () => {
   /**
    * A prompt typed for VCO `i` (its wave prompt, or the garden pad's): the word model lists words of each ring's kind
    * for it, and they become the rings' words as each list comes (a locked ring keeps its own). A clip already made from
-   * the old words is let go. False when there's no word model to ask (AI settings › WORD MODEL).
+   * the old words is let go. False when there's no word model to ask (a VCO's ☰ menu › Word model).
    */
   async function seedWords(i: number, text: string): Promise<boolean> {
     const g = gardenOf(i)
@@ -501,7 +504,7 @@ export const useGarden = defineStore('garden', () => {
     // (whether it's downloaded isn't known until asked, the first time)
     if (riffState.on && riffState.downloaded === null) await checkWordModel().catch(() => false)
     if (!riffAvailable()) {
-      wording.set(i, { left: 0, prompt, note: 'no word model: download one in AI settings › WORD MODEL' })
+      wording.set(i, { left: 0, prompt, note: 'no word model: download one in a VCO\'s ☰ menu' })
       return false
     }
     g.subject = prompt
@@ -541,6 +544,20 @@ export const useGarden = defineStore('garden', () => {
     const sketch = id === SKETCH_MODEL || !canRunHere(soundModelFrom(id))
     return { id, sketch, info: sketch ? null : soundModelFrom(id) }
   }
+  // a browser tab: the models in use here (the VCOs' picks, the AI's) that the user had, which the browser cleared
+  // between visits, downloaded again by themselves (lib/ai/tabKeep.ts) -- never shown as picked and not there
+  if (!inNative()) {
+    const wanted = () => [ai.settings.sound.model, ...[0, 1, 2].map((i) => modelOf(i)).filter((x) => !x.sketch).map((x) => x.id)]
+    watch(
+      () => (board.loaded ? wanted().join('|') : ''),
+      (key) => {
+        if (!key) return
+        void keepTabModels(wanted(), { host: ai.soundHost, boardTags: () => boardTags(board), say: (t) => (board.toast = t), changed: () => void ai.pollSound() })
+      },
+      { immediate: true },
+    )
+  }
+
 
   /**
    * VCO `i`'s wave prompt (Rack.vue): `text` sent to its model as typed (`auto` false: ➤), or written out first by the
@@ -548,8 +565,8 @@ export const useGarden = defineStore('garden', () => {
    * to sing. The clip goes into the slot; what was sent comes back for the prompt's status line. `note` says what it's
    * doing while it writes.
    */
-  async function promptWave(i: number, text: string, auto: boolean, signal: AbortSignal, note: (s: string) => void) {
-    const { id, sketch, info } = modelOf(i)
+  async function promptWave(i: number, text: string, auto: boolean, signal: AbortSignal, note: (s: string) => void, model?: ReturnType<typeof modelOf>) {
+    const { id, sketch, info } = model ?? modelOf(i)
     const g = slotOf(i)?.garden
     const sings = !!info?.lyrics
     let sent = text
@@ -577,6 +594,41 @@ export const useGarden = defineStore('garden', () => {
     const negative = negativeFor(g?.negative ?? '', sings ? `${sent}, singing` : sent) || undefined
     const made = await ai.promptSlotWave(i, sent, signal, { model: id, negative, ...(lyrics ? { lyrics } : {}) })
     return { sent, lyrics, model: made.model.label, name: made.name, seconds: made.seconds, tune: made.pitch?.steady ? `in tune at ${made.pitch.name}` : '' }
+  }
+
+  // ── GROW (the rack's header): a whole set growing at once ──
+  /**
+   * The model a VCO made by GROW starts with: the one last picked (a VCO's ☰, the AI's), else the default, if it's
+   * downloaded (or being brought back) -- else SKETCH, so GROW always gets going.
+   */
+  async function modelForNew(): Promise<ReturnType<typeof modelOf>> {
+    const host = ai.soundHost()
+    for (const id of [ai.settings.sound.model, DEFAULT_GARDEN_MODEL]) {
+      const m = soundModelFrom(id)
+      if (!m || !canRunHere(m)) continue
+      const [c] = await host.check([m]).catch(() => [null])
+      const st = await host.status().catch(() => null)
+      if (c?.downloaded || st?.loaded?.id === hereForm(m).id || st?.task?.model === hereForm(m).id || (!inNative() && restorable(hereForm(m), boardTags(board))))
+        return { id: m.id, sketch: false, info: m }
+    }
+    return { id: SKETCH_MODEL, sketch: true, info: null }
+  }
+  /** a musical / sound prompt, different each time: a random idea, written out by the word model when there is one */
+  async function randomPrompt(): Promise<string> {
+    const seed = randomIdea()
+    return ((await captionFor(seed, 0.95).catch(() => null)) ?? seed).trim()
+  }
+  /** VCO `i`, just made by GROW: grains on, a random LOOPS and XFADE, its model kept, growing */
+  function startNew(i: number, model: string) {
+    const slot = slotOf(i)
+    const g = gardenOf(i)
+    if (!slot || !g) return
+    slot.layer.settings.grain = true
+    g.loops = 2 + Math.floor(Math.random() * 11)
+    // (log-spread: as many short crossfades as long ones, 30 ms to 4 s)
+    g.fade = Math.round(Math.exp(Math.log(0.03) + Math.random() * (Math.log(Math.min(4, FADE_MAX)) - Math.log(0.03))) * 1000) / 1000
+    if (model !== DEFAULT_GARDEN_MODEL) g.model = model
+    setOn(i, true)
   }
 
   /** a clip made from the old words: let go, the next is made from the new */
@@ -731,5 +783,5 @@ export const useGarden = defineStore('garden', () => {
   watch(() => board.selectedPatch?.id, kickLfos, { immediate: true })
   watch(() => board.loaded, kickLfos)
 
-  return { lfoOf, lfoNow, lfoPhaseOf, lfoDrives, growsPad, toggleGrowPad, startLfo, stopLfo, setLfo, setLfoCenter, runs, making, wording, sang, sungLyrics, setModel, modelOf, promptWave, picked, ringOf, nextRing, runFor, gardenOf, setOn, growNow, growNowAndStitch, stitchNow, goBack, seedWords, takesOf, stepTake, stop, tick, saveTake, canSave }
+  return { lfoOf, lfoNow, lfoPhaseOf, lfoDrives, growsPad, toggleGrowPad, startLfo, stopLfo, setLfo, setLfoCenter, runs, making, wording, sang, sungLyrics, setModel, modelOf, promptWave, modelForNew, randomPrompt, startNew, picked, ringOf, nextRing, runFor, gardenOf, setOn, growNow, growNowAndStitch, stitchNow, goBack, seedWords, takesOf, stepTake, stop, tick, saveTake, canSave }
 })

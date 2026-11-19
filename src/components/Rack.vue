@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, shallowReactive, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowReactive, watch } from 'vue'
 import { activeVoices } from '../audio/engine'
 import { useBoard } from '../stores/board'
 import { rememberElementScroll } from '../lib/scrollMemory'
@@ -12,6 +12,7 @@ import VoyageView from './VoyageView.vue'
 import { shaderPrefs, stageStatus } from '../lib/play/shaders'
 import Knob from './Knob.vue'
 import { useAi } from '../lib/ai/store'
+import { hereForm } from '../lib/ai/soundHost'
 import { errorMessage } from '../lib/ai/types'
 import GardenBar from './GardenBar.vue'
 import VcoMeter from './VcoMeter.vue'
@@ -122,7 +123,21 @@ const modelLabel = (i: number) => {
   const m = garden.modelOf(i)
   return m.sketch ? 'SKETCH' : (m.info?.label ?? m.id)
 }
-async function promptWave(i: number, auto: boolean) {
+/** VCO `i`'s model as it really stands here: loaded, downloaded, downloading, or not here (never "ready" when it isn't) */
+function modelLine(i: number): { text: string; missing: boolean } {
+  const m = garden.modelOf(i)
+  if (m.sketch || !m.info) return { text: 'SKETCH · ready', missing: false }
+  const id = hereForm(m.info).id
+  const label = m.info.label
+  const st = ai.soundStatus
+  const t = st?.task?.model === id ? st.task : null
+  if (t) return { text: `${label} · ${t.kind === 'download' ? `downloading${t.progress != null ? ` ${Math.round(t.progress * 100)}%` : '…'}` : t.kind === 'load' ? 'loading…' : 'generating…'}`, missing: false }
+  if (st?.loaded?.id === id) return { text: `${label} · loaded`, missing: false }
+  const c = ai.modelChecks.get(id)
+  if (!c) return { text: label, missing: false }
+  return c.downloaded ? { text: `${label} · downloaded`, missing: false } : { text: `${label} · not downloaded — ☰ in this VCO's bar downloads it`, missing: true }
+}
+async function promptWave(i: number, auto: boolean, model?: Awaited<ReturnType<typeof garden.modelForNew>>) {
   const text = prompts[i]!.trim()
   if (!text || promptBusy[i]) return
   promptBusy[i] = true
@@ -132,7 +147,8 @@ async function promptWave(i: number, auto: boolean) {
   const ctl = new AbortController()
   promptAborts[i] = ctl
   try {
-    const made = await garden.promptWave(i, text, auto, ctl.signal, (n) => (promptNote[i] = `${modelLabel(i)} · ${n || 'making…'}`))
+    const label = () => (model ? (model.sketch ? 'SKETCH' : (model.info?.label ?? model.id)) : modelLabel(i))
+    const made = await garden.promptWave(i, text, auto, ctl.signal, (n) => (promptNote[i] = `${label()} · ${n || 'making…'}`), model)
     if (!made || ctl.signal.aborted) return
     const sung = made.lyrics ? ` · ♪ ${made.lyrics.replace(/^\[[^\]]*\]\s*/gm, '').split('\n').filter(Boolean).join(' / ')}` : ''
     promptNote[i] = `${made.model} · “${made.sent}”${sung} → ${made.name} · ${made.seconds.toFixed(1)} s${made.tune ? ` · ${made.tune}` : ''}`
@@ -150,8 +166,47 @@ async function promptWave(i: number, auto: boolean) {
 }
 const stopPrompt = (i: number) => promptAborts[i]?.abort()
 
+// ── GROW: a whole set growing at once. Every VCO with a sound starts growing; each empty one gets a prompt of its own
+// (a random idea the word model writes out, different each press), a clip from it, grains on, a random LOOPS and
+// XFADE, and grows too ──
+const growingSet = ref(false)
+const growTitle = computed(() =>
+  growingSet.value
+    ? 'GROW: making the empty VCOs\' first clips…'
+    : 'GROW: every VCO grows — each empty one first gets a random prompt (written by the word model), a clip from it, grains on, and a random loop length and crossfade',
+)
+async function growSet() {
+  if (growingSet.value) return
+  growingSet.value = true
+  try {
+    for (let i = 0; i < 3; i++) if (slots.value[i]) garden.setOn(i, true)
+    const empty = [0, 1, 2].filter((i) => !slots.value[i] && !promptBusy[i])
+    if (!empty.length) return
+    const model = await garden.modelForNew()
+    for (const i of empty) {
+      promptBusy[i] = true
+      promptNote[i] = 'GROW · thinking of a prompt…'
+      prompts[i] = await garden.randomPrompt().catch(() => '')
+      promptBusy[i] = false
+      if (!prompts[i]) continue
+      await promptWave(i, false, model)
+      if (slots.value[i]) garden.startNew(i, model.id)
+    }
+  } finally {
+    growingSet.value = false
+  }
+}
+
 // ── the PROMPT GARDEN (stores/garden.ts): a VCO regrowing its sample from rings of words ──
 const garden = useGarden()
+// (the VCOs' models checked as they change, and as a download, load or generation ends)
+watch(
+  () => [[0, 1, 2].map((i) => garden.modelOf(i).id).join('|'), ai.soundStatus?.task?.kind ?? '', ai.soundStatus?.loaded?.id ?? ''].join('·'),
+  () => void ai.checkModels([0, 1, 2].map((i) => garden.modelOf(i).info).filter((m): m is NonNullable<typeof m> => !!m)),
+  { immediate: true },
+)
+onMounted(() => ai.watchSound(true))
+onBeforeUnmount(() => ai.watchSound(false))
 /** each VCO's colour, as its PLAY column and meters show it */
 const vcoColor = (i: number) => [board.theme.primary, board.theme.secondary, board.theme.accent][i % 3]
 
@@ -231,6 +286,14 @@ function onDrop(e: DragEvent, i: number) {
           @click="board.openMatrix('mpe')"
         >
           MPE<small v-if="patch.mpe?.length"> {{ patch.mpe.length }}</small>
+        </button>
+        <button
+          class="mpe-chip play-chip grow-chip"
+          :class="{ on: growingSet || (slots.some((x) => x) && slots.every((x) => !x || x.garden?.on)) }"
+          :title="growTitle"
+          @click="growSet"
+        >
+          <v-icon size="12" :icon="growingSet ? 'mdi-loading' : 'mdi-sprout'" :class="{ spin: growingSet }" /> GROW
         </button>
         <button
           class="mpe-chip play-chip"
@@ -410,7 +473,7 @@ function onDrop(e: DragEvent, i: number) {
             <v-icon size="14" icon="mdi-close" /> <span class="word">REMOVE</span>
           </button>
         </div>
-        <!-- The VCO wave prompt: the sound model picked in the AI settings makes a clip from a few words, and it
+        <!-- The VCO wave prompt: the sound model picked in its ☰ menu makes a clip from a few words, and it
              becomes this slot's sound (no conversation, no download from here). In the app and the plugin. -->
         <form v-if="ai.soundAvailable" class="prompt" @submit.prevent="promptWave(i, false)">
           <v-icon size="14" icon="mdi-creation" />
@@ -445,7 +508,7 @@ function onDrop(e: DragEvent, i: number) {
           <button v-if="promptBusy[i]" class="hw-btn icon" type="button" title="Stop" @click="stopPrompt(i)">
             <v-icon size="14" icon="mdi-stop" />
           </button>
-          <span class="prompt-note" :class="{ err: promptErr[i] }">{{ promptNote[i] || `${modelLabel(i)} · ready` }}</span>
+          <span class="prompt-note" :class="{ err: promptErr[i], warn: !promptNote[i] && modelLine(i).missing }">{{ promptNote[i] || modelLine(i).text }}</span>
         </form>
         <div :ref="(el) => (bodies[i] = el as HTMLElement | null)" class="body">
           <ControlPanel v-if="x && layerOf(x)" :sound="layerOf(x)!" :hue="hue(layerOf(x)!)" :role="i === 0 ? 'patch' : 'vco'" :patch="patch ?? undefined" wide />
@@ -511,6 +574,9 @@ function onDrop(e: DragEvent, i: number) {
 .prompt-note.err {
   color: rgb(var(--v-theme-error));
 }
+.prompt-note.warn {
+  color: #ffc46b;
+}
 .mpe-chip {
   flex: none;
   padding: 0 6px;
@@ -562,6 +628,23 @@ function onDrop(e: DragEvent, i: number) {
   color: #111;
   background: var(--c-accent);
   box-shadow: 0 0 8px color-mix(in srgb, var(--c-accent) 50%, transparent);
+}
+/* GROW: the garden's green, as each VCO's grow toggle */
+.grow-chip:hover {
+  color: #7dff6a;
+}
+.grow-chip.on {
+  color: #05030a;
+  background: #7dff6a;
+  box-shadow: 0 0 8px rgba(125, 255, 106, 0.5);
+}
+.grow-chip .spin {
+  animation: grow-spin 1s linear infinite;
+}
+@keyframes grow-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .voyage-chip:hover {
   color: var(--c-accent);

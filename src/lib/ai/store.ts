@@ -174,6 +174,16 @@ export const useAi = defineStore('ai', () => {
     }
   }
   watch([() => soundPick.value?.id, () => soundStatus.value?.task?.kind, () => soundStatus.value?.loaded?.id], () => void checkSound(), { immediate: true })
+  /** whether each model asked about is downloaded (by id, as it runs here): the rack's VCO status lines */
+  const modelChecks = reactive(new Map<string, SoundCheck>())
+  async function checkModels(ms: SoundModelInfo[]) {
+    if (!ms.length) return
+    try {
+      for (const c of await soundAgent.host().check(ms)) modelChecks.set(c.id, c)
+    } catch {
+      /* unknown: the line says nothing it can't stand behind */
+    }
+  }
   async function soundAction(f: () => Promise<void>) {
     try {
       await f()
@@ -476,6 +486,7 @@ export const useAi = defineStore('ai', () => {
 
   return {
     settings, switchProvider, configured, models, modelsError, fetchModels,
+    soundHost: () => soundAgent.host(), modelChecks, checkModels,
     soundAvailable, soundStatus, soundError, soundPick, soundCheck, watchSound, pollSound, loadSound, unloadSound, cancelSound, removeSound, testSound,
     promptSlotWave,
     list, current, newConversation, open, remove, toggleStar, rename,

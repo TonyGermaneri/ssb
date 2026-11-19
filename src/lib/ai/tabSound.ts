@@ -11,6 +11,7 @@
 import { AiError } from './types'
 import type { SoundCheck, SoundHostApi, SoundStatus, SoundTask } from './soundHost'
 import type { SoundModelInfo } from './soundModels'
+import { forgetModel, keepModel } from './tabKeep'
 
 /** transformers.js's cache (env.cacheKey's default) */
 export const TAB_CACHE = 'transformers-cache'
@@ -54,6 +55,7 @@ export class TabSoundFiles implements SoundHostApi {
           all = false
           missing += f.bytes
         }
+        if (all) keepModel(m.id)
         return { id: m.id, downloaded: all, missing }
       }),
     )
@@ -103,6 +105,8 @@ export class TabSoundFiles implements SoundHostApi {
         if (signal.aborted) throw new AiError('cancelled', 'aborted')
         before += f.bytes || got
       }
+      // (had in this browser: if it's cleared before the next visit, it comes back by itself: tabKeep.ts)
+      keepModel(m.id)
     } catch (e) {
       this.failed = { model: m.id, message: signal.aborted ? 'cancelled' : e instanceof Error ? e.message : String(e) }
     } finally {
@@ -120,6 +124,8 @@ export class TabSoundFiles implements SoundHostApi {
   }
   async remove(m: SoundModelInfo): Promise<void> {
     if (!m.page) return
+    // (deleted on purpose: not brought back)
+    forgetModel(m.id)
     const cache = await this.open()
     for (const f of m.files) await cache.delete(f.url)
   }

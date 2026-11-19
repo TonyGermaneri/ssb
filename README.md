@@ -121,13 +121,13 @@ A sound dragged over a tab opens it, and dropped there fills that slot.
   starts one.
 - **REMOVE** empties a slot.
 - **Prompt a wave** (with a sound model downloaded; in a browser tab, Stable Audio 3 Small Music or MusicGen Small): the field under a slot's bar asks the
-  VCO's sound model (its **☰ › SOUND MODEL**, beside GROW — the same one its garden grows with) for a clip from a few
+  VCO's sound model (its **☰ › Sound model**, beside GROW — the same one its garden grows with) for a clip from a few
   words (*a warm sustained cello note, C3*; *glass harmonica, airy*), and the clip becomes that slot's sound: trimmed,
   faded and normalised, tuned from its pitch when it holds a note, added to the board tagged `vco`. **➤** (or Enter)
   sends the words as typed; the **automation button** beside it has the word model write them out first — a fuller
   caption, and for a model that sings, the words to sing. The line under it shows the model and what was sent. Choosing
   another model in ☰ takes effect at once (a clip the old one made, not yet in, is let go). No conversation, and nothing
-  downloads from here (a model not yet downloaded says so; ⚙ fetches it); ■ stops it. With no patch selected this
+  downloads from here (a model not yet downloaded says so; **Download** in ☰ fetches it); ■ stops it. With no patch selected this
   starts one.
 - **VCO 1** is the main voice. VCOs 2–3 have **MIX / MOD** (heard, or a silent modulator only), **TRACK / FIXED**
   (follow the played key keeping TRANS / FINE, or always play NOTE) and **LEVEL**.
@@ -297,7 +297,7 @@ tools:
 | `sound_models` / `load_sound_model` / `unload_sound_model` | which **sound models** there are, which is loaded and downloaded; load or switch one (asking you before anything downloads), or free its memory |
 | `make_sound` | briefs the loaded sound model to generate a clip from a caption, which becomes a sample on the board (below) |
 
-- **Providers** (⚙): **Anthropic** (Claude; an API key), **OpenAI** (an API key), or **LM Studio** on this computer
+- **Providers** (**Settings**): **Anthropic** (Claude; an API key), **OpenAI** (an API key), or **LM Studio** on this computer
   (no key; turn its server's CORS on, and load a model that does tool calling — with vision, for the pictures). Each
   provider keeps its own endpoint, key and model; **LIST** asks it which models there are, **TEST** sends a tiny request.
   Keys stay in this computer's browser storage, never in the board, its exports or a plugin's saved session.
@@ -314,7 +314,7 @@ tools:
   side; a setting the model doesn't take (temperature on a reasoning model) is left out rather than failing the
   request. Local models that write a tool call into their text (Qwen3.5 does, in its thinking) still get it run.
 
-**Sound models** (⚙ ▸ SOUND MODEL; the app and the plugin — a browser tab runs Stable Audio 3 Small Music and MusicGen Small): text-to-audio models the agent briefs
+**Sound models** (a VCO's **☰ › Sound model**, where they're picked, downloaded and deleted — the agent starts with the one picked there last; the app and the plugin — a browser tab runs Stable Audio 3 Small Music and MusicGen Small): text-to-audio models the agent briefs
 to generate sound effects, foley, ambiences, loops and notes, as sub-agents it can load and switch itself. SSB runs
 them on this computer with [audio.cpp](https://github.com/0xShug0/audio.cpp) (on the GPU: Metal on a Mac), in a helper
 process every bundle carries (`Contents/Helpers/audiocpp_server`), so a model's memory, or a crash, stays out of the
@@ -341,7 +341,11 @@ M-series Mac), else on one CPU core (3 s in about 20 s). Same id as the app's, s
 between the app and a tab; up to 30 s a clip there; the decoder adds a touch of noise of its own each time, so a seed
 brings back the music, not every sample. SSB fetches a tab's model files from the Hugging Face Hub into the browser's
 storage for the site (the Cache API), with progress; a stopped download keeps the files it finished, and the browser is
-asked to keep them rather than clear them when space runs short. ACE-Step is the BF16 package: audio.cpp's
+asked to keep them rather than clear them when space runs short. Browsers clear a site's storage anyway at times (low disk, Safari's
+week without a visit, "clear site data"): a model you had in this browser — downloaded, or whose clips are on the board —
+that is still the one picked comes back by itself on the next visit, downloading again with its progress in a toast, and
+a prompt asked of it meanwhile waits for it. A model never had there is never fetched unasked; a VCO's status line says
+which it is (downloaded, loaded, downloading, not downloaded), and **Delete files** in ☰ means it stays gone. ACE-Step is the BF16 package: audio.cpp's
 Q8 one quantises its planner, which then writes a different song. You keep typing short prompts: with ACE-Step as a
 VCO's ☰ model, the prompt's automation button (and the garden) has the word model write four lines to sing about the
 prompt — or the garden's caption — and ACE-Step sings them (10 s clips; a garden's AVOID words for voices let go; with
@@ -360,7 +364,7 @@ a new sample tagged `ai`, `generated` and the model; a clip that holds a steady 
 tune) and in its name, so it plays in tune from the keys; then the agent builds on it and renders it like any patch.
 **▷** on a clip in the conversation plays it. Over MCP the same tools use the same settings.
 
-**MCP server** (⚙ ▸ MCP SERVER, off until you turn it on; the app and the plugin, not a browser tab): the same tools
+**MCP server** (AI patch maker › **Settings › MCP server**, off until you turn it on; the app and the plugin, not a browser tab): the same tools
 for an agent outside SSB — Claude Code, Claude Desktop, Cursor, anything that speaks MCP — working on the board SSB
 shows. Two ways in, with copy-ready commands in the settings:
 - **HTTP** (Streamable HTTP) at `http://127.0.0.1:6280/mcp`, with a bearer token: local only, requests from web pages
@@ -377,11 +381,16 @@ Contract tests against the real APIs: `SSB_AI_LIVE=1 npx vitest run src/lib/ai/p
 
 ### Prompt garden
 
+**GROW** in the rack's header (beside MPE and PLAY) gets a whole set going in one press: every VCO with a sound starts
+growing, and each empty one first gets a prompt of its own — a random idea (*dreamy marimba, through old tape*) that the
+word model writes out as a fuller caption, so it's different each press — a clip from it (from the sound model picked
+last, if it's downloaded; else SKETCH), its **GRAIN** on, and a random **LOOPS** (2–12) and **XFADE** (30 ms – 4 s).
+
 Each VCO can regrow its own sample while it plays. Its bar (its tab's, or its column's in PLAY) has its own **XFADE**,
 **OFFSET** and **LOOPS** knobs (in PLAY, its **VOL** too), then **◀ GROW ☰ ▶**: **GROW** — the automation icon — turns
 growth on (green; while a clip is being made it fills as its progress bar), **◀ ▶** step back and forth through the
-clips it has grown (stitched in at once), and **☰** holds the **SOUND MODEL** and the words to **AVOID** (the negative
-prompt). After them **↻** (in PLAY, while it grows: the clip ready goes in at once, or a new one is made now), **⏸**,
+clips it has grown (stitched in at once), and **☰** holds the models: the **Sound model** (pick, download, delete; a Hugging Face token for a gated
+one), the words to **AVOID** (the negative prompt), and the **Word model**. After them **↻** (in PLAY, while it grows: the clip ready goes in at once, or a new one is made now), **⏸**,
 which pauses its growth (the clip playing loops on), and **💾**, which saves the clip playing into the samples (tagged
 `generated`).
 
@@ -392,7 +401,7 @@ which pauses its growth (the clip playing loops on), and **💾**, which saves t
   (WALK); between hits it HOLDs its word or DROPs out. The words make the caption — "eerie trolls echoing in a mithril
   mine". Its **⚙** has the rest: the PROMPT, the rings (add, remove, kind, LOCK, MUTE, ROTATE, CYCLE / RANDOM / WALK,
   HOLD / DROP), BACK, PAD STEP, REUSE and the SEED.
-- **The words come from a word model** (AI settings › WORD MODEL): a tiny language model — SmolLM2 360M (365 MB) or
+- **The words come from a word model** (a VCO's **☰ › Word model**: one for all VCOs): a tiny language model — SmolLM2 360M (365 MB) or
   135M (140 MB), Apache 2.0, run in SSB by transformers.js on WebAssembly in a worker, offline once downloaded. Type a
   prompt — the VCO's wave prompt, or the GARDEN pad's ⚙ › PROMPT — and it lists words of each ring's kind for it, which
   become that ring's words as each list comes ("in the depths of moria and in the misty mountains" → trolls, elves,

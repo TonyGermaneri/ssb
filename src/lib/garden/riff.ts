@@ -1,5 +1,5 @@
 /**
- * The garden's word model, from the page's side: which one (AI settings › WORD MODEL), whether it's downloaded, its
+ * The garden's word model, from the page's side: which one (a VCO's ☰ menu › Word model), whether it's downloaded, its
  * worker (workers/riff.worker.ts) and `wordsFor(prompt, kind)`, which lists words of a ring's kind for what someone
  * typed (none: no model, or nothing came back) -- the rings' words come only from it.
  *

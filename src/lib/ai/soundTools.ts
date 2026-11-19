@@ -13,6 +13,8 @@ import { DEFAULT_SOUND_MODEL, downloadBytes, TAB_SOUND_MODEL, fmtBytes, SOUND_MO
 import { canRunHere, generateWithStop, hereForm, loadAndWait, NativeSoundHost, type SoundHostApi, type SoundStatus } from './soundHost'
 import { routedSoundHost } from './pageSound'
 import { TabSoundFiles } from './tabSound'
+import { restorable } from './tabKeep'
+import { splitTags } from '../tags'
 import { inNative } from '../../native/bridge'
 import { defaultSoundSettings, errorMessage, type SoundSettings } from './types'
 
@@ -115,7 +117,7 @@ export interface MadeSound {
 /**
  * One clip from a caption onto the board: the model loaded (or the one named), the clip generated, trimmed, faded and
  * normalised, tuned from a steady pitch, added as a sound tagged "generated" and the model's tag.  `requireDownloaded`
- * refuses a model that would have to download first (the VCO wave prompt never starts gigabytes; the AI settings do).
+ * refuses a model that would have to download first (the VCO wave prompt never starts gigabytes; the VCO's ☰ menu does).
  */
 export async function makeSound(
   board: Board, agent: SoundAgent, input: MakeSoundInput, signal?: AbortSignal, opts: { requireDownloaded?: boolean } = {},
@@ -125,7 +127,9 @@ export async function makeSound(
   const m = input.model ? resolveModel(agent, input.model) : (loadedModel(agent, st) ?? resolveModel(agent, undefined))
   if (opts.requireDownloaded && st.available && st.loaded?.id !== m.id && !(st.task?.loads && st.task.model === m.id)) {
     const [c] = await host.check([m])
-    if (!c?.downloaded) throw new Error(`${m.label} isn't downloaded yet: AI settings › SOUND MODEL downloads it`)
+    // (in a browser tab, one the user had that the browser cleared comes back by itself: waited for, not refused)
+    const back = !inNative() && m.page && restorable(hereForm(m), boardTags(board))
+    if (!c?.downloaded && !back) throw new Error(`${m.label} isn't downloaded yet: download it in the VCO's ☰ menu`)
   }
   const { switched } = await ensureLoaded(agent, m, signal)
   const seconds = Math.min(input.seconds ?? 5, m.maxSeconds)
@@ -151,13 +155,16 @@ export async function makeSound(
   }
 }
 
+/** each board sound's tags (a clip a model made carries its tag and "generated") */
+export const boardTags = (board: Board) => board.sounds.map((s) => splitTags(s.settings.tag ?? '').map((t) => t.toLowerCase()))
+
 /** How long a VCO wave prompt asks for: a few seconds, room for a note's attack, body and tail. */
 export const VCO_PROMPT_SECONDS = 4
 /** a wave with words to sing: long enough to sing a line */
 export const VCO_SUNG_SECONDS = 10
 
 /**
- * The VCO wave prompt: the sound model picked in the AI settings makes a clip from the prompt, which lands on the board
+ * The VCO wave prompt: the sound model picked in its ☰ menu makes a clip from the prompt, which lands on the board
  * as a sound and goes straight into patch slot `slot` (a patch starts when none is selected), replacing what was there.
  * The same pipeline as make_sound, without the conversation; it never starts a download.
  */
@@ -193,7 +200,7 @@ export function createSoundTools(board: Board, agent: SoundAgent): AgentTool[] {
       const [c] = await host.check([m])
       if (c?.downloaded) return null
       const size = c?.missing ? fmtBytes(c.missing) : downloadBytes(m) ? fmtBytes(downloadBytes(m)) : 'an unknown amount'
-      const gated = m.gated && !agent.hasToken() ? ' It is gated: it needs its licence accepted on Hugging Face and a token in the AI settings.' : ''
+      const gated = m.gated && !agent.hasToken() ? ' It is gated: it needs its licence accepted on Hugging Face and a token (a VCO\'s ☰ menu, once the model is picked there).' : ''
       return `The agent wants to load the sound model ${m.label}: that downloads ${size} (once), and it takes about ${m.memoryGb} GB of memory while loaded. Download it?${gated}`
     } catch {
       return null // no host: run() says so
@@ -233,7 +240,7 @@ export function createSoundTools(board: Board, agent: SoundAgent): AgentTool[] {
                 selected_in_settings: m.id === selected?.id,
                 downloaded: c?.downloaded ?? null,
                 ...(c && !c.downloaded ? { download: c.missing ? fmtBytes(c.missing) : 'size unknown' } : {}),
-                ...(m.gated ? { gated: agent.hasToken() ? 'yes (a token is set)' : 'yes: needs its licence accepted and a Hugging Face token in the AI settings' } : {}),
+                ...(m.gated ? { gated: agent.hasToken() ? 'yes (a token is set)' : 'yes: needs its licence accepted and a Hugging Face token in a VCO\'s ☰ menu' } : {}),
               }
             }),
           }),

@@ -1,17 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { SKETCH_MODEL, useGarden } from '../stores/garden'
-import { DEFAULT_GARDEN_MODEL, FADE_MAX, OFFSET_MAX } from '../lib/garden/garden'
-import { SOUND_MODELS, soundModelFrom } from '../lib/ai/soundModels'
-import { canRunHere } from '../lib/ai/soundHost'
-import { inNative } from '../native/bridge'
+import { useGarden } from '../stores/garden'
+import { FADE_MAX, OFFSET_MAX } from '../lib/garden/garden'
 import type { PatchSlot } from '../types'
 import Knob from './Knob.vue'
+import VcoMenu from './VcoMenu.vue'
 
 /**
  * A VCO's PROMPT GARDEN in its title bar (the PLAY column's and the VCO tab's): XFADE, OFFSET and LOOPS as small knobs;
  * the grow toggle (the automation icon the pads' growth uses, green while it grows, filling as a clip is made) between
- * ◀ ▶, which step back and forth through the clips it grew; ☰ beside it for the sound model and the words to AVOID;
+ * ◀ ▶, which step back and forth through the clips it grew; ☰ beside it for the models (VcoMenu: the sound model, its download, the words to AVOID, and the word model);
  * ⏸ that holds its growth and 💾 that saves the clip playing. Each VCO's own (PatchSlot.garden); its rings are the
  * PLAY view's GARDEN pad. In PLAY (`play`) the VCO's VOL leads, and while it grows a green ↻ grows a new clip now.
  */
@@ -71,27 +69,6 @@ const navTitle = (dir: -1 | 1) => {
   return t ? `${dir < 0 ? 'Back to the clip before' : 'On to the clip after'}: ${t.prompt} (${at + 1 + dir} of ${takes.length})` : dir < 0 ? 'No earlier clip' : 'No later clip'
 }
 
-// ☰: the sound model and the words to avoid
-// (only what runs here: a browser tab has Stable Audio 3 Small Music, the default, and MusicGen; where the default
-// can't run, the default is SKETCH)
-const tab = !canRunHere(soundModelFrom(DEFAULT_GARDEN_MODEL))
-const MODEL_CHOICES = tab
-  ? [{ id: '', label: 'SKETCH — a little synth plays the words (no model)' }, ...SOUND_MODELS.filter(canRunHere).map((m) => ({ id: m.id, label: m.label }))]
-  : [
-      { id: '', label: `${SOUND_MODELS.find((m) => m.id === DEFAULT_GARDEN_MODEL)?.label} (${inNative() ? 'fastest' : 'in this tab'})` },
-      ...SOUND_MODELS.filter((m) => m.id !== DEFAULT_GARDEN_MODEL && canRunHere(m)).map((m) => ({ id: m.id, label: m.label })),
-      { id: SKETCH_MODEL, label: 'SKETCH — a little synth plays the words (no model)' },
-    ]
-// (the VCO's model: its wave prompt's and its garden's; a clip the one before made, not yet in, is let go)
-const model = computed({ get: () => props.x.garden?.model ?? '', set: (v: string) => garden.setModel(props.slot, v) })
-// (a model that can't run here: SKETCH plays instead)
-const runs = computed(() => model.value === SKETCH_MODEL || (!model.value && tab) || canRunHere(soundModelFrom(model.value || DEFAULT_GARDEN_MODEL)))
-// ☰'s lyrics: for a model that sings
-const sings = computed(() => !!soundModelFrom(props.x.garden?.model || DEFAULT_GARDEN_MODEL)?.lyrics)
-const ownLyrics = computed({ get: () => !!props.x.garden?.ownLyrics, set: (v: boolean) => { const x = g(); if (x) x.ownLyrics = v } })
-const lyrics = computed({ get: () => props.x.garden?.lyrics ?? '', set: (v: string) => { const x = g(); if (x) x.lyrics = v } })
-const lastSung = computed(() => garden.sang.get(props.x.layer.id) ?? '')
-const avoid = computed({ get: () => props.x.garden?.negative ?? '', set: (v: string) => { const x = g(); if (x) x.negative = v } })
 function togglePause() {
   const x = g()
   if (x) x.paused = !x.paused
@@ -165,33 +142,9 @@ const fmtFade = (v: number) => `XF ${v < 1 ? `${Math.round(v * 1000)}ms` : `${v.
     </button>
     <v-menu location="bottom end" :close-on-content-click="false" offset="4" :z-index="3000">
       <template #activator="{ props: act }">
-        <button class="pause" v-bind="act" title="This VCO's sound model (its wave prompt's and its garden's), and the words it avoids"><v-icon size="13" icon="mdi-menu" /></button>
+        <button class="pause" v-bind="act" title="Models: this VCO's sound model (its wave prompt's and its garden's) and the word model — choose, download, delete"><v-icon size="13" icon="mdi-menu" /></button>
       </template>
-      <div class="gmenu" @keydown.stop>
-        <label>
-          <span>SOUND MODEL</span>
-          <select v-model="model">
-            <option v-for="m in MODEL_CHOICES" :key="m.id" :value="m.id">{{ m.label }}</option>
-          </select>
-        </label>
-        <small v-if="!runs">That model needs the SSB app or plugin: in a browser tab SKETCH plays the words.</small>
-        <small v-else>The VCO's prompt and its garden both use it. It must be downloaded first (AI settings › SOUND MODEL): neither starts a download.</small>
-        <label>
-          <span>AVOID</span>
-          <input v-model.lazy="avoid" spellcheck="false" placeholder="speech, vocals, low quality" />
-        </label>
-        <small>Words the sound model steers away from, comma separated (a clip whose words ask for one of them gets it anyway).</small>
-        <template v-if="sings">
-          <label class="own" title="Advanced: give the words to sing yourself, instead of the word model writing them from the prompt">
-            <span>LYRICS</span>
-            <input v-model="ownLyrics" type="checkbox" />
-            <em>OWN WORDS</em>
-          </label>
-          <textarea v-if="ownLyrics" v-model.lazy="lyrics" rows="4" spellcheck="false" placeholder="[verse]&#10;the words to sing, a line each&#10;[chorus]&#10;…" />
-          <small v-else>The prompt's automation button has the word model write the words to sing; ➤ sings the words as typed.</small>
-          <pre v-if="!ownLyrics && lastSung" class="sung" title="The words sung last">{{ lastSung }}</pre>
-        </template>
-      </div>
+      <VcoMenu :x="x" :slot="slot" />
     </v-menu>
     <button class="pause nav" :disabled="!canFwd" :title="navTitle(1)" @click="garden.stepTake(slot, 1)">
       <v-icon size="13" icon="mdi-chevron-right" />
@@ -305,86 +258,6 @@ const fmtFade = (v: number) => `XF ${v < 1 ? `${Math.round(v * 1000)}ms` : `${v.
 .nav {
   width: 14px;
   border-radius: 7px;
-}
-.gmenu {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  width: 300px;
-  padding: 8px;
-  border-radius: 6px;
-  background: linear-gradient(180deg, var(--panel-hi), var(--panel-lo));
-  border: 1px solid #000;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
-}
-.gmenu label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.gmenu label span {
-  flex: 0 0 82px;
-  font-family: 'Orbitron', sans-serif;
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 0.14em;
-  color: var(--text-head);
-}
-.gmenu select,
-.gmenu input {
-  flex: 1;
-  min-width: 0;
-  height: 22px;
-  padding: 0 6px;
-  border-radius: 3px;
-  font-family: 'VT323', monospace;
-  font-size: 15px;
-  color: var(--text);
-  background: var(--lcd-bg);
-  border: 1px solid #000;
-  outline: none;
-  appearance: auto;
-}
-.gmenu .own input {
-  flex: none;
-  width: auto;
-  height: auto;
-}
-.gmenu .own em {
-  font-style: normal;
-  font-family: 'VT323', monospace;
-  font-size: 15px;
-  color: var(--text);
-}
-.gmenu textarea {
-  min-height: 70px;
-  padding: 4px 6px;
-  border-radius: 3px;
-  font-family: 'VT323', monospace;
-  font-size: 15px;
-  line-height: 1.1;
-  color: var(--text);
-  background: var(--lcd-bg);
-  border: 1px solid #000;
-  outline: none;
-  resize: vertical;
-}
-.gmenu .sung {
-  margin: 0;
-  max-height: 80px;
-  overflow: auto;
-  white-space: pre-wrap;
-  font-family: 'VT323', monospace;
-  font-size: 13px;
-  line-height: 1.1;
-  color: var(--c-secondary);
-}
-.gmenu small {
-  margin: 0 0 4px;
-  font-family: 'VT323', monospace;
-  font-size: 13px;
-  line-height: 1.1;
-  color: var(--text-mute);
 }
 .pause {
   display: grid;

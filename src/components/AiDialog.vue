@@ -2,20 +2,16 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useAi, type Item } from '../lib/ai/store'
 import { errorMessage, PROVIDERS, type Effort, type ProviderKind } from '../lib/ai/types'
-import { downloadBytes, fmtBytes, SOUND_MODELS } from '../lib/ai/soundModels'
-import { canRunHere, hereForm } from '../lib/ai/soundHost'
-import ComboBox from './ComboBox.vue'
+import { fmtBytes, SOUND_MODELS } from '../lib/ai/soundModels'
 import { useBoard } from '../stores/board'
-import { preview } from '../audio/engine'
 import { mcpSaved, mcpStatus } from '../lib/ai/mcpStatus'
 import { newMcpToken, setMcp, setMcpPort } from '../lib/ai/mcpHost'
 import { inNative } from '../native/bridge'
-import { WORD_MODELS, wordModelBytes } from '../lib/garden/wordModels'
-import { checkWordModel, chooseWordModel, downloadWordModel, removeWordModel, riffModel, riffState, setRiffOn, wordsFor } from '../lib/garden/riff'
 
 /**
  * The AI patch maker: a conversation with a model that makes, changes, studies and tidies the board's patches with
- * tools (lib/ai/tools.ts), its saved conversations (★ keeps one), and its settings.
+ * tools (lib/ai/tools.ts), its saved conversations (★ keeps one), and its settings: the provider and model it talks to,
+ * and the MCP server. (The sound and word models are chosen per VCO, in its ☰ menu: VcoMenu.vue.)
  */
 const open = defineModel<boolean>({ required: true })
 const ai = useAi()
@@ -74,10 +70,10 @@ const STARTERS = [
   'Make a punchy FM bass for techno; keep it mono with a short glide.',
   'Look at the selected patch: what does it sound like, and how could it be better?',
   'Find three bell-like waves and build a glassy keys patch from them.',
-  // (a browser tab has MusicGen only: music, not effects)
+  // (a browser tab's models make music, not effects)
   ...(inNative()
     ? ['Generate a deep sci-fi door whoosh with the sound model and put it on the board.', 'Make a rainy-night ambience with the sound model, then build a slow evolving pad patch around it.']
-    : ['Generate a lo-fi rhodes groove with MusicGen and build a patch that plays it as a loop.']),
+    : ['Generate a lo-fi rhodes groove with the sound model and build a patch that plays it as a loop.']),
 ]
 function startRename(id: string, title: string) {
   renaming.value = id
@@ -97,88 +93,18 @@ async function test() {
 }
 const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
-// ── the sound models (make_sound): the SSB app or plugin runs them natively (a browser tab: MusicGen, in the page) ──
+// ── the sound model's state, for the header (chosen, downloaded and loaded in a VCO's ☰ menu: VcoMenu.vue) ──
 const sound = computed(() => ai.soundStatus)
-// (as it runs here: in a tab, a model's browser form, with its download and limits)
-const pick = computed(() => hereForm(ai.soundPick))
-const labelOf = (id?: string) => (id ? (SOUND_MODELS.find((m) => m.id === id)?.label ?? (pick.value?.id === id ? pick.value.label : id)) : '')
-// (a browser tab: only the ones SSB runs in its page)
-const inTab = !inNative()
-const soundOptions = SOUND_MODELS.filter(canRunHere).map((m) => hereForm(m)).map((m) => ({
-  value: m.id,
-  label: m.label,
-  detail: `${fmtBytes(downloadBytes(m))} · ${m.channels === 2 ? 'stereo' : 'mono'}${m.gated ? ' · token' : ''}`,
-}))
-const showHfToken = ref(false)
-const confirmDownload = ref(false)
-const testingSound = ref('')
-const soundLoaded = computed(() => !!pick.value && sound.value?.loaded?.id === pick.value.id)
-/** what LOAD would download (0: it's here; null: unknown) */
-const toDownload = computed(() => {
-  const c = ai.soundCheck
-  if (c && c.id === pick.value?.id) return c.downloaded ? 0 : c.missing || (pick.value ? downloadBytes(pick.value) : 0) || null
-  return pick.value ? downloadBytes(pick.value) || null : null
-})
+const labelOf = (id?: string) => (id ? (SOUND_MODELS.find((m) => m.id === id)?.label ?? id) : '')
 const taskLine = computed(() => {
   const t = sound.value?.task
   if (!t) return ''
   const who = labelOf(t.model)
-  const pct = t.progress == null ? '' : ` · ${Math.round(t.progress * 100)} %`
+  const pct = t.progress == null ? '' : ` · ${Math.round(t.progress * 100)}%`
   if (t.kind === 'download') return `Downloading ${who}: ${fmtBytes(t.done)} of ${t.total ? fmtBytes(t.total) : '?'}${pct}`
   if (t.kind === 'load') return `Loading ${who}… ${Math.round(t.elapsed)} s`
   return `Generating with ${who}… ${Math.round(t.elapsed)} s`
 })
-// ── the garden's word model (lib/garden/riff.ts): the rings' words from a prompt, in the page, offline once downloaded ──
-const confirmWords = ref(false)
-const wordTest = ref('')
-const wordPick = computed(() => riffModel())
-const wordBusy = computed(() => riffState.status === 'downloading' || riffState.status === 'loading')
-const wordLine = computed(() => {
-  const pct = `${Math.round(riffState.progress * 100)} %`
-  if (riffState.status === 'downloading') return `Downloading ${wordPick.value.label}: ${fmtBytes(riffState.doneBytes)} of ${fmtBytes(riffState.totalBytes)} · ${pct}`
-  if (riffState.status === 'loading') return riffState.totalBytes && riffState.progress < 1 ? `Fetching ${wordPick.value.label}… ${pct}` : `Loading ${wordPick.value.label}…`
-  if (riffState.status === 'ready') return `✓ Ready${riffState.last ? ` · last words in ${riffState.lastMs} ms` : ''}`
-  return ''
-})
-function getWords() {
-  confirmWords.value = false
-  void downloadWordModel()
-}
-async function testWords() {
-  wordTest.value = '…'
-  const scene = 'in the depths of moria and in the misty mountains'
-  const r = await wordsFor(scene, 'noun').catch(() => [] as string[])
-  wordTest.value = r.length ? `“${scene}” → ${r.join(', ')}` : '✗ nothing came back'
-}
-watch(() => riffState.id, () => ((confirmWords.value = false), (wordTest.value = '')))
-void checkWordModel()
-
-function loadSound() {
-  confirmDownload.value = false
-  if (toDownload.value !== 0 && !soundLoaded.value) return void (confirmDownload.value = true)
-  void ai.loadSound()
-}
-function downloadAndLoad() {
-  confirmDownload.value = false
-  void ai.loadSound()
-}
-watch(() => pick.value?.id, () => ((confirmDownload.value = false), (testingSound.value = '')))
-/** a clip, played where the board plays (in the plugin: the DAW's track) */
-function playClip(channels: Float32Array[], rate: number) {
-  const buf = new AudioBuffer({ numberOfChannels: channels.length, length: channels[0].length, sampleRate: rate })
-  channels.forEach((c, i) => buf.getChannelData(i).set(c))
-  preview(buf, 1, Math.max(0.1, buf.duration - 0.1))
-}
-async function testSound() {
-  testingSound.value = 'Generating a short clip…'
-  try {
-    const t = await ai.testSound(pick.value?.tag === 'stable-audio' ? 'a single bright synth stab, short decay' : 'a short glass clink, close and dry')
-    testingSound.value = `✓ ${t.text}`
-    playClip(t.channels, t.rate)
-  } catch (e) {
-    testingSound.value = `✗ ${errorMessage(e)}`
-  }
-}
 watch(open, (o) => ai.watchSound(o), { immediate: true })
 onBeforeUnmount(() => open.value && ai.watchSound(false))
 /** ▷ on a clip in the conversation: the board's sound, played once (again: stops it) */
@@ -208,9 +134,9 @@ async function applyPort() {
 const mcpUrl = computed(() => mcpStatus.url || `http://127.0.0.1:${mcp.value.port}/mcp`)
 const cliPath = computed(() => mcpStatus.cli || '<path to ssb-mcp>')
 const commands = computed(() => [
-  { id: 'stdio', label: 'CLAUDE CODE · STDIO', text: `claude mcp add ssb -- "${cliPath.value}"` },
-  { id: 'http', label: 'CLAUDE CODE · HTTP', text: `claude mcp add --transport http ssb ${mcpUrl.value} --header "Authorization: Bearer ${mcp.value.token}"` },
-  { id: 'json', label: 'JSON (CLAUDE DESKTOP, CURSOR, …)', text: JSON.stringify({ mcpServers: { ssb: { command: cliPath.value } } }) },
+  { id: 'stdio', label: 'Claude Code · stdio', text: `claude mcp add ssb -- "${cliPath.value}"` },
+  { id: 'http', label: 'Claude Code · HTTP', text: `claude mcp add --transport http ssb ${mcpUrl.value} --header "Authorization: Bearer ${mcp.value.token}"` },
+  { id: 'json', label: 'JSON (Claude Desktop, Cursor, …)', text: JSON.stringify({ mcpServers: { ssb: { command: cliPath.value } } }) },
 ])
 async function copy(id: string, text: string) {
   try {
@@ -229,273 +155,206 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
 <template>
   <v-dialog v-model="open" max-width="1180" scrollable>
     <div class="ai" @keydown.stop>
-      <header>
-        <v-icon icon="mdi-creation" color="primary" />
-        <h3>AI PATCH MAKER</h3>
-        <span class="chip on" :title="`Conversations stay with the provider and model they began with`">{{ providerName }} · {{ modelName || 'no model' }}</span>
-        <span v-if="totals" class="usage" title="This conversation: input at full price · read from / written to the prompt cache · output">{{ totals }}</span>
-        <button v-if="mcpStatus.state === 'on'" class="chip on mcp-chip" :title="`MCP server on at ${mcpStatus.url}: agents outside SSB can use these tools`" @click="showSettings = true">
-          <i class="led" /> MCP
-        </button>
-        <button
-          v-if="sound?.loaded || sound?.task"
-          class="chip on mcp-chip"
-          :class="{ busy: !!sound?.task }"
-          :title="sound?.task ? taskLine : `Sound model loaded (${sound?.backend}): the agent generates audio with it`"
-          @click="showSettings = true"
-        >
-          <i class="led" /> ♪ {{ sound?.task ? sound.task.kind.toUpperCase() + (sound.task.progress != null ? ` ${Math.round(sound.task.progress * 100)}%` : '…') : sound?.loaded?.label }}
-        </button>
-        <v-spacer />
-        <button class="hw-btn icon" :class="{ lit: showSettings }" title="Settings: provider, key, model" @click="showSettings = !showSettings">
-          <v-icon size="16" icon="mdi-cog" />
-        </button>
-        <button class="hw-btn icon" title="Close (a running request carries on)" @click="open = false"><v-icon size="16" icon="mdi-close" /></button>
+      <header class="top">
+        <div class="brand">
+          <span class="mark"><v-icon size="16" icon="mdi-creation" /></span>
+          <div>
+            <h3>AI Patch Maker</h3>
+            <p class="sub" title="Conversations stay with the provider and model they began with">{{ providerName }} · {{ modelName || 'no model set' }}</p>
+          </div>
+        </div>
+        <div class="badges">
+          <span v-if="totals" class="usage" title="This conversation: input at full price · read from / written to the prompt cache · output">{{ totals }}</span>
+          <span v-if="mcpStatus.state === 'on'" class="badge ok" :title="`MCP server on at ${mcpStatus.url}: agents outside SSB can use these tools`"><i />MCP</span>
+          <span
+            v-if="sound?.loaded || sound?.task"
+            class="badge"
+            :class="sound?.task ? 'busy' : 'ok'"
+            :title="sound?.task ? taskLine : `Sound model loaded (${sound?.backend}): the agent generates audio with it. Choose it in a VCO's ☰ menu.`"
+          >
+            <i />{{ sound?.task ? sound.task.kind[0].toUpperCase() + sound.task.kind.slice(1) + (sound.task.progress != null ? ` ${Math.round(sound.task.progress * 100)}%` : '…') : sound?.loaded?.label }}
+          </span>
+        </div>
+        <div class="tools">
+          <button class="btn ghost" :class="{ on: showSettings }" :title="showSettings ? 'Back to the conversation' : 'Settings: provider, key, model, MCP'" @click="showSettings = !showSettings">
+            <v-icon size="15" :icon="showSettings ? 'mdi-message-text-outline' : 'mdi-tune-variant'" />
+            {{ showSettings ? 'Chat' : 'Settings' }}
+          </button>
+          <button class="btn ghost icon" title="Close (a running request carries on)" @click="open = false"><v-icon size="16" icon="mdi-close" /></button>
+        </div>
       </header>
 
       <div class="body">
         <!-- saved conversations: starred first -->
         <aside class="convos">
-          <button class="hw-btn new" :disabled="ai.running" @click="ai.newConversation()"><v-icon size="14" icon="mdi-plus" /> NEW</button>
-          <div
-            v-for="c in [...ai.list].sort((a, b) => Number(b.starred) - Number(a.starred) || b.updated - a.updated)"
-            :key="c.id"
-            class="convo"
-            :class="{ on: ai.current?.id === c.id }"
-            @click="ai.open(c.id)"
-          >
-            <button class="star" :class="{ on: c.starred }" :title="c.starred ? 'Starred: kept for good' : 'Star it to keep it (unstarred ones go after 30)'" @click.stop="ai.toggleStar(c.id)">
-              {{ c.starred ? '★' : '☆' }}
-            </button>
-            <input v-if="renaming === c.id" v-model="renameText" class="rename" @click.stop @keydown.enter="finishRename" @blur="finishRename" />
-            <span v-else class="title" :title="`${c.title} — double-click to rename`" @dblclick.stop="startRename(c.id, c.title)">{{ c.title }}</span>
-            <small>{{ PROVIDERS[c.provider].label }} · {{ when(c.updated) }}</small>
-            <button class="del" title="Delete this conversation" @click.stop="ai.remove(c.id)">✕</button>
+          <button class="btn new" :disabled="ai.running" @click="ai.newConversation()"><v-icon size="15" icon="mdi-plus" /> New conversation</button>
+          <p class="group">History</p>
+          <div class="list">
+            <div
+              v-for="c in [...ai.list].sort((a, b) => Number(b.starred) - Number(a.starred) || b.updated - a.updated)"
+              :key="c.id"
+              class="convo"
+              :class="{ on: ai.current?.id === c.id }"
+              @click="ai.open(c.id)"
+            >
+              <button class="star" :class="{ on: c.starred }" :title="c.starred ? 'Starred: kept for good' : 'Star it to keep it (unstarred ones go after 30)'" @click.stop="ai.toggleStar(c.id)">
+                <v-icon size="13" :icon="c.starred ? 'mdi-star' : 'mdi-star-outline'" />
+              </button>
+              <input v-if="renaming === c.id" v-model="renameText" class="rename" @click.stop @keydown.enter="finishRename" @blur="finishRename" />
+              <span v-else class="title" :title="`${c.title} — double-click to rename`" @dblclick.stop="startRename(c.id, c.title)">{{ c.title }}</span>
+              <small>{{ PROVIDERS[c.provider].label }} · {{ when(c.updated) }}</small>
+              <button class="del" title="Delete this conversation" @click.stop="ai.remove(c.id)"><v-icon size="13" icon="mdi-trash-can-outline" /></button>
+            </div>
+            <p v-if="!ai.list.length" class="empty">Conversations are kept here. Star one to keep it for good.</p>
           </div>
-          <p v-if="!ai.list.length" class="empty">Conversations are kept here. ★ keeps one for good.</p>
         </aside>
 
         <!-- settings -->
         <section v-if="showSettings" class="settings">
-          <h4>PROVIDER</h4>
-          <div class="seg">
-            <button v-for="(p, k) in PROVIDERS" :key="k" :class="{ on: ai.settings.provider === k }" @click="ai.switchProvider(k)">{{ p.label }}</button>
-          </div>
-          <p class="hint">{{ PROVIDERS[ai.settings.provider].hint }}</p>
-          <label>ENDPOINT <input v-model.trim="ai.settings.endpoint" spellcheck="false" :placeholder="PROVIDERS[ai.settings.provider].endpoint" /></label>
-          <label>
-            API KEY{{ PROVIDERS[ai.settings.provider].needsKey ? '' : ' (usually none)' }}
-            <span class="row">
-              <input v-model.trim="ai.settings.apiKey" :type="showKey ? 'text' : 'password'" spellcheck="false" autocomplete="off" placeholder="kept on this computer only" />
-              <button class="hw-btn icon" :title="showKey ? 'Hide' : 'Show'" @click="showKey = !showKey"><v-icon size="14" :icon="showKey ? 'mdi-eye-off' : 'mdi-eye'" /></button>
-            </span>
-          </label>
-          <label>
-            MODEL
-            <span class="row">
-              <input v-model.trim="ai.settings.model" list="ai-models" spellcheck="false" :placeholder="PROVIDERS[ai.settings.provider].model || 'fetch the list →'" />
-              <datalist id="ai-models"><option v-for="m in ai.models" :key="m" :value="m" /></datalist>
-              <button class="hw-btn" title="Ask the provider which models this key can use" @click="ai.fetchModels()">LIST</button>
-            </span>
-          </label>
-          <p v-if="ai.modelsError" class="err">{{ ai.modelsError }}</p>
-          <p v-else-if="ai.models.length" class="hint">{{ ai.models.length }} models: pick one in the field.</p>
-          <div class="grid">
-            <label>MAX TOKENS <input v-model.number="ai.settings.maxTokens" type="number" min="1000" max="128000" step="1000" /></label>
-            <template v-if="ai.settings.provider === 'anthropic'">
-              <label>
-                EFFORT
-                <select v-model="ai.settings.effort"><option v-for="e in EFFORTS" :key="e" :value="e">{{ e }}</option></select>
-              </label>
-              <label>
-                THINKING
-                <select v-model="ai.settings.thinking"><option value="summarized">show a summary</option><option value="omitted">hidden</option></select>
-              </label>
-              <label title="How long the cached instructions, tools and pinned turns live between requests: 1 hour costs more to write, pays off when you pause for longer than 5 minutes">
-                CACHE
-                <select v-model="ai.settings.cacheTtl"><option value="5m">5 minutes</option><option value="1h">1 hour</option></select>
-              </label>
-              <label class="check" title="If the model declines a request, the API retries it on a fallback model"><input v-model="ai.settings.fallback" type="checkbox" /> REFUSAL FALLBACK</label>
-            </template>
-            <template v-else>
-              <label>
-                TEMPERATURE
-                <input
-                  :value="ai.settings.temperature ?? ''"
-                  type="number"
-                  min="0"
-                  max="2"
-                  step="0.1"
-                  placeholder="default"
-                  @input="(e) => (ai.settings.temperature = (e.target as HTMLInputElement).value === '' ? null : Number((e.target as HTMLInputElement).value))"
-                />
-              </label>
-              <label v-if="ai.settings.provider === 'openai'">
-                REASONING
-                <select v-model="ai.settings.reasoningEffort"><option value="">default</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select>
-              </label>
-            </template>
-            <label class="check"><input v-model="ai.settings.confirmDeletes" type="checkbox" /> ASK BEFORE DELETING</label>
-          </div>
-          <div class="row">
-            <button class="hw-btn" :disabled="!ai.configured" @click="test">TEST</button>
-            <button class="hw-btn lit" @click="showSettings = false">DONE</button>
-            <span class="test" :class="{ err: testing.startsWith('✗') }">{{ testing }}</span>
-          </div>
-          <p class="hint">
-            Keys stay in this computer's browser storage: never in the board, its exports, or a plugin's saved session. Conversations keep the provider and model they began with.
-          </p>
-
-          <h4 class="mcp-head">SOUND MODEL</h4>
-          <p class="hint">
-            A text-to-audio model the agent briefs to generate sound effects, ambiences, loops and notes, which land on the board as samples for its
-            patches. SSB runs it on this computer (audio.cpp, on the GPU), one at a time; the agent can load or switch models itself, and asks before
-            anything downloads.
-          </p>
-          <p v-if="inTab" class="hint">
-            In a browser tab two run, in the page: Stable Audio 3 Small Music (a 4-bit export, on the GPU through WebGPU where the browser has
-            it) and MusicGen Small (on the CPU); the others need the SSB app or plugin. Their files are kept in this browser's storage for this site.
-          </p>
-          <p v-if="!ai.soundAvailable" class="mcp-state">Needs the SSB app or plugin: a browser tab can't run a model.</p>
-          <template v-else>
-            <p v-if="sound && !sound.available" class="err">This build of SSB doesn't carry the sound model helper.</p>
-            <label>
-              {{ inTab ? 'MODEL' : "MODEL (PICK ONE, OR PASTE A GGUF'S HUGGING FACE URL)" }}
-              <ComboBox v-model="ai.settings.sound.model" :options="soundOptions" :placeholder="inTab ? 'MusicGen Small' : 'huggingface.co/org/repo/blob/main/model.gguf'" />
-            </label>
-            <template v-if="pick">
-              <p class="hint">
-                <a :href="pick.url" target="_blank" rel="noopener">{{ pick.url.replace('https://', '') }}</a> · {{ pick.channels === 2 ? 'stereo' : 'mono' }}
-                {{ pick.sampleRate / 1000 }} kHz · up to {{ pick.maxSeconds }} s · {{ pick.license }}<template v-if="pick.custom"> · a custom GGUF: a MOSS-SoundEffect or Stable Audio model for audio.cpp</template>
-              </p>
-              <p v-if="!canRunHere(pick)" class="err">{{ pick.label }} needs the SSB app or plugin: a browser tab runs Stable Audio 3 Small Music and MusicGen Small.</p>
-              <p v-else-if="soundLoaded" class="test">✓ Loaded ({{ sound?.backend }}, {{ sound?.loaded?.loadSeconds?.toFixed(0) }} s to load).</p>
-              <p v-else-if="toDownload !== 0" class="warn">
-                ⚠ Loading it downloads <b>{{ toDownload ? fmtBytes(toDownload) : 'a file of unknown size' }}</b> the first time, into {{ inTab ? "this browser's storage" : "SSB's folder on this computer" }}, and it
-                takes about {{ pick.memoryGb }} GB of memory while loaded.
-              </p>
-              <p v-else class="hint">Downloaded: loading it takes a few seconds.</p>
-            </template>
-            <p v-else-if="ai.settings.sound.model" class="err">Not a model: pick one, or give the Hugging Face URL of a .gguf file.</p>
-            <template v-if="pick?.gated">
-              <label>
-                HUGGING FACE TOKEN
-                <span class="row">
-                  <input v-model.trim="ai.settings.sound.hfToken" :type="showHfToken ? 'text' : 'password'" spellcheck="false" autocomplete="off" placeholder="hf_… kept on this computer only" />
-                  <button class="hw-btn icon" :title="showHfToken ? 'Hide' : 'Show'" @click="showHfToken = !showHfToken"><v-icon size="14" :icon="showHfToken ? 'mdi-eye-off' : 'mdi-eye'" /></button>
-                </span>
-              </label>
-              <p class="hint">
-                {{ pick.label }} is gated: sign in to Hugging Face, accept its licence on <a :href="pick.url" target="_blank" rel="noopener">its page</a>, and paste a read token
-                from <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">huggingface.co/settings/tokens</a>.
-              </p>
-            </template>
-            <div v-if="confirmDownload" class="confirm-dl">
-              <v-icon icon="mdi-download" color="secondary" />
-              <span>Download {{ toDownload ? fmtBytes(toDownload) : 'it' }} for {{ pick?.label }}? It's once; CANCEL stops it, and it {{ inTab ? 'keeps the files it finished' : 'resumes later' }}.</span>
-              <button class="hw-btn lit" @click="downloadAndLoad">DOWNLOAD</button>
-              <button class="hw-btn" @click="confirmDownload = false">CANCEL</button>
+          <div class="page">
+            <div class="card">
+              <div class="card-head">
+                <h4>Model provider</h4>
+                <p>The language model the agent thinks with. Keys stay in this computer's browser storage: never in the board, its exports, or a plugin's saved session.</p>
+              </div>
+              <div class="seg">
+                <button v-for="(p, k) in PROVIDERS" :key="k" :class="{ on: ai.settings.provider === k }" @click="ai.switchProvider(k)">{{ p.label }}</button>
+              </div>
+              <p class="help">{{ PROVIDERS[ai.settings.provider].hint }}</p>
+              <div class="fields two">
+                <label class="field">
+                  <span>Endpoint</span>
+                  <input v-model.trim="ai.settings.endpoint" spellcheck="false" :placeholder="PROVIDERS[ai.settings.provider].endpoint" />
+                </label>
+                <label class="field">
+                  <span>API key{{ PROVIDERS[ai.settings.provider].needsKey ? '' : ' (usually none)' }}</span>
+                  <span class="row">
+                    <input v-model.trim="ai.settings.apiKey" :type="showKey ? 'text' : 'password'" spellcheck="false" autocomplete="off" placeholder="Kept on this computer only" />
+                    <button class="btn icon" :title="showKey ? 'Hide' : 'Show'" @click.prevent="showKey = !showKey"><v-icon size="14" :icon="showKey ? 'mdi-eye-off' : 'mdi-eye'" /></button>
+                  </span>
+                </label>
+                <label class="field wide">
+                  <span>Model</span>
+                  <span class="row">
+                    <input v-model.trim="ai.settings.model" list="ai-models" spellcheck="false" :placeholder="PROVIDERS[ai.settings.provider].model || 'Fetch the list →'" />
+                    <datalist id="ai-models"><option v-for="m in ai.models" :key="m" :value="m" /></datalist>
+                    <button class="btn" title="Ask the provider which models this key can use" @click.prevent="ai.fetchModels()">Fetch list</button>
+                  </span>
+                  <small v-if="ai.modelsError" class="err">{{ ai.modelsError }}</small>
+                  <small v-else-if="ai.models.length" class="help">{{ ai.models.length }} models available: pick one in the field.</small>
+                </label>
+              </div>
             </div>
-            <div class="row">
-              <button v-if="!soundLoaded" class="hw-btn" :disabled="!sound?.available || !!sound?.task || !canRunHere(pick)" title="Load it (downloading it first if it isn't here)" @click="loadSound">
-                {{ toDownload !== 0 ? 'DOWNLOAD + LOAD' : 'LOAD' }}
-              </button>
-              <button v-if="sound?.loaded" class="hw-btn" :disabled="!!sound.task" title="Free its memory" @click="ai.unloadSound()">UNLOAD</button>
-              <button v-if="sound?.task" class="hw-btn" title="Stop the download, load or generation" @click="ai.cancelSound()">CANCEL</button>
-              <button v-if="soundLoaded" class="hw-btn" :disabled="!!sound?.task" title="Generate a short clip and play it" @click="testSound">TEST</button>
-              <button
-                v-if="pick && !soundLoaded && toDownload === 0"
-                class="hw-btn"
-                :disabled="!!sound?.task"
-                title="Delete its downloaded files (it downloads again when loaded)"
-                @click="ai.removeSound()"
-              >
-                DELETE FILES
-              </button>
-              <span class="test" :class="{ err: testingSound.startsWith('✗') }">{{ taskLine || testingSound }}</span>
+
+            <div class="card">
+              <div class="card-head">
+                <h4>Behaviour</h4>
+                <p>How much it may write and think per turn. Conversations keep the provider and model they began with.</p>
+              </div>
+              <div class="fields">
+                <label class="field">
+                  <span>Max tokens</span>
+                  <input v-model.number="ai.settings.maxTokens" type="number" min="1000" max="128000" step="1000" />
+                </label>
+                <template v-if="ai.settings.provider === 'anthropic'">
+                  <label class="field">
+                    <span>Effort</span>
+                    <select v-model="ai.settings.effort"><option v-for="e in EFFORTS" :key="e" :value="e">{{ e }}</option></select>
+                  </label>
+                  <label class="field">
+                    <span>Thinking</span>
+                    <select v-model="ai.settings.thinking"><option value="summarized">Show a summary</option><option value="omitted">Hidden</option></select>
+                  </label>
+                  <label class="field" title="How long the cached instructions, tools and pinned turns live between requests: 1 hour costs more to write, pays off when you pause for longer than 5 minutes">
+                    <span>Prompt cache</span>
+                    <select v-model="ai.settings.cacheTtl"><option value="5m">5 minutes</option><option value="1h">1 hour</option></select>
+                  </label>
+                </template>
+                <template v-else>
+                  <label class="field">
+                    <span>Temperature</span>
+                    <input
+                      :value="ai.settings.temperature ?? ''"
+                      type="number"
+                      min="0"
+                      max="2"
+                      step="0.1"
+                      placeholder="Default"
+                      @input="(e) => (ai.settings.temperature = (e.target as HTMLInputElement).value === '' ? null : Number((e.target as HTMLInputElement).value))"
+                    />
+                  </label>
+                  <label v-if="ai.settings.provider === 'openai'" class="field">
+                    <span>Reasoning</span>
+                    <select v-model="ai.settings.reasoningEffort"><option value="">Default</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select>
+                  </label>
+                </template>
+              </div>
+              <div class="checks">
+                <label class="check"><input v-model="ai.settings.confirmDeletes" type="checkbox" /> Ask before deleting patches or sounds</label>
+                <label v-if="ai.settings.provider === 'anthropic'" class="check" title="If the model declines a request, the API retries it on a fallback model">
+                  <input v-model="ai.settings.fallback" type="checkbox" /> Retry refusals on a fallback model
+                </label>
+              </div>
+              <div class="card-foot">
+                <span class="result" :class="{ err: testing.startsWith('✗') }">{{ testing }}</span>
+                <button class="btn" :disabled="!ai.configured" @click="test">Test connection</button>
+                <button class="btn primary" @click="showSettings = false">Done</button>
+              </div>
             </div>
-            <div v-if="sound?.task && sound.task.progress != null" class="bar"><i :style="{ width: `${Math.round(sound.task.progress * 100)}%` }" /></div>
-            <p v-if="ai.soundError" class="err">{{ ai.soundError }}</p>
-            <p v-else-if="sound?.error && sound.error.message !== 'cancelled'" class="err">{{ labelOf(sound.error.model) }}: {{ sound.error.message }}</p>
-          </template>
 
-          <h4 class="mcp-head">WORD MODEL</h4>
-          <p class="hint">
-            A tiny language model the PROMPT GARDEN's words come from: a prompt you type for a VCO (its wave prompt, or the GARDEN pad's) and it lists
-            words of each ring's kind for it — nouns, verbs, places — which become the rings' words. It runs in SSB on this computer, offline once
-            downloaded. Without it the rings keep the words they have.
-          </p>
-          <label class="row">
-            <input type="checkbox" :checked="riffState.on" @change="setRiffOn(($event.target as HTMLInputElement).checked)" />
-            <span>THE RINGS' WORDS FROM IT</span>
-          </label>
-          <label>
-            MODEL
-            <select :value="riffState.id" :disabled="wordBusy" @change="chooseWordModel(($event.target as HTMLSelectElement).value)">
-              <option v-for="m in WORD_MODELS" :key="m.id" :value="m.id">{{ m.label }} · {{ fmtBytes(wordModelBytes(m)) }} · {{ m.note }}</option>
-            </select>
-          </label>
-          <p class="hint">
-            <a :href="`https://huggingface.co/${wordPick.repo}`" target="_blank" rel="noopener">{{ wordPick.repo }}</a> · Apache 2.0 · int8 ONNX, run by
-            transformers.js<template v-if="!inNative()"> · in a browser tab it's kept in the browser's cache</template>
-          </p>
-          <p v-if="riffState.downloaded === false && riffState.status !== 'downloading'" class="warn">
-            ⚠ It downloads <b>{{ fmtBytes(wordModelBytes(wordPick)) }}</b> once, <template v-if="inNative()">into SSB's folder on this computer</template><template v-else>into this browser</template>.
-          </p>
-          <div v-if="confirmWords" class="confirm-dl">
-            <v-icon icon="mdi-download" color="secondary" />
-            <span>Download {{ fmtBytes(wordModelBytes(wordPick)) }} for {{ wordPick.label }}? It's once.</span>
-            <button class="hw-btn lit" @click="getWords">DOWNLOAD</button>
-            <button class="hw-btn" @click="confirmWords = false">CANCEL</button>
-          </div>
-          <div class="row">
-            <button v-if="riffState.downloaded !== true" class="hw-btn" :disabled="wordBusy" @click="confirmWords = true">DOWNLOAD</button>
-            <button v-else-if="riffState.status !== 'ready'" class="hw-btn" :disabled="wordBusy" title="Load it now (it loads by itself the first time a prompt asks it for words)" @click="getWords">LOAD</button>
-            <button v-if="riffState.status === 'ready'" class="hw-btn" title="Ask it for a ring's words once" @click="testWords">TEST</button>
-            <button v-if="riffState.downloaded === true" class="hw-btn" :disabled="wordBusy" title="Delete its files (it downloads again when needed)" @click="removeWordModel">DELETE FILES</button>
-            <span class="test" :class="{ err: wordTest.startsWith('✗') }">{{ wordLine }}</span>
-          </div>
-          <div v-if="wordBusy && riffState.progress > 0" class="bar"><i :style="{ width: `${Math.round(riffState.progress * 100)}%` }" /></div>
-          <p v-if="wordTest" class="hint">{{ wordTest }}</p>
-          <p v-if="riffState.error" class="err">{{ riffState.error }}</p>
+            <div class="card slim">
+              <v-icon size="18" icon="mdi-waveform" class="lead" />
+              <div>
+                <h4>Sound and word models</h4>
+                <p>Chosen, downloaded and deleted per VCO: open <b>☰</b> in a VCO's title bar. The agent generates audio with the sound model picked there last.</p>
+              </div>
+            </div>
 
-          <h4 class="mcp-head">MCP SERVER</h4>
-          <p class="hint">
-            Lets an agent outside SSB (Claude Code, Claude Desktop, Cursor…) use these same tools on this board: over HTTP on this computer, or through
-            the <code>ssb-mcp</code> command. Off unless you turn it on; SSB's window (in a DAW, the plugin's editor) must be open while it works.
-          </p>
-          <div class="row">
-            <button class="hw-btn" :class="{ lit: mcpOn }" :disabled="!inNative()" @click="toggleMcp">{{ mcpOn ? 'ON' : 'OFF' }}</button>
-            <span class="mcp-state" :class="mcpStatus.state">
-              <template v-if="!inNative()">Needs the SSB app or plugin: a browser tab can't open a port.</template>
-              <template v-else-if="mcpStatus.state === 'on'">Serving at {{ mcpStatus.url }}</template>
-              <template v-else-if="mcpStatus.state === 'starting'">Starting…</template>
-              <template v-else-if="mcpStatus.state === 'error'">{{ mcpStatus.error }}</template>
-              <template v-else>Off</template>
-            </span>
-          </div>
-          <div class="grid">
-            <label>
-              PORT
-              <input v-model.number="mcp.port" type="number" min="1024" max="65000" @change="applyPort" />
-            </label>
-            <label>
-              TOKEN (HTTP)
-              <span class="row">
-                <input :value="mcp.token" :type="showToken ? 'text' : 'password'" readonly />
-                <button class="hw-btn icon" :title="showToken ? 'Hide' : 'Show'" @click="showToken = !showToken"><v-icon size="14" :icon="showToken ? 'mdi-eye-off' : 'mdi-eye'" /></button>
-                <button class="hw-btn icon" title="A new token (clients using the old one stop working)" @click="regenerate"><v-icon size="14" icon="mdi-refresh" /></button>
-              </span>
-            </label>
-          </div>
-          <div v-for="c in commands" :key="c.id" class="cmd">
-            <span>{{ c.label }}</span>
-            <code>{{ c.id === 'http' && !showToken ? c.text.replace(mcp.token, '•••') : c.text }}</code>
-            <button class="hw-btn" @click="copy(c.id, c.text)">{{ copied === c.id ? 'COPIED' : 'COPY' }}</button>
-          </div>
-          <p class="hint">More than one SSB with MCP on (several tracks in a DAW): each takes the next free port; <code>ssb-mcp</code> talks to the newest (<code>--list</code>, <code>--port N</code> to choose).</p>
-          <div v-if="mcpStatus.activity.length" class="activity">
-            <div v-for="(a, k) in mcpStatus.activity.slice(0, 8)" :key="k" :class="{ bad: !a.ok }">{{ a.ok ? '✓' : '✗' }} {{ a.tool }} · {{ a.ms }} ms · {{ ago(a.at) }}</div>
+            <div class="card">
+              <div class="card-head with-action">
+                <div>
+                  <h4>MCP server</h4>
+                  <p>Lets an agent outside SSB (Claude Code, Claude Desktop, Cursor…) use these same tools on this board, over HTTP on this computer or through the <code>ssb-mcp</code> command. SSB's window must stay open while it works.</p>
+                </div>
+                <label class="switch" :class="{ disabled: !inNative() }" :title="mcpOn ? 'On' : 'Off'">
+                  <input type="checkbox" :checked="mcpOn" :disabled="!inNative()" @change="toggleMcp" />
+                  <span />
+                </label>
+              </div>
+              <p class="state" :class="mcpStatus.state">
+                <i />
+                <template v-if="!inNative()">Needs the SSB app or plugin: a browser tab can't open a port.</template>
+                <template v-else-if="mcpStatus.state === 'on'">Serving at {{ mcpStatus.url }}</template>
+                <template v-else-if="mcpStatus.state === 'starting'">Starting…</template>
+                <template v-else-if="mcpStatus.state === 'error'">{{ mcpStatus.error }}</template>
+                <template v-else>Off</template>
+              </p>
+              <div class="fields">
+                <label class="field">
+                  <span>Port</span>
+                  <input v-model.number="mcp.port" type="number" min="1024" max="65000" @change="applyPort" />
+                </label>
+                <label class="field wide">
+                  <span>Token (HTTP)</span>
+                  <span class="row">
+                    <input :value="mcp.token" :type="showToken ? 'text' : 'password'" readonly />
+                    <button class="btn icon" :title="showToken ? 'Hide' : 'Show'" @click.prevent="showToken = !showToken"><v-icon size="14" :icon="showToken ? 'mdi-eye-off' : 'mdi-eye'" /></button>
+                    <button class="btn icon" title="A new token (clients using the old one stop working)" @click.prevent="regenerate"><v-icon size="14" icon="mdi-refresh" /></button>
+                  </span>
+                </label>
+              </div>
+              <div v-for="c in commands" :key="c.id" class="cmd">
+                <span>{{ c.label }}</span>
+                <code>{{ c.id === 'http' && !showToken ? c.text.replace(mcp.token, '•••') : c.text }}</code>
+                <button class="btn" @click="copy(c.id, c.text)"><v-icon size="13" :icon="copied === c.id ? 'mdi-check' : 'mdi-content-copy'" /> {{ copied === c.id ? 'Copied' : 'Copy' }}</button>
+              </div>
+              <p class="help">More than one SSB with MCP on (several tracks in a DAW): each takes the next free port; <code>ssb-mcp</code> talks to the newest (<code>--list</code>, <code>--port N</code> to choose).</p>
+              <div v-if="mcpStatus.activity.length" class="activity">
+                <div v-for="(a, k) in mcpStatus.activity.slice(0, 8)" :key="k" :class="{ bad: !a.ok }">
+                  <v-icon size="12" :icon="a.ok ? 'mdi-check' : 'mdi-close'" /> {{ a.tool }} <span>{{ a.ms }} ms · {{ ago(a.at) }}</span>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -503,9 +362,16 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
         <section v-else class="chat">
           <div ref="listEl" class="messages selectable">
             <div v-if="!items.length" class="welcome">
-              <p>Describe a sound, or ask about a patch. The agent can find waves, read, make, change and delete patches, render notes to look at their waveform and spectrogram, and, in the SSB app or plugin, generate sound effects, ambiences, loops and notes with a sound model on this computer (⚙ SOUND MODEL).</p>
-              <button v-for="s in STARTERS" :key="s" class="starter" :disabled="!ai.configured" @click="send(s)">{{ s }}</button>
-              <p v-if="!ai.configured" class="err">Set up a provider first (⚙).</p>
+              <span class="mark big"><v-icon size="22" icon="mdi-creation" /></span>
+              <h4>What should we make?</h4>
+              <p>
+                Describe a sound or ask about a patch. The agent finds waves; reads, makes, changes and deletes patches; renders notes to study their
+                waveform and spectrogram; and can generate audio with the sound model chosen in a VCO's ☰ menu.
+              </p>
+              <div class="starters">
+                <button v-for="s in STARTERS" :key="s" class="starter" :disabled="!ai.configured" @click="send(s)">{{ s }}</button>
+              </div>
+              <p v-if="!ai.configured" class="err">Set up a model provider first: <a href="#" @click.prevent="showSettings = true">open Settings</a>.</p>
             </div>
             <template v-for="(it, i) in items" :key="i">
               <div v-if="it.kind === 'user'" class="msg user">
@@ -522,17 +388,17 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
               </div>
               <div v-else-if="it.kind === 'assistant'" class="msg assistant" :class="{ streaming: it.streaming, bare: !it.text && !it.thinking && !it.streaming }">
                 <details v-if="it.thinking" class="thinking">
-                  <summary>THINKING</summary>
+                  <summary>Thinking</summary>
                   <div class="text">{{ it.thinking }}</div>
                 </details>
                 <!-- eslint-disable-next-line vue/no-v-html -- escaped by md() -->
                 <div v-if="it.text" class="text" v-html="md(it.text)" />
-                <div v-if="it.streaming && !it.text" class="dots">…</div>
+                <div v-if="it.streaming && !it.text" class="dots"><i /><i /><i /></div>
                 <small v-if="it.usage" class="turn-usage">{{ usageLine(it.usage) }}</small>
               </div>
               <details v-else-if="it.kind === 'tool'" class="tool" :class="it.status" :open="it.status === 'error'">
                 <summary>
-                  <v-icon size="13" :icon="it.status === 'running' ? 'mdi-cog-sync' : it.status === 'error' ? 'mdi-alert' : 'mdi-check'" />
+                  <v-icon size="13" :icon="it.status === 'running' ? 'mdi-loading' : it.status === 'error' ? 'mdi-alert-circle-outline' : 'mdi-check-circle-outline'" :class="{ spin: it.status === 'running' }" />
                   <b>{{ it.name }}</b>
                   <span class="brief">{{ it.output?.split('\n')[0].slice(0, 110) }}</span>
                 </summary>
@@ -540,8 +406,8 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
                 <pre v-if="it.output" class="io out">{{ it.output }}</pre>
               </details>
               <div v-if="it.kind === 'tool' && it.sound && board.byId(it.sound)" class="take">
-                <button class="hw-btn" title="Play it (again: stop)" @click="playSound(it.sound)"><v-icon size="13" icon="mdi-play" /> {{ board.byId(it.sound)?.settings.name }}</button>
-                <span>on the board, in SAMPLES</span>
+                <button class="btn" title="Play it (again: stop)" @click="playSound(it.sound)"><v-icon size="13" icon="mdi-play" /> {{ board.byId(it.sound)?.settings.name }}</button>
+                <span>Added to Samples</span>
               </div>
               <div v-if="it.kind === 'tool' && it.images?.length" class="images">
                 <img v-for="(im, k) in it.images" :key="k" :src="`data:image/png;base64,${im}`" alt="render" title="Click to enlarge" @click="zoom = im" />
@@ -551,23 +417,25 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
           </div>
 
           <div v-if="ai.confirming" class="confirm">
-            <v-icon icon="mdi-help-circle" color="secondary" />
+            <v-icon size="18" icon="mdi-help-circle-outline" />
             <span>{{ ai.confirming.question }}</span>
-            <v-spacer />
-            <button class="hw-btn lit" @click="ai.confirming.resolve(true)">YES</button>
-            <button class="hw-btn" @click="ai.confirming.resolve(false)">NO</button>
+            <button class="btn" @click="ai.confirming.resolve(false)">No</button>
+            <button class="btn primary" @click="ai.confirming.resolve(true)">Yes</button>
           </div>
 
-          <footer>
+          <footer class="composer">
             <textarea
               v-model="draft"
               rows="2"
-              :placeholder="ai.running ? 'Working…' : 'Describe a sound, or ask about a patch (Enter sends, Shift+Enter: new line)'"
+              :placeholder="ai.running ? 'Working…' : 'Describe a sound, or ask about a patch'"
               spellcheck="false"
               @keydown="onKey"
             />
-            <button v-if="ai.running" class="hw-btn send stop" title="Stop" @click="ai.stop()"><v-icon size="16" icon="mdi-stop" /> STOP</button>
-            <button v-else class="hw-btn send lit" :disabled="!draft.trim()" title="Send (Enter)" @click="send()"><v-icon size="16" icon="mdi-send" /> SEND</button>
+            <div class="composer-bar">
+              <small>Enter to send · Shift+Enter for a new line</small>
+              <button v-if="ai.running" class="btn stop" title="Stop" @click="ai.stop()"><v-icon size="15" icon="mdi-stop" /> Stop</button>
+              <button v-else class="btn primary" :disabled="!draft.trim()" title="Send (Enter)" @click="send()"><v-icon size="15" icon="mdi-arrow-up" /> Send</button>
+            </div>
           </footer>
         </section>
       </div>
@@ -578,105 +446,263 @@ watch(open, (o) => o && !ai.current && ai.newConversation())
 </template>
 
 <style scoped>
+/* A calm, app-like panel: one sans-serif type scale, quiet surfaces, the theme's primary as the only accent. */
 .ai {
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --surface: rgba(255, 255, 255, 0.03);
+  --surface-hi: rgba(255, 255, 255, 0.06);
+  --field: rgba(0, 0, 0, 0.32);
+  --accent: var(--c-primary);
+  --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  position: relative;
   display: flex;
   flex-direction: column;
   height: min(86vh, 900px);
-  padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: 12px;
+  overflow: hidden;
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
   color: var(--text);
-  background:
-    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.015) 0 1px, transparent 1px 3px),
-    linear-gradient(180deg, var(--panel-hi) 0%, var(--panel-lo) 100%);
-  border: 1px solid #000;
-  box-shadow:
-    0 20px 60px rgba(0, 0, 0, 0.8),
-    inset 0 1px 0 rgba(255, 255, 255, 0.12);
-  position: relative;
+  background: color-mix(in srgb, var(--panel-lo) 94%, #000);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.75);
 }
-header {
+code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+/* ── buttons ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--text);
+  background: var(--surface-hi);
+  border: 1px solid var(--line-strong);
+  transition: background 0.12s, border-color 0.12s;
+}
+.btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+.btn:disabled {
+  opacity: 0.4;
+}
+.btn.primary {
+  color: #06040b;
+  background: var(--accent);
+  border-color: transparent;
+}
+.btn.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 85%, #fff);
+}
+.btn.ghost {
+  background: none;
+  border-color: transparent;
+  color: var(--text-mute);
+}
+.btn.ghost:hover,
+.btn.ghost.on {
+  color: var(--text);
+  background: var(--surface-hi);
+}
+.btn.icon {
+  flex: none;
+  width: 30px;
+  padding: 0;
+}
+.btn.stop {
+  color: #ff8a8a;
+  border-color: rgba(255, 138, 138, 0.35);
+}
+/* ── header ── */
+.top {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 14px 12px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
+  min-width: 0;
+}
+.mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.mark.big {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
 }
 h3 {
   margin: 0;
-  font-family: 'Orbitron', sans-serif;
-  font-weight: 900;
   font-size: 15px;
-  letter-spacing: 0.18em;
-  color: var(--c-primary);
-  text-shadow: 0 0 8px color-mix(in srgb, var(--c-primary) 50%, transparent);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text);
 }
-.chip {
-  padding: 1px 8px;
-  border-radius: 2px;
-  font-family: 'VT323', monospace;
-  font-size: 15px;
-  color: var(--ink-dim);
-  background: #111;
-  border: 1px solid #000;
-  max-width: 340px;
+.sub {
+  margin: 0;
+  max-width: 360px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.chip.on {
-  color: var(--c-secondary);
-}
-.usage {
-  font-family: 'VT323', monospace;
-  font-size: 14px;
+  font-size: 12px;
   color: var(--text-mute);
 }
+.badges {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+.usage {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-mute);
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--surface-hi);
+  border: 1px solid var(--line);
+}
+.badge i,
+.state i {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-mute);
+}
+.badge.ok i,
+.state.on i {
+  background: var(--c-success);
+}
+.badge.busy i,
+.state.starting i {
+  background: var(--c-secondary);
+  animation: blink 1s infinite;
+}
+.state.error i {
+  background: #ff6b6b;
+}
+.tools {
+  display: flex;
+  gap: 4px;
+}
+@keyframes blink {
+  50% {
+    opacity: 0.3;
+  }
+}
+/* ── layout ── */
 .body {
   flex: 1;
   min-height: 0;
   display: flex;
-  gap: 10px;
 }
 /* ── conversations ── */
 .convos {
-  flex: 0 0 210px;
+  flex: 0 0 236px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
+  min-height: 0;
+  padding: 12px 10px;
+  border-right: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.18);
+}
+.new {
+  width: 100%;
+}
+.group {
+  margin: 6px 6px 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.list {
+  flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding-right: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   scrollbar-width: thin;
 }
 .convo {
   position: relative;
   display: grid;
-  grid-template-columns: 16px 1fr 14px;
+  grid-template-columns: 18px 1fr 18px;
   grid-template-rows: auto auto;
-  gap: 0 4px;
-  padding: 4px 6px;
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid transparent;
+  gap: 1px 6px;
+  padding: 7px 8px;
+  border-radius: 7px;
   cursor: pointer;
 }
-.convo.on {
-  border-color: color-mix(in srgb, var(--c-primary) 50%, transparent);
-  background: rgba(0, 0, 0, 0.45);
+.convo:hover {
+  background: var(--surface);
 }
-.convo .star {
-  grid-row: 1 / 3;
-  align-self: start;
+.convo.on {
+  background: var(--surface-hi);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.convo .star,
+.convo .del {
+  display: grid;
+  place-items: center;
   padding: 0;
   border: 0;
   background: none;
   color: var(--text-mute);
-  font-size: 14px;
-  line-height: 16px;
+}
+.convo .star {
+  grid-row: 1 / 3;
+  align-self: start;
+  margin-top: 1px;
 }
 .convo .star.on {
   color: #ffc23d;
-  text-shadow: 0 0 5px rgba(255, 194, 61, 0.6);
 }
 .convo .title,
 .convo .rename {
@@ -684,113 +710,199 @@ h3 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: 'VT323', monospace;
-  font-size: 15px;
-  line-height: 16px;
-  color: var(--ink-dim);
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
 }
 .convo .rename {
-  color: var(--c-primary);
-  background: var(--lcd-bg);
-  border: 1px solid #000;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--field);
+  border: 1px solid var(--accent);
   outline: none;
 }
 .convo small {
   grid-column: 2 / 4;
-  font-family: 'VT323', monospace;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-mute);
 }
 .convo .del {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--text-mute);
-  font-size: 11px;
   opacity: 0;
 }
 .convo:hover .del {
-  opacity: 1;
+  opacity: 0.8;
 }
-.new {
-  justify-content: center;
+.convo .del:hover {
+  color: #ff8a8a;
 }
-.empty,
-.hint {
-  font-family: 'VT323', monospace;
-  font-size: 14px;
+.empty {
+  margin: 8px 6px;
+  font-size: 12px;
   color: var(--text-mute);
-  margin: 4px 0;
 }
 .err {
-  font-family: 'VT323', monospace;
-  font-size: 14px;
-  color: #ff6b6b;
   margin: 4px 0;
+  font-size: 12px;
+  color: #ff7b7b;
+}
+.err a {
+  color: inherit;
+}
+.help {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-mute);
 }
 /* ── settings ── */
 .settings {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 6px 12px;
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.2);
+  scrollbar-width: thin;
 }
-.settings h4 {
-  margin: 4px 0;
-  font-family: 'Orbitron', sans-serif;
-  font-size: 9px;
-  font-weight: 900;
-  letter-spacing: 0.18em;
-  color: var(--text-head);
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 20px 24px 28px;
+}
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.card h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.card-head p,
+.card.slim p {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  color: var(--text-mute);
+}
+.card-head.with-action {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.card.slim {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+}
+.card.slim .lead {
+  margin-top: 1px;
+  color: var(--accent);
+}
+.card.slim b {
+  color: var(--text);
+}
+.card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.result {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--c-success);
+}
+.result.err {
+  margin: 0;
+  color: #ff7b7b;
 }
 .seg {
   display: flex;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 2px;
+  align-self: flex-start;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--field);
+  border: 1px solid var(--line);
 }
 .seg button {
-  padding: 3px 14px;
-  border-radius: 3px;
-  font-family: 'VT323', monospace;
-  font-size: 17px;
-  color: var(--ink-mute);
-  background: #111;
-  border: 1px solid #000;
+  height: 26px;
+  padding: 0 14px;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-mute);
+  background: none;
+  border: 0;
+}
+.seg button:hover {
+  color: var(--text);
 }
 .seg button.on {
-  color: var(--c-secondary);
-  text-shadow: 0 0 5px color-mix(in srgb, var(--c-secondary) 70%, transparent);
+  color: var(--text);
+  background: var(--surface-hi);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    inset 0 0 0 1px var(--line-strong);
 }
-.settings label {
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px 14px;
+}
+.fields.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.field {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin: 8px 0;
-  font-family: 'Orbitron', sans-serif;
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 0.15em;
-  color: var(--text-head);
+  gap: 5px;
+  min-width: 0;
 }
-.settings label.check {
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
+.field.wide {
+  grid-column: 1 / -1;
+}
+.field > span:first-child {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-mute);
 }
 .settings input:not([type='checkbox']),
 .settings select,
-textarea {
-  font-family: 'VT323', monospace;
-  font-size: 17px;
-  letter-spacing: 0.02em;
-  padding: 2px 8px;
-  border-radius: 3px;
-  color: var(--c-primary);
-  background: var(--lcd-bg);
-  border: 1px solid #000;
-  outline: none;
+.composer textarea {
   min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--line-strong);
+  outline: none;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.settings input:not([type='checkbox']),
+.settings select {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 7px;
+}
+.settings input:focus,
+.settings select:focus {
+  border-color: color-mix(in srgb, var(--accent) 65%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .settings select option {
   color: #000;
@@ -803,132 +915,124 @@ textarea {
 .row input {
   flex: 1;
 }
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  gap: 0 12px;
+.checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
 }
-.mcp-head {
-  margin-top: 14px !important;
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
 }
-.mcp-state {
-  font-family: 'VT323', monospace;
-  font-size: 15px;
+.check input,
+.switch input {
+  accent-color: var(--accent);
+}
+.state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12.5px;
   color: var(--text-mute);
 }
-.mcp-state.on {
-  color: var(--c-success);
+.state.on {
+  color: var(--text);
 }
-.mcp-state.error {
-  color: #ff6b6b;
+.state.error {
+  color: #ff7b7b;
 }
 .cmd {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 2px 6px;
+  gap: 5px 8px;
   align-items: center;
-  margin: 6px 0;
 }
 .cmd span {
   grid-column: 1 / -1;
-  font-family: 'Orbitron', sans-serif;
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 0.15em;
-  color: var(--text-head);
-}
-.cmd code,
-.settings .hint code {
-  font-family: 'VT323', monospace;
-  font-size: 14px;
-  color: var(--c-secondary);
-  overflow-wrap: anywhere;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-mute);
 }
 .cmd code {
-  padding: 2px 6px;
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.4);
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.help code,
+.card-head code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--field);
 }
 .activity {
-  font-family: 'VT323', monospace;
-  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-family: var(--mono);
+  font-size: 11.5px;
   color: var(--c-success);
+  background: var(--field);
+}
+.activity span {
+  color: var(--text-mute);
 }
 .activity .bad {
   color: #ff8a8a;
 }
-.mcp-chip {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+/* an on/off switch */
+.switch {
+  position: relative;
+  flex: none;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
   cursor: pointer;
 }
-.mcp-chip .led {
-  width: 6px;
-  height: 6px;
+.switch.disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.switch span {
+  position: absolute;
+  inset: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.16);
+  transition: background 0.15s;
+}
+.switch span::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  transition: transform 0.15s;
+}
+.switch input:checked + span {
   background: var(--c-success);
-  box-shadow: 0 0 5px var(--c-success);
 }
-.warn {
-  margin: 4px 0;
-  font-family: 'VT323', monospace;
-  font-size: 15px;
-  color: #ffc46b;
-}
-.warn b {
-  color: #ffd99a;
-}
-.settings .hint a {
-  color: var(--c-secondary);
-}
-.confirm-dl {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 6px 0;
-  padding: 6px 8px;
-  border-radius: 3px;
-  font-family: 'VT323', monospace;
-  font-size: 15px;
-  color: var(--ink);
-  background: rgba(255, 196, 107, 0.08);
-  border: 1px solid rgba(255, 196, 107, 0.35);
-}
-.confirm-dl span {
-  flex: 1;
-}
-.bar {
-  height: 4px;
-  margin: 6px 0;
-  border-radius: 2px;
-  background: rgba(0, 0, 0, 0.5);
-  overflow: hidden;
-}
-.bar i {
-  display: block;
-  height: 100%;
-  background: var(--c-secondary);
-  box-shadow: 0 0 6px var(--c-secondary);
-  transition: width 0.4s;
-}
-.mcp-chip.busy .led {
-  background: var(--c-secondary);
-  box-shadow: 0 0 5px var(--c-secondary);
-  animation: blink 1s infinite;
-}
-@keyframes blink {
-  50% {
-    opacity: 0.3;
-  }
-}
-.test {
-  font-family: 'VT323', monospace;
-  font-size: 15px;
-  color: var(--c-success);
-}
-.test.err {
-  color: #ff6b6b;
+.switch input:checked + span::after {
+  transform: translateX(16px);
 }
 /* ── the conversation ── */
 .chat {
@@ -936,7 +1040,6 @@ textarea {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 .messages {
   flex: 1;
@@ -944,47 +1047,60 @@ textarea {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 6px;
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.3);
-  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.6);
+  gap: 10px;
+  padding: 20px max(20px, calc((100% - 780px) / 2));
   scrollbar-width: thin;
 }
 .welcome {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 10px;
-  font-family: 'VT323', monospace;
-  font-size: 17px;
-  color: var(--ink-dim);
+  align-items: center;
+  gap: 10px;
+  margin: auto 0;
+  padding: 20px 0;
+  text-align: center;
+}
+.welcome h4 {
+  margin: 4px 0 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+.welcome > p {
+  max-width: 560px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-mute);
+}
+.starters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+  width: 100%;
+  margin-top: 10px;
 }
 .starter {
-  padding: 3px 10px;
-  border-radius: 3px;
-  font-family: 'VT323', monospace;
-  font-size: 16px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 12.5px;
   text-align: left;
-  color: var(--c-secondary);
-  background: #111;
-  border: 1px solid #000;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  transition: background 0.12s, border-color 0.12s;
 }
 .starter:hover:not(:disabled) {
-  color: var(--c-primary);
+  background: var(--surface-hi);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 .starter:disabled {
   opacity: 0.4;
 }
 .msg {
   position: relative;
-  max-width: 88%;
-  padding: 5px 10px;
-  border-radius: 6px;
-  font-family: 'VT323', monospace;
-  font-size: 17px;
-  line-height: 19px;
+  max-width: 85%;
+  font-size: 13.5px;
+  line-height: 1.55;
 }
 .msg .text {
   white-space: pre-wrap;
@@ -992,162 +1108,193 @@ textarea {
 }
 .msg.user {
   align-self: flex-end;
-  padding-right: 26px;
-  color: #000;
-  background: color-mix(in srgb, var(--c-primary) 85%, #fff);
+  padding: 8px 32px 8px 13px;
+  border-radius: 12px 12px 3px 12px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
 }
 .msg.assistant {
   align-self: flex-start;
-  color: var(--ink);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  max-width: 100%;
+  padding: 2px 2px;
+  color: var(--text);
 }
 .msg.assistant :deep(code) {
-  padding: 0 3px;
-  border-radius: 2px;
-  color: var(--c-secondary);
-  background: rgba(0, 0, 0, 0.4);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 0.9em;
+  background: var(--surface-hi);
+}
+.msg.assistant :deep(b) {
+  font-weight: 600;
 }
 .msg.assistant :deep(.h) {
-  color: var(--c-primary);
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 14px;
 }
 .pin {
   position: absolute;
-  top: 3px;
-  right: 3px;
-  padding: 1px;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  padding: 2px;
   border: 0;
-  border-radius: 2px;
-  background: rgba(0, 0, 0, 0.15);
-  color: rgba(0, 0, 0, 0.55);
+  border-radius: 4px;
+  background: none;
+  color: var(--text-mute);
+  opacity: 0.6;
+}
+.msg.user:hover .pin,
+.pin.on {
+  opacity: 1;
 }
 .pin.on {
-  color: #000;
-  background: rgba(255, 255, 255, 0.6);
+  color: var(--accent);
+}
+.thinking {
+  margin-bottom: 6px;
 }
 .thinking summary {
-  font-family: 'Orbitron', sans-serif;
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 0.15em;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-mute);
   cursor: pointer;
 }
 .thinking .text {
+  margin: 4px 0 0;
+  padding-left: 10px;
+  font-size: 12.5px;
   color: var(--text-mute);
-  font-size: 15px;
-  line-height: 16px;
-  margin-bottom: 4px;
+  border-left: 2px solid var(--line-strong);
 }
 .dots {
-  color: var(--text-mute);
-  animation: blink 1s steps(2) infinite;
+  display: flex;
+  gap: 4px;
+  padding: 6px 0;
 }
-@keyframes blink {
-  50% {
-    opacity: 0.2;
-  }
+.dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-mute);
+  animation: blink 1.2s infinite;
+}
+.dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.dots i:nth-child(3) {
+  animation-delay: 0.4s;
 }
 /* a turn that only called tools: just its usage, quietly */
 .msg.assistant.bare {
-  padding: 0 4px;
-  background: none;
-  border: 0;
-}
-.msg.assistant.bare .turn-usage {
-  margin: 0;
+  padding: 0;
 }
 .turn-usage {
   display: block;
-  margin-top: 2px;
-  font-size: 12px;
+  margin-top: 3px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
   color: var(--text-mute);
 }
 .tool {
   align-self: flex-start;
-  max-width: 92%;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-family: 'VT323', monospace;
-  font-size: 15px;
-  color: var(--ink-dim);
-  background: rgba(0, 0, 0, 0.35);
-  border-left: 2px solid var(--c-success);
-}
-.tool.running {
-  border-left-color: var(--c-secondary);
-}
-.tool.error {
-  border-left-color: #ff6b6b;
+  max-width: 100%;
+  min-width: min(420px, 100%);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--text-mute);
+  background: var(--surface);
+  border: 1px solid var(--line);
 }
 .tool summary {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  padding: 6px 10px;
   cursor: pointer;
   list-style: none;
   white-space: nowrap;
   overflow: hidden;
 }
-.tool b {
-  font-weight: 400;
+.tool summary::-webkit-details-marker {
+  display: none;
+}
+.tool summary .v-icon {
+  color: var(--c-success);
+}
+.tool.running summary .v-icon {
   color: var(--c-secondary);
+}
+.tool.error summary .v-icon {
+  color: #ff7b7b;
+}
+.spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.tool b {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
 }
 .tool .brief {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--text-mute);
 }
 .io {
   max-height: 220px;
   overflow: auto;
-  margin: 3px 0;
-  padding: 4px 6px;
-  border-radius: 3px;
-  font-family: 'VT323', monospace;
-  font-size: 14px;
-  line-height: 15px;
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  background: rgba(0, 0, 0, 0.35);
+  border-top: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.25);
 }
 .io.out {
-  color: var(--ink);
+  color: var(--text);
 }
 .take {
   display: flex;
   align-items: center;
   gap: 8px;
   align-self: flex-start;
-  font-family: 'VT323', monospace;
-  font-size: 14px;
-  color: var(--text-faint);
-}
-.take .hw-btn {
-  gap: 4px;
+  font-size: 12px;
+  color: var(--text-mute);
 }
 .images {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
   align-self: flex-start;
 }
 .images img {
   width: 300px;
   max-width: 100%;
-  border-radius: 3px;
-  border: 1px solid #000;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
   cursor: zoom-in;
 }
 .note {
   align-self: center;
-  padding: 2px 10px;
-  border-radius: 3px;
-  font-family: 'VT323', monospace;
-  font-size: 15px;
+  padding: 3px 12px;
+  border-radius: 11px;
+  font-size: 12px;
   color: var(--text-mute);
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--surface);
 }
 .note.error {
   color: #ff8a8a;
@@ -1155,32 +1302,52 @@ textarea {
 .confirm {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: 4px;
-  font-family: 'VT323', monospace;
-  font-size: 18px;
+  gap: 10px;
+  margin: 0 max(20px, calc((100% - 780px) / 2)) 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--c-secondary) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-secondary) 35%, transparent);
+}
+.confirm .v-icon {
   color: var(--c-secondary);
-  background: rgba(0, 0, 0, 0.45);
-  border: 1px solid color-mix(in srgb, var(--c-secondary) 50%, transparent);
 }
-footer {
-  display: flex;
-  gap: 6px;
-  align-items: stretch;
-}
-textarea {
+.confirm span {
   flex: 1;
+}
+.composer {
+  margin: 0 max(20px, calc((100% - 780px) / 2)) 16px;
+  border-radius: 12px;
+  background: var(--field);
+  border: 1px solid var(--line-strong);
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.composer:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.composer textarea {
+  display: block;
+  width: 100%;
+  padding: 12px 14px 4px;
+  font-size: 13.5px;
   resize: none;
-  font-size: 18px;
+  background: none;
+  border: 0;
+  box-shadow: none;
 }
-.send {
-  flex: none;
-  min-width: 90px;
-  justify-content: center;
+.composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 8px 14px;
 }
-.stop {
-  color: #ff8a8a;
+.composer-bar small {
+  font-size: 11px;
+  color: var(--text-mute);
 }
 .zoom {
   position: absolute;
@@ -1194,10 +1361,15 @@ textarea {
 .zoom img {
   max-width: 96%;
   max-height: 96%;
+  border-radius: 8px;
 }
 @media (max-width: 760px) {
-  .convos {
+  .convos,
+  .usage {
     display: none;
+  }
+  .fields.two {
+    grid-template-columns: 1fr;
   }
 }
 </style>

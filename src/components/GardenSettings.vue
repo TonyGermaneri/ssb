@@ -26,7 +26,7 @@ const wordLine = computed(() => {
   const w = wording.value
   if (w?.left) return `listing words for "${w.prompt}"… ${w.left} ring kind${w.left === 1 ? '' : 's'} to go`
   if (w?.note) return w.note
-  if (!riffAvailable()) return riffState.on ? 'download a WORD MODEL in AI settings: the rings\' words come from it' : 'the WORD MODEL is off (AI settings)'
+  if (!riffAvailable()) return riffState.on ? 'download a word model (a VCO\'s ☰ menu): the rings\' words come from it' : 'the word model is off (a VCO\'s ☰ menu)'
   return g.value?.subject ? `words from "${g.value.subject}" · ${riffModel().label}` : `type a prompt: ${riffModel().label} lists the rings' words from it`
 })
 async function seed() {
