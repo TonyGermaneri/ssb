@@ -9,6 +9,7 @@ import { useGarden } from '../stores/garden'
 import { fmtBytes, TAB_SOUND_MODEL } from '../lib/ai/soundModels'
 import { errorMessage } from '../lib/ai/types'
 import { activeVoices, getCtx, hasAudio, resume } from '../audio/engine'
+import { padControl } from '../lib/play/padControl'
 
 /**
  * The web version's first start: a hyperspace splash.
@@ -86,6 +87,8 @@ function frame(now: number) {
   last = now
   const c = canvas.value
   if (!c) return
+  // (hidden behind the cockpit while the HUD shows: not drawn, so the GPU has room to paint the HUD)
+  if (phase.value === 'hud') return
   const dpr = Math.min(2, devicePixelRatio || 1)
   const w = c.clientWidth
   const h = c.clientHeight
@@ -96,7 +99,7 @@ function frame(now: number) {
   const g = c.getContext('2d')!
   g.setTransform(dpr, 0, 0, dpr, 0, 0)
   // the speed each phase wants, eased toward
-  const want = phase.value === 'warp' ? 2.6 : phase.value === 'reveal' ? 1.1 : phase.value === 'hud' ? 0.6 : 9
+  const want = phase.value === 'warp' ? 2.6 : phase.value === 'reveal' ? 1.1 : 9
   speed += (want - speed) * Math.min(1, dt * (phase.value === 'jump' ? 0.9 : 1.6))
   // trails: the faster, the longer the old frame lingers
   g.fillStyle = `rgba(2, 1, 10, ${Math.max(0.18, 0.75 - speed * 0.07)})`
@@ -257,6 +260,7 @@ async function jump() {
     // no voice took it)
     const ready = () => (board.selectedPatch?.slots ?? []).every((x) => !x || hasAudio(board.byId(x.layer.soundId)?.audioId ?? ''))
     for (let k = 0; k < 40 && !ready(); k++) await new Promise((r) => setTimeout(r, 100))
+    placePads()
     board.master.hold = true
     for (let k = 0; k < 4; k++) {
       board.noteOn(60, 0.8)
@@ -270,6 +274,26 @@ async function jump() {
   }
   finish()
 }
+/**
+ * Where each intro VCO's PLAY pads start, fresh each time (points 0..1 from the bottom left): PERFORM top left, GRAIN
+ * bottom right, LFO anywhere from 25 % to 60 % both ways, TEXTURE along the bottom 30–50 % across, ECHO 10–30 % both
+ * ways (and heard: an echo with no MIX gets some, as a touched pad does).
+ */
+const between = (lo: number, hi: number) => lo + Math.random() * (hi - lo)
+function placePads() {
+  for (let i = 0; i < 3; i++) {
+    const layer = board.selectedPatch?.slots[i]?.layer
+    if (!layer) continue
+    const pads = padControl({ sound: () => board.layerSound(layer)!, bpm: () => board.bpm })
+    pads.write('perform', { x: between(0, 0.08), y: between(0.86, 0.94) })
+    pads.write('grain', { x: between(0.92, 1), y: between(0, 0.08) })
+    pads.write('lfo', { x: between(0.25, 0.6), y: between(0.25, 0.6) })
+    pads.write('texture', { x: between(0.3, 0.5), y: between(0, 0.04) })
+    pads.write('echo', { x: between(0.1, 0.3), y: between(0.1, 0.3) })
+    if (!(layer.settings.delayMix > 0)) layer.settings.delayMix = 0.25
+  }
+}
+
 function finish() {
   try {
     localStorage.setItem('ssb:intro-done', '1')
@@ -310,10 +334,13 @@ const showHud = computed(() => phase.value === 'hud' || phase.value === 'jump')
   <div class="intro" :class="[`p-${phase}`, { reduced }]" role="dialog" aria-label="SSB: preparing for the jump to hyperspace">
     <canvas ref="canvas" class="warp" />
     <div v-if="phase !== 'warp'" class="cockpit-layer" aria-hidden="true">
-      <CockpitView :era="era" :design="design" :vcos="vcos" :open="() => false" :payload-for="() => null" :density="0.4" :amount="0.85" :bpm="120" />
+      <CockpitView :era="era" :design="design" :vcos="vcos" :open="() => false" :payload-for="() => null" :density="0.3" :amount="0.5" :bpm="120" />
     </div>
 
     <div v-if="showHud" class="hud">
+      <div class="dim" />
+      <div class="scan" />
+      <div class="roll" />
       <div class="corner tl" /><div class="corner tr" /><div class="corner bl" /><div class="corner br" />
       <div class="telemetry left">
         <p>SSB NAV-80 · ONLINE</p>
@@ -366,6 +393,7 @@ const showHud = computed(() => phase.value === 'hud' || phase.value === 'jump')
   background: #02010a;
   font-family: 'Share Tech Mono', 'VT323', ui-monospace, monospace;
   color: var(--hud);
+  isolation: isolate;
   transition: opacity 1s ease;
 }
 .intro.p-out {
@@ -383,7 +411,6 @@ const showHud = computed(() => phase.value === 'hud' || phase.value === 'jump')
 .p-jump .warp,
 .p-out .warp {
   z-index: 3;
-  mix-blend-mode: screen;
 }
 .cockpit-layer {
   position: absolute;
@@ -393,6 +420,11 @@ const showHud = computed(() => phase.value === 'hud' || phase.value === 'jump')
   /* the windscreen's vanishing point (1980's: 800, 236 of 1600 × 900) */
   transform-origin: 50% 26%;
   animation: pullback 2.6s cubic-bezier(0.16, 0.8, 0.24, 1) both;
+}
+/* pulled back: no animation left on it (a finished one held by fill-mode keeps it an animating layer, which upsets
+   the drawing of everything over it) */
+.p-hud .cockpit-layer {
+  animation: none;
 }
 .p-jump .cockpit-layer,
 .p-out .cockpit-layer {
@@ -429,26 +461,48 @@ const showHud = computed(() => phase.value === 'hud' || phase.value === 'jump')
   inset: 0;
   z-index: 4;
   pointer-events: none;
-  text-shadow:
-    0 0 6px var(--hud),
-    0 0 18px rgba(255, 60, 30, 0.45);
-  /* the cockpit dimmed behind the caption, button and meter, so they read */
-  background:
-    radial-gradient(ellipse 60% 26% at 50% 50%, rgba(2, 1, 10, 0.72), transparent 100%),
-    linear-gradient(0deg, rgba(2, 1, 10, 0.75) 0%, transparent 26%);
-  animation: hud-on 0.6s steps(6) both;
+  text-shadow: 0 0 6px var(--hud);
 }
-.hud::after {
-  /* scanlines and a slow roll */
-  content: '';
+/* Nothing is painted on the full-screen .hud itself: each part is its own small layer, so the GPU, busy with the
+   cockpit's WebGL behind, draws each one (a full-screen layer could go undrawn for seconds). Each switches on with a
+   flicker. */
+.hud > * {
+  will-change: transform;
+}
+/* the cockpit dimmed behind the caption, button and meter, so they read */
+.dim {
   position: absolute;
   inset: 0;
   background:
-    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 3px),
-    linear-gradient(180deg, transparent 0%, rgba(255, 90, 60, 0.06) 50%, transparent 100%);
-  background-size: 100% 100%, 100% 30%;
+    radial-gradient(ellipse 60% 26% at 50% 50%, rgba(2, 1, 10, 0.72), transparent 100%),
+    linear-gradient(0deg, rgba(2, 1, 10, 0.75) 0%, transparent 26%);
+}
+.scan {
+  /* scanlines: still (an animated background would repaint the whole layer every frame) */
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.16) 0 1px, transparent 1px 3px);
+  pointer-events: none;
+}
+/* the slow roll: a band moved by transform, on its own layer */
+.roll {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 30%;
+  background: linear-gradient(180deg, transparent, rgba(255, 90, 60, 0.05), transparent);
+  will-change: transform;
   animation: roll 6s linear infinite;
-  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+@keyframes roll {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(340%);
+  }
 }
 @keyframes hud-on {
   0% {
@@ -477,7 +531,6 @@ const showHud = computed(() => phase.value === 'hud' || phase.value === 'jump')
   width: 42px;
   height: 42px;
   border: 2px solid var(--hud);
-  box-shadow: 0 0 10px rgba(255, 90, 60, 0.5);
 }
 .corner.tl {
   top: 22px;
@@ -546,7 +599,6 @@ const showHud = computed(() => phase.value === 'hud' || phase.value === 'jump')
   letter-spacing: 0.16em;
   text-align: center;
   color: var(--hud-hi);
-  animation: flicker 4s infinite;
 }
 .cursor {
   margin-left: 4px;
@@ -592,7 +644,19 @@ const showHud = computed(() => phase.value === 'hud' || phase.value === 'jump')
     inset 0 0 22px rgba(255, 70, 40, 0.35),
     0 0 26px rgba(255, 70, 40, 0.4);
   cursor: pointer;
+}
+.engage::before {
+  /* the pulse: a glow fading in and out (opacity runs on the compositor: no repaint) */
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, rgba(255, 90, 60, 0.45), transparent 70%);
+  will-change: opacity;
   animation: pulse 1.6s ease-in-out infinite;
+  pointer-events: none;
+}
+.engage span {
+  position: relative;
 }
 .engage:hover {
   background: rgba(255, 70, 40, 0.3);
@@ -602,10 +666,12 @@ const showHud = computed(() => phase.value === 'hud' || phase.value === 'jump')
   outline-offset: 4px;
 }
 @keyframes pulse {
+  from,
+  to {
+    opacity: 0.25;
+  }
   50% {
-    box-shadow:
-      inset 0 0 30px rgba(255, 70, 40, 0.55),
-      0 0 44px rgba(255, 70, 40, 0.7);
+    opacity: 1;
   }
 }
 .standby {
@@ -657,6 +723,7 @@ const showHud = computed(() => phase.value === 'hud' || phase.value === 'jump')
   box-shadow: 0 0 8px var(--hud);
 }
 .segs i.hot {
+  will-change: opacity;
   animation: blink 0.5s steps(2) infinite;
 }
 .retry {
